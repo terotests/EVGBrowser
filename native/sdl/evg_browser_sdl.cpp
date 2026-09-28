@@ -56,6 +56,7 @@ extern char** environ;
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -1390,7 +1391,7 @@ static int run(int argc, char** argv) {
   SDL_Cursor* shown = arrow;
 
   bool dirty = true, quit = false, mouseDown = false;
-  int lastX = 0, lastY = 0;
+  double lastX = 0, lastY = 0;
   Uint64 last = SDL_GetTicks64(), lastMove = last;
   std::string textFocus, title;
   int frame = 0;
@@ -1439,6 +1440,36 @@ static int run(int argc, char** argv) {
     }
   };
 
+  // Where the mouse is, in the points the layout uses. Event coordinates
+  // are points in SDL2 on a Retina Mac, but some builds (sdl2-compat on top
+  // of SDL3, as Homebrew's sdl2 is) deliver them in pixels, which puts
+  // every click twice as far from the corner as it was. SDL_GetMouseState
+  // is read instead of the event, and a position outside the window in
+  // points means this build counts pixels; EVG_MOUSE_SCALE overrides both.
+  double mouseDiv = 0;
+  if (const char* ms = std::getenv("EVG_MOUSE_SCALE")) mouseDiv = std::atof(ms);
+  bool fixedMouse = mouseDiv > 0;
+  if (!fixedMouse) mouseDiv = 1;
+  bool debugInput = std::getenv("EVG_DEBUG_INPUT") != nullptr;
+  auto mousePoint = [&](int ex, int ey, double& x, double& y) {
+    float sx = 0, sy = 0;
+    {
+      int ix = 0, iy = 0;
+      SDL_GetMouseState(&ix, &iy);
+      sx = (float)ix;
+      sy = (float)iy;
+    }
+    if (!fixedMouse && scale > 1.2) {
+      double lim = 1.02;
+      if (sx > winW * lim || sy > winH * lim) mouseDiv = scale;
+    }
+    x = sx / mouseDiv;
+    y = sy / mouseDiv;
+    if (debugInput)
+      std::fprintf(stderr, "mouse event %d,%d state %.0f,%.0f -> %.1f,%.1f (window %dx%d, scale %.2f)\n", ex, ey, sx, sy, x, y,
+                   winW, winH, scale);
+  };
+
   auto syncTextInput = [&]() {
     std::string f = host->focusedField();
     if (f == textFocus) return;
@@ -1466,11 +1497,13 @@ static int run(int argc, char** argv) {
           break;
         case SDL_MOUSEBUTTONDOWN:
           if (e.button.button == SDL_BUTTON_LEFT) {
+            double px = 0, py = 0;
+            mousePoint(e.button.x, e.button.y, px, py);
             mouseDown = true;
-            lastX = e.button.x;
-            lastY = e.button.y;
+            lastX = px;
+            lastY = py;
             lastMove = SDL_GetTicks64();
-            host->pressAt(e.button.x, e.button.y);
+            host->pressAt(px, py);
             dirty = true;
           } else if (e.button.button == SDL_BUTTON_X1) {
             app->back();
@@ -1488,18 +1521,21 @@ static int run(int argc, char** argv) {
             dirty = true;
           }
           break;
-        case SDL_MOUSEMOTION:
+        case SDL_MOUSEMOTION: {
+          double px = 0, py = 0;
+          mousePoint(e.motion.x, e.motion.y, px, py);
           if (mouseDown) {
             Uint64 now = SDL_GetTicks64();
             double dt = (double)std::max<Uint64>(1, now - lastMove);
             lastMove = now;
-            if (host->panAt(e.motion.x - lastX, e.motion.y - lastY, dt)) dirty = true;
-            lastX = e.motion.x;
-            lastY = e.motion.y;
-          } else if (host->hoverAt(e.motion.x, e.motion.y)) {
+            if (host->panAt(px - lastX, py - lastY, dt)) dirty = true;
+            lastX = px;
+            lastY = py;
+          } else if (host->hoverAt(px, py)) {
             dirty = true;
           }
           break;
+        }
         case SDL_MOUSEWHEEL: {
           double dy = -e.wheel.preciseY * 60.0;
           if (host->wheel(dy)) dirty = true;

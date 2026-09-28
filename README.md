@@ -69,6 +69,10 @@ pages in Latin-1 are converted to UTF-8. Fonts are looked for in the usual
 Linux, macOS and Windows places, or in `EVG_FONT_DIR` (`sans.ttf`,
 `sans-bold.ttf`, `mono.ttf`, `mono-bold.ttf`, `emoji.ttf`).
 
+If clicks land in the wrong place (a Retina screen with an SDL build that
+reports the mouse in pixels), `EVG_MOUSE_SCALE=2` fixes the ratio and
+`EVG_DEBUG_INPUT=1` prints each mouse position the browser sees.
+
 `.github/workflows/native.yml` builds it on Linux and renders two pages under
 Xvfb on every push.
 
