@@ -51,6 +51,16 @@ class BrowserCheck {
         } {
             this.check("absolute in a positioned parent" false)
         }
+        def rf:EVGElement (this.laidOut("<div><table style='float:right;width:200px'><tr><td>laatikko</td></tr></table><p>teksti vieressä</p></div>"))
+        def fbox@(optional):EVGElement (this.findText(rf "laatikko"))
+        def ftext@(optional):EVGElement (this.findText(rf "vieressä"))
+        if ((!null? fbox) && (!null? ftext)) {
+            def fbe:EVGElement (unwrap fbox)
+            def fte:EVGElement (unwrap ftext)
+            this.check("float right beside the text" ((fbe.calculatedX > fte.calculatedX) && ((fbe.calculatedY - fte.calculatedY) < 30.0)))
+        } {
+            this.check("float right beside the text" false)
+        }
         this.check("later wins" ((this.colorOf("<style>p { color: red } p { color: blue }</style><p>x</p>" 900.0)) == "blue"))
         this.check("class beats type" ((this.colorOf("<style>.k { color: green } p { color: blue }</style><p class=k>x</p>" 900.0)) == "green"))
         this.check("important" ((this.colorOf("<style>p { color: red !important } .k { color: blue }</style><p class=k>x</p>" 900.0)) == "red"))

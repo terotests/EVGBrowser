@@ -113,7 +113,7 @@ To publish: merge to `main`, then set *Settings → Pages → Source* to
 - **No video, audio, iframes, plugins or canvas.** They are replaced by a short
   notice.
 - **No overlays.** `position: fixed` boxes (cookie banners, chat bubbles,
-  pop-ups) are not drawn; other positioned boxes are laid out in flow.
+  pop-ups) are not drawn, nor are absolute layers that cover their parent.
 - **Forms**: only GET forms are submitted (search boxes work). Forms with
   password, e-mail or file fields, and POST forms, are disabled.
 - Size limits on pages (4 MB), stylesheets (1.5 MB each, at most 32 per page; WordPress sites use 15–30) and on the
@@ -153,6 +153,13 @@ Things EVG does not have, and how they are handled:
 - **Inline `<svg>`** is drawn as a picture: its markup goes into a
   `data:` URL, with `var()` and `currentColor` in its paint worked out
   from the page first (`CssCascade.bakeSvg`).
+- **`float`** (an infobox, a picture with a caption): on a page at least
+  560px wide the float gets a column of its own, and what follows it runs
+  beside it up to an element that clears it or the next h1/h2; text does
+  not wrap under the float. On a phone a float is a block.
+- **`position: absolute`** inside a positioned parent is placed against
+  that parent; edge-to-edge decoration layers are left out, and with the
+  containing block further up the box stays in the flow.
 - **Borders on one side only** are drawn as thin blocks (EVG borders are
   all-round).
 
@@ -202,7 +209,7 @@ Not done yet:
 - The desktop build has been run on Linux only; macOS and Windows builds are
   untested.
 - Text is not selectable; there is no italic or underline (EVG draws neither
-  from its element tree); `float`, most pseudo-classes, `::before` /
+  from its element tree); most pseudo-classes, `::before` /
   `::after` content and CSS background images are ignored. `calc()` is
   worked out when its terms are px, rem, pt or numbers (after `var()`),
   and left alone when they depend on the layout (%, em, vw).

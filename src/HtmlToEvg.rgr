@@ -498,11 +498,21 @@ class HtmlToEvg {
     fn fillFlow:void (el:EVGElement node:HNode linkId:string marker:string) {
         def flow (new BrFlow(el node.style))
         flow.markerPending = marker
-        for node.children c:HNode i {
+        def kids:[HNode] node.children
+        def n:int (array_length kids)
+        def i:int 0
+        while (i < n) {
             if (elementCount > maxElements) {
                 break
             }
+            def c:HNode (itemAt kids i)
+            def side:string (this.floatSide(c))
+            if ((strlen side) > 0) {
+                i = (this.floatRow(flow node kids i side linkId))
+                continue
+            }
             this.flowChild(flow c node.style linkId)
+            i = (i + 1)
         }
         this.endLine(flow)
         for flow.abs ab:EVGElement ai {
@@ -514,6 +524,92 @@ class HtmlToEvg {
             flow.markerPending = ""
             this.endLine(flow)
         }
+    }
+
+    ; `float: left|right` on a block, on a page wide enough to have room
+    ; beside it; "" otherwise (on a phone a float is just a block).
+    fn floatSide:string (c:HNode) {
+        if c.isText {
+            return ""
+        }
+        if (contentWidth < 560.0) {
+            return ""
+        }
+        def f:string (HtmlToEvg.prop(c.style "float" "none"))
+        if ((f != "left") && (f != "right")) {
+            return ""
+        }
+        if (this.skipped(c)) {
+            return ""
+        }
+        if ((HtmlToEvg.prop(c.style "position" "static")) == "absolute") {
+            return ""
+        }
+        return f
+    }
+
+    ; A float and what follows it, side by side: the float in a column of
+    ; its own and the content after it (up to an element that clears it,
+    ; or the end of the parent) beside it. EVG has no text that flows
+    ; around a box, so the content keeps to its column below the float too.
+    ; Returns the index of the first child not taken.
+    fn floatRow:int (flow:BrFlow node:HNode kids:[HNode] at:int side:string linkId:string) {
+        this.endLine(flow)
+        def c:HNode (itemAt kids at)
+        def row (EVGElement.createDiv())
+        row.setAttribute("display" "flex")
+        row.setAttribute("flex-direction" "row")
+        row.setAttribute("flex-wrap" "nowrap")
+        row.setAttribute("align-items" "flex-start")
+        row.setAttribute("width" "100%")
+        def fb:EVGElement (this.boxFor(c (this.linkFor(c linkId))))
+        fb.setAttribute("flex-shrink" "0")
+        def cssW:string (trim (HtmlToEvg.prop(c.style "width" "")))
+        if (((strlen cssW) == 0) || (cssW == "auto")) {
+            fb.setAttribute("max-width" "50%")
+        }
+        def col (EVGElement.createDiv())
+        col.setAttribute("flex-grow" "1")
+        col.setAttribute("flex-shrink" "1")
+        col.setAttribute("flex-basis" "0px")
+        col.setAttribute("min-width" "0px")
+        def sub (new BrFlow(col node.style))
+        def n:int (array_length kids)
+        def j:int (at + 1)
+        while (j < n) {
+            def k:HNode (itemAt kids j)
+            if ((k.isText == false) && (this.clears(k side))) {
+                break
+            }
+            if (elementCount > maxElements) {
+                break
+            }
+            this.flowChild(sub k node.style linkId)
+            j = (j + 1)
+        }
+        this.endLine(sub)
+        for sub.abs ab:EVGElement q {
+            col.addChild(ab)
+        }
+        if (side == "right") {
+            row.addChild(col)
+            row.addChild(fb)
+        } {
+            row.addChild(fb)
+            row.addChild(col)
+        }
+        flow.container.addChild(row)
+        return j
+    }
+
+    fn clears:boolean (k:HNode side:string) {
+        def cl:string (HtmlToEvg.prop(k.style "clear" "none"))
+        if ((cl == "both") || (cl == side)) {
+            return true
+        }
+        ; a heading of the next section starts below the float too, so a
+        ; long article is not one narrow column beside its infobox
+        return ((k.tag == "h1") || (k.tag == "h2"))
     }
 
     fn flowChild:void (flow:BrFlow c:HNode parentStyle:[string:string] linkId:string) {
