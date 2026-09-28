@@ -997,7 +997,7 @@ class CssCascade {
         if ((startsWith name "min-") || ((startsWith name "max-") || (startsWith name "list-style"))) {
             return true
         }
-        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "grid-template-rows" "grid-template-areas" "word-break" "overflow-wrap" "order" ))
+        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "grid-template-rows" "grid-template-areas" "word-break" "overflow-wrap" "order" "left" "top" "right" "bottom" "inset" "z-index" "pointer-events" ))
         for list k:string i {
             if (k == name) {
                 return true

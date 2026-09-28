@@ -43,6 +43,14 @@ class BrowserCheck {
         this.check("data url round trip" (((BrUrl.parse(svgUrl)).toString()) == svgUrl))
         this.check("media range" ((this.colorOf("<style>p { color: red } @media (width>=650px) { p { color: blue } }</style><p>x</p>" 900.0)) == "blue"))
         this.check("media range no" ((this.colorOf("<style>p { color: red } @media (width>=650px) { p { color: blue } }</style><p>x</p>" 400.0)) == "red"))
+        def ra:EVGElement (this.laidOut("<div style='position:relative;height:200px'><p>alku</p><span style='position:absolute;right:10px;bottom:20px'>kulma</span></div>"))
+        def corner@(optional):EVGElement (this.findText(ra "kulma"))
+        if (!null? corner) {
+            def ce:EVGElement (unwrap corner)
+            this.check("absolute in a positioned parent" ((ce.calculatedY > 150.0) && (ce.calculatedX > 500.0)))
+        } {
+            this.check("absolute in a positioned parent" false)
+        }
         this.check("later wins" ((this.colorOf("<style>p { color: red } p { color: blue }</style><p>x</p>" 900.0)) == "blue"))
         this.check("class beats type" ((this.colorOf("<style>.k { color: green } p { color: blue }</style><p class=k>x</p>" 900.0)) == "green"))
         this.check("important" ((this.colorOf("<style>p { color: red !important } .k { color: blue }</style><p class=k>x</p>" 900.0)) == "red"))

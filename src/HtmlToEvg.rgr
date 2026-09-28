@@ -79,6 +79,8 @@ class BrFlow {
     def lastWord@(optional):EVGElement
     def spacePending:boolean false
     def markerPending:string ""
+    ; absolutely positioned children, added after the flow like CSS paints them
+    def abs:[EVGElement]
 
     Constructor (c:EVGElement st:[string:string]) {
         container = c
@@ -253,6 +255,7 @@ class HtmlToEvg {
         ; each item's `order`, kept here rather than in a field because the
         ; items' own contents fill flex containers of their own meanwhile
         def orders:[int]
+        def absKids:[EVGElement]
         for node.children c:HNode i {
             if (elementCount > maxElements) {
                 return
@@ -264,6 +267,12 @@ class HtmlToEvg {
                 continue
             }
             if (this.skipped(c)) {
+                continue
+            }
+            if (this.positionedIn(c node.style)) {
+                if ((this.decorativeOverlay(c)) == false) {
+                    push absKids (this.absoluteBox(c (this.linkFor(c linkId)) node.style))
+                }
                 continue
             }
             if ((array_length pendingText) > 0) {
@@ -282,6 +291,101 @@ class HtmlToEvg {
             push orders 0
         }
         this.reorderItems(el orders (HtmlToEvg.prop(node.style "flex-direction" "row")))
+        for absKids ak:EVGElement q {
+            el.addChild(ak)
+        }
+    }
+
+    ; `position: absolute` inside a positioned parent is placed as CSS
+    ; places it, against that parent. With the containing block further up
+    ; (EVG measures against the direct parent only) it stays in the flow.
+    fn positionedIn:boolean (c:HNode parentStyle:[string:string]) {
+        if ((HtmlToEvg.prop(c.style "position" "static")) != "absolute") {
+            return false
+        }
+        def pp:string (HtmlToEvg.prop(parentStyle "position" "static"))
+        return ((pp == "relative") || ((pp == "absolute") || (pp == "sticky")))
+    }
+
+    ; A layer laid over its parent from edge to edge (`inset: 0`, a shape
+    ; divider, a gradient) or one that takes no clicks: decoration, which
+    ; would only cover what is under it here.
+    fn decorativeOverlay:boolean (c:HNode) {
+        if ((HtmlToEvg.prop(c.style "pointer-events" "")) == "none") {
+            return true
+        }
+        def hasTop:boolean (this.sideSet(c "top" 0))
+        def hasBottom:boolean (this.sideSet(c "bottom" 2))
+        def h:string (HtmlToEvg.prop(c.style "height" "auto"))
+        if (hasTop && (hasBottom && (h == "auto"))) {
+            return true
+        }
+        return false
+    }
+
+    fn sideSet:boolean (c:HNode side:string idx:int) {
+        def v:string (trim (HtmlToEvg.prop(c.style side "")))
+        if ((strlen v) == 0) {
+            def inset:string (trim (HtmlToEvg.prop(c.style "inset" "")))
+            if ((strlen inset) > 0) {
+                def parts:[string] (CssCascade.splitValues(inset))
+                def np:int (array_length parts)
+                if (np == 1) {
+                    v = (itemAt parts 0)
+                }
+                if (np == 2) {
+                    v = (itemAt parts (idx % 2))
+                }
+                if (np == 4) {
+                    v = (itemAt parts idx)
+                }
+            }
+        }
+        return (((strlen v) > 0) && (v != "auto"))
+    }
+
+    fn absoluteBox:EVGElement (c:HNode lid:string parentStyle:[string:string]) {
+        def box:EVGElement (this.boxFor(c lid))
+        box.setAttribute("position" "absolute")
+        def em:double (HtmlToEvg.fontPx(c.style))
+        def inset:string (trim (HtmlToEvg.prop(c.style "inset" "")))
+        def sides:[string] ([] _:string ( "top" "right" "bottom" "left" ))
+        for sides sd:string i {
+            def v:string (trim (HtmlToEvg.prop(c.style sd "")))
+            if (((strlen v) == 0) && ((strlen inset) > 0)) {
+                def parts:[string] (CssCascade.splitValues(inset))
+                def np:int (array_length parts)
+                if (np == 1) {
+                    v = (itemAt parts 0)
+                }
+                if (np == 2) {
+                    v = (itemAt parts (i % 2))
+                }
+                if (np == 4) {
+                    v = (itemAt parts i)
+                }
+            }
+            def t:string (to_lowercase v)
+            if (((strlen t) == 0) || (t == "auto")) {
+                continue
+            }
+            if (endsWith t "%") {
+                box.setAttribute(sd ((CssParser.fmt((CssParser.num(t)))) + "%"))
+                continue
+            }
+            def neg:boolean (startsWith t "-")
+            def px:double (CssCascade.pxOf(t em contentWidth))
+            if ((px >= 0.0) || neg) {
+                ; CSS measures from the parent's padding edge, EVG from
+                ; inside its padding
+                def pad:double (CssCascade.pxOf((HtmlToEvg.prop(parentStyle ("padding-" + sd) "0px")) (HtmlToEvg.fontPx(parentStyle)) contentWidth))
+                if (pad > 0.0) {
+                    px = (px - pad)
+                }
+                box.setAttribute(sd ((CssParser.fmt(px)) + "px"))
+            }
+        }
+        return box
     }
 
     ; `order`, and the reversed directions EVG does not lay out: the items
@@ -401,6 +505,9 @@ class HtmlToEvg {
             this.flowChild(flow c node.style linkId)
         }
         this.endLine(flow)
+        for flow.abs ab:EVGElement ai {
+            el.addChild(ab)
+        }
         if ((strlen flow.markerPending) > 0) {
             ; an empty list item still shows its bullet
             this.addWord(flow flow.markerPending node.style "")
@@ -419,6 +526,12 @@ class HtmlToEvg {
         }
         if (c.tag == "br") {
             this.lineBreak(flow parentStyle)
+            return
+        }
+        if (this.positionedIn(c flow.style)) {
+            if ((this.decorativeOverlay(c)) == false) {
+                push flow.abs (this.absoluteBox(c (this.linkFor(c linkId)) flow.style))
+            }
             return
         }
         def lid:string (this.linkFor(c linkId))

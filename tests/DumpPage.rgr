@@ -50,6 +50,11 @@ class DumpPage {
             maxDepth = (unwrap (str2int (itemAt args 2)))
         }
         def html@(optional):string (read_file "." file)
+        def dir:string ""
+        def slash:int (lastIndexOf file "/")
+        if (slash >= 0) {
+            dir = (substring file 0 (slash + 1))
+        }
         def app (new BrowserApp())
         app.setPageSize(width 800.0)
         app.setSamplesBase("http://localhost/samples/")
@@ -67,10 +72,25 @@ class DumpPage {
                 def parts:[string] (strsplit r "\t")
                 def rid:int (unwrap (str2int (itemAt parts 0)))
                 if ((itemAt parts 1) == "css") {
-                    def cssFile:string (itemAt args ai)
-                    ai = (ai + 1)
+                    ; with css files named, they answer in order; without, the
+                    ; request's path is read next to the page
+                    def cssFile:string ""
+                    if (ai < (array_length args)) {
+                        cssFile = (itemAt args ai)
+                        ai = (ai + 1)
+                    } {
+                        def u:string (itemAt parts 2)
+                        def pre:string "http://localhost/samples/"
+                        if (startsWith u pre) {
+                            cssFile = (dir + (substring u (strlen pre) (strlen u)))
+                        }
+                    }
                     def css@(optional):string (read_file "." cssFile)
-                    app.deliver(rid 200 (itemAt parts 2) "text/css" (unwrap css))
+                    def cssText:string ""
+                    if (!null? css) {
+                        cssText = (unwrap css)
+                    }
+                    app.deliver(rid 200 (itemAt parts 2) "text/css" cssText)
                 }
                 if ((itemAt parts 1) == "image") {
                     app.imageLoaded((itemAt parts 2) 640.0 360.0)
