@@ -1,0 +1,55 @@
+# Builds the browser-in-browser demo and publishes it on GitHub Pages.
+# Repository settings → Pages → Source: "GitHub Actions".
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: EVGBrowser
+      # The compiler and the EVG engine: ranger.json points at ../Ranger/lib/evg
+      - uses: actions/checkout@v4
+        with:
+          repository: terotests/Ranger
+          path: Ranger
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Headless checks (JavaScript)
+        working-directory: EVGBrowser
+        run: node tools/check.mjs
+      - name: Headless checks (C++)
+        working-directory: EVGBrowser
+        run: node tools/check.mjs --cpp
+      - name: Build the page
+        working-directory: EVGBrowser
+        run: node web/build.mjs --out ../site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

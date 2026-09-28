@@ -196,6 +196,11 @@ class BrPage {
         conv.images = images
         conv.imageOrder = imageOrder
         def root:EVGElement (conv.build(doc))
+        ; the pictures found, handed back: a collection assigned to a field is
+        ; a COPY on some targets (C++), so the converter's additions are not
+        ; seen here through the one it was given
+        images = conv.images
+        imageOrder = conv.imageOrder
         converter = conv
         return root
     }

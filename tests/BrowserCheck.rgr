@@ -20,6 +20,71 @@ class BrowserCheck {
         c.run()
     }
 
+    ; The first <p> of a styled document, at a viewport width.
+    fn styledP:HNode (html:string width:double) {
+        def pg (new BrPage())
+        pg.load((BrUrl.parse("https://example.com/")) html (new SafetyPolicy()))
+        pg.restyle(width 700.0)
+        def found@(optional):HNode (pg.doc.find("p"))
+        return (unwrap found)
+    }
+
+    fn colorOf:string (html:string width:double) {
+        def p:HNode (this.styledP(html width))
+        return (HtmlToEvg.prop(p.style "color" ""))
+    }
+
+    fn cascadeChecks:void () {
+        this.check("id beats type" ((this.colorOf("<style>#a p { color: red } p { color: blue }</style><div id=a><p>x</p></div>" 900.0)) == "red"))
+        this.check("later wins" ((this.colorOf("<style>p { color: red } p { color: blue }</style><p>x</p>" 900.0)) == "blue"))
+        this.check("class beats type" ((this.colorOf("<style>.k { color: green } p { color: blue }</style><p class=k>x</p>" 900.0)) == "green"))
+        this.check("important" ((this.colorOf("<style>p { color: red !important } .k { color: blue }</style><p class=k>x</p>" 900.0)) == "red"))
+        this.check("inline style" ((this.colorOf("<style>p { color: red }</style><p style='color: teal'>x</p>" 900.0)) == "teal"))
+        this.check("child combinator" ((this.colorOf("<style>div > p { color: red } p { color: blue }</style><div><span><p>x</p></span></div>" 900.0)) == "blue"))
+        this.check("inherited" ((this.colorOf("<style>body { color: purple }</style><p>x</p>" 900.0)) == "purple"))
+        this.check("custom property" ((this.colorOf("<style>:root { --ink: #123456 } p { color: var(--ink) }</style><p>x</p>" 900.0)) == "#123456"))
+        this.check("var fallback" ((this.colorOf("<style>p { color: var(--nope, olive) }</style><p>x</p>" 900.0)) == "olive"))
+        this.check("media narrow" ((this.colorOf("<style>p { color: red } @media (max-width: 600px) { p { color: blue } }</style><p>x</p>" 500.0)) == "blue"))
+        this.check("media wide" ((this.colorOf("<style>p { color: red } @media (max-width: 600px) { p { color: blue } }</style><p>x</p>" 900.0)) == "red"))
+        this.check("attribute selector" ((this.colorOf("<style>p[data-x=\"1\"] { color: red }</style><p data-x=1>x</p>" 900.0)) == "red"))
+        this.check("not()" ((this.colorOf("<style>p:not(.k) { color: red }</style><p class=k>x</p>" 900.0)) != "red"))
+        def p1:HNode (this.styledP("<style>p { margin: 1px 2px 3px 4px; font-size: 2em }</style><p>x</p>" 900.0))
+        this.check("margin shorthand" ((HtmlToEvg.prop(p1.style "margin-left" "")) == "4px"))
+        this.check("em font size" ((HtmlToEvg.prop(p1.style "font-size" "")) == "34px"))
+    }
+
+    fn formCheck:void () {
+        def app (new BrowserApp())
+        app.setPageSize(900.0 700.0)
+        app.start("about:demo")
+        app.frameJson()
+        def fid:string ""
+        for app.page.converter.fields f:BrField i {
+            if (f.kind == "search") {
+                fid = f.id
+            }
+        }
+        this.check("search field found" ((strlen fid) > 0))
+        app.setFocus(fid)
+        app.setFieldValue(fid "aurinko")
+        app.keyWith("Enter" false false)
+        def req:string (app.nextRequest())
+        this.check("form submits with GET" (endsWith req "https://fi.wikipedia.org/w/index.php?search=aurinko"))
+        ; a fixed banner is not drawn
+        def pg (new BrPage())
+        pg.load((BrUrl.parse("https://example.com/")) "<div style='position: fixed'>MAINOS</div><p>teksti</p>" (new SafetyPolicy()))
+        pg.restyle(900.0 700.0)
+        def root:EVGElement (pg.render(900.0 700.0 (new SafetyPolicy())))
+        def dl (new EVGDisplayList())
+        def lay (new EVGLayout())
+        lay.setPageSize(900.0 700.0)
+        lay.layout(root)
+        dl.setTextEngine((lay.getTextEngine()))
+        dl.build(root)
+        def json:string (dl.toJson())
+        this.check("fixed banner hidden" (((indexOf json "MAINOS") < 0) && ((indexOf json "teksti") >= 0)))
+    }
+
     fn run:void () {
         def app (new BrowserApp())
         app.setPageSize(900.0 700.0)
@@ -49,6 +114,9 @@ class BrowserCheck {
         this.check("title" ((app.pageTitle()) == "Uutiset"))
         def imgReq:string (app.nextRequest())
         this.check("image requested" (endsWith imgReq "\timage\thttps://images.cdn.yle.fi/x.jpg"))
+        if ((endsWith imgReq "x.jpg") == false) {
+            print ("  got: [" + imgReq + "]")
+        }
         app.imageLoaded("https://images.cdn.yle.fi/x.jpg" 1200.0 800.0)
         app.tick(300.0)
         def j2:string (app.frameJson())
@@ -63,6 +131,8 @@ class BrowserCheck {
         ; address bar search
         this.check("search" ((BrowserApp.addressFor("kissa koira")) == "https://fi.wikipedia.org/w/index.php?search=kissa+koira"))
         this.check("bare host" ((BrowserApp.addressFor("yle.fi")) == "https://yle.fi/"))
+        this.cascadeChecks()
+        this.formCheck()
         print ("passed " + (to_string passes) + ", failed " + (to_string fails))
     }
 }

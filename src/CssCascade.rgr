@@ -807,6 +807,9 @@ class CssCascade {
         if (node.hasAttr("hidden")) {
             set st "display" "none"
         }
+        ; a collection read out of a field is a copy on some targets (C++):
+        ; the result is written back
+        node.style = st
     }
 
     ; --- computed values ------------------------------------------------------
@@ -832,7 +835,6 @@ class CssCascade {
             }
             set st k v
         }
-        node.style = st
         ; inherited properties
         def inh:[string] (CssCascade.inheritedProps())
         for inh ip:string j {
@@ -881,6 +883,7 @@ class CssCascade {
                 }
             }
         }
+        node.style = st
     }
 
     sfn inheritedProps:[string] () {

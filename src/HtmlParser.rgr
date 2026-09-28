@@ -256,7 +256,80 @@ class HtmlParser {
         if ((pos > textStart) && (textStart < len)) {
             this.addText((substring src textStart len))
         }
+        this.normalize()
         return root
+    }
+
+    ; Every document gets <html>, <head> and <body>, as a browser builds them
+    ; when the markup leaves them out: a fragment's `body { … }` and
+    ; `:root { --x }` rules then apply, as they would in a browser.
+    fn normalize:void () {
+        def html@(optional):HNode
+        for root.children c:HNode i {
+            if (c.tag == "html") {
+                html = c
+            }
+        }
+        if (null? html) {
+            def made (HNode.element("html"))
+            def rest:[HNode]
+            for root.children c2:HNode j {
+                if (c2.isText && ((strlen (trim c2.text)) == 0)) {
+                    continue
+                }
+                push made.children c2
+            }
+            root.children = rest
+            push root.children made
+            html = made
+        }
+        def h:HNode (unwrap html)
+        def body@(optional):HNode
+        def head@(optional):HNode
+        for h.children c3:HNode k {
+            if (c3.tag == "body") {
+                body = c3
+            }
+            if (c3.tag == "head") {
+                head = c3
+            }
+        }
+        if (!null? body) {
+            return
+        }
+        ; metadata stays in the head; everything from the first content on
+        ; goes in the body
+        def newHead (HNode.element("head"))
+        if (!null? head) {
+            newHead = (unwrap head)
+        }
+        def newBody (HNode.element("body"))
+        def inBody:boolean false
+        for h.children c4:HNode m {
+            if (c4.tag == "head") {
+                continue
+            }
+            if (inBody == false) {
+                if (HtmlParser.isMetadata(c4)) {
+                    push newHead.children c4
+                    continue
+                }
+                if (c4.isText && ((strlen (trim c4.text)) == 0)) {
+                    continue
+                }
+                inBody = true
+            }
+            push newBody.children c4
+        }
+        def kids:[HNode]
+        push kids newHead
+        push kids newBody
+        h.children = kids
+    }
+
+    sfn isMetadata:boolean (n:HNode) {
+        def t:string n.tag
+        return ((t == "title") || ((t == "meta") || ((t == "link") || ((t == "style") || ((t == "script") || ((t == "base") || (t == "template")))))))
     }
 
     ; --- the open elements ----------------------------------------------------
