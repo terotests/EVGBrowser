@@ -1,0 +1,82 @@
+; Lays a page from disk out at a width and prints the boxes: the tool for
+; finding out why something is where it is.
+;   node build/dump_page.js <file.html> [width] [depth] [css files...]
+Import "../src/BrowserApp.rgr"
+
+class DumpPage {
+    sfn dump:void (el:EVGElement depth:int maxDepth:int) {
+        if (depth > maxDepth) {
+            return
+        }
+        def pad:string ""
+        def i:int 0
+        while (i < depth) {
+            pad = (pad + "  ")
+            i = (i + 1)
+        }
+        def label:string ""
+        if ((strlen el.textContent) > 0) {
+            label = (" \"" + el.textContent + "\"")
+            if ((strlen label) > 40) {
+                label = ((substring label 0 40) + "…\"")
+            }
+        }
+        if ((strlen el.id) > 0) {
+            label = (label + " #" + el.id)
+        }
+        print (pad + el.tagName + " " + el.display + "/" + el.flexDirection + " x=" + (to_string (to_int el.calculatedX)) + " y=" + (to_string (to_int el.calculatedY)) + " w=" + (to_string (to_int el.calculatedWidth)) + " h=" + (to_string (to_int el.calculatedHeight)) + label)
+        for el.children c:EVGElement k {
+            DumpPage.dump(c (depth + 1) maxDepth)
+        }
+    }
+
+    sfn main:void () {
+        def args:[string]
+        def ac:int (shell_arg_cnt)
+        def k:int 0
+        while (k < ac) {
+            push args (shell_arg k)
+            k = (k + 1)
+        }
+        def file:string (itemAt args 0)
+        def width:double 1100.0
+        def maxDepth:int 12
+        if ((array_length args) > 1) {
+            width = (unwrap (str2double (itemAt args 1)))
+        }
+        if ((array_length args) > 2) {
+            maxDepth = (unwrap (str2int (itemAt args 2)))
+        }
+        def html@(optional):string (read_file "." file)
+        def app (new BrowserApp())
+        app.setPageSize(width 800.0)
+        app.setSamplesBase("http://localhost/samples/")
+        app.navigate("http://localhost/samples/page.html")
+        def req:string (app.nextRequest())
+        def id:int (unwrap (str2int (itemAt (strsplit req "\t") 0)))
+        app.deliver(id 200 "http://localhost/samples/page.html" "text/html" (unwrap html))
+        def more:boolean true
+        def ai:int 3
+        while more {
+            def r:string (app.nextRequest())
+            if ((strlen r) == 0) {
+                more = false
+            } {
+                def parts:[string] (strsplit r "\t")
+                def rid:int (unwrap (str2int (itemAt parts 0)))
+                if ((itemAt parts 1) == "css") {
+                    def cssFile:string (itemAt args ai)
+                    ai = (ai + 1)
+                    def css@(optional):string (read_file "." cssFile)
+                    app.deliver(rid 200 (itemAt parts 2) "text/css" (unwrap css))
+                }
+                if ((itemAt parts 1) == "image") {
+                    app.imageLoaded((itemAt parts 2) 640.0 360.0)
+                }
+            }
+        }
+        app.tick(300.0)
+        app.frameJson()
+        DumpPage.dump(app.viewport 0 maxDepth)
+    }
+}

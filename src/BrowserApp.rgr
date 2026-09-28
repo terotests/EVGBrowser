@@ -1,0 +1,1366 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; BrowserApp — the browser: its toolbar, its history, and the page it shows.
+; ==============================================================================
+;
+; An `EvgApp`, so every EVG host drives it the same way: the web page in
+; `web/`, and the SDL, iOS and Android hosts that EVG already has. It never
+; does I/O itself. When it needs a document, a stylesheet or an image it puts
+; a REQUEST in a queue; the host takes it (`nextRequest`), fetches it however
+; its platform fetches, and hands the answer back (`deliver`, `imageLoaded`,
+; `imageFailed`). That one inversion is what lets the same Ranger code run in
+; a browser tab, where only `fetch` exists, and in a native app, where the
+; platform's HTTP client does.
+;
+; Two trees, laid out separately so that typing in the address field does
+; not lay the whole page out again:
+;
+;   the frame   toolbar on top, status line at the bottom, styled by a
+;               class stylesheet (EVGStyleSheet) because it is ours
+;   the page    a scroll viewport holding the converted document, styled
+;               inline by HtmlToEvg because it is the web's
+;
+; Scrolling moves the page tree with `EVGLayout.scrollOnlyFrom`, which does
+; not lay anything out again; only the display list is rebuilt, and that is
+; culled to the viewport.
+; ==============================================================================
+
+Import "pkg:evg/EvgApp.rgr"
+Import "pkg:evg/EvgHost.rgr"
+Import "pkg:evg/EVGElement.rgr"
+Import "pkg:evg/EVGLayout.rgr"
+Import "pkg:evg/EVGStyleSheet.rgr"
+Import "pkg:evg/EVGDisplayList.rgr"
+Import "pkg:evg/EVGHitTest.rgr"
+Import "pkg:evg/EVGFling.rgr"
+Import "BrUrl.rgr"
+Import "HtmlParser.rgr"
+Import "BrPage.rgr"
+Import "BuiltinPages.rgr"
+Import "SafetyPolicy.rgr"
+Import "HtmlToEvg.rgr"
+Import "BrImageMeasurer.rgr"
+
+class BrRequest {
+    def id:int 0
+    ; "page", "css" or "image"
+    def kind:string "page"
+    def url:string ""
+    ; the navigation this belongs to; a late answer to an old one is dropped
+    def nav:int 0
+}
+
+class BrHistoryEntry {
+    def url:string ""
+    def scrollTop:double 0.0
+}
+
+class BrowserApp extends EvgApp {
+    def policy:SafetyPolicy (new SafetyPolicy())
+    ; where the host keeps the sample pages that ship with it, "" for none
+    def samplesBase:string ""
+
+    ; --- the window ---
+    def pageW:double 1024.0
+    def pageH:double 768.0
+    def barH:double 56.0
+    def statusH:double 26.0
+    def coarse:boolean false
+
+    ; --- the frame (toolbar + status) ---
+    def frameRoot:EVGElement (EVGElement.createDiv())
+    def frameSheet:EVGStyleSheet (new EVGStyleSheet())
+    def frameList:EVGDisplayList (new EVGDisplayList())
+    def frameDirty:boolean true
+    def addrText:string ""
+    def addrFocused:boolean false
+    def addrFresh:boolean false
+    def statusText:string ""
+    def hovered:string ""
+    def pressedId:string ""
+
+    ; --- the page ---
+    def page:BrPage (new BrPage())
+    def hasPage:boolean false
+    def viewport:EVGElement (EVGElement.createDiv())
+    def pageLayout:EVGLayout (new EVGLayout())
+    def pageList:EVGDisplayList (new EVGDisplayList())
+    def pageDirty:boolean true
+    def listDirty:boolean true
+    def fling:EVGFling (new EVGFling())
+    def focusedFieldId:string ""
+    def pendingFragment:string ""
+
+    ; --- navigation ---
+    def history:[BrHistoryEntry]
+    def historyIndex:int -1
+    def navId:int 0
+    def loading:boolean false
+    def loadingUrl:string ""
+    def requests:[BrRequest]
+    def nextRequestId:int 1
+    def open:[BrRequest]
+    def sheetCache:[string:string]
+    def sheetWaitMs:double 0.0
+    def imagesDirty:boolean false
+    def imageRebuildMs:double 0.0
+    def lastError:string ""
+    def renderCount:int 0
+    def lastRenderMs:double 0.0
+
+    Constructor () {
+        def h:[BrHistoryEntry]
+        history = h
+        def r:[BrRequest]
+        requests = r
+        def o:[BrRequest]
+        open = o
+        def sc:[string:string]
+        sheetCache = sc
+        frameSheet.parse((BrowserApp.frameCss()))
+    }
+
+    ; --- the conversation with the host ------------------------------------
+
+    fn setPageSize:void (w:double h:double) {
+        def changed:boolean ((w != pageW) || (h != pageH))
+        pageW = w
+        pageH = h
+        frameDirty = true
+        if (changed && hasPage) {
+            this.renderPage(true)
+        }
+    }
+
+    fn widthPx:double () {
+        return pageW
+    }
+
+    fn heightPx:double () {
+        return pageH
+    }
+
+    fn setPointerCoarse:void (c:boolean) {
+        coarse = c
+        if c {
+            barH = 64.0
+        }
+        frameDirty = true
+    }
+
+    fn pageTop:double () {
+        return barH
+    }
+
+    fn pageHeight:double () {
+        def h:double ((pageH - barH) - statusH)
+        if (h < 40.0) {
+            h = 40.0
+        }
+        return h
+    }
+
+    ; --- starting and navigating ---------------------------------------------
+
+    fn start:void (url:string) {
+        this.navigate(url)
+    }
+
+    ; What the address field or a link asks for. Text that is not an address
+    ; is a search, in Wikipedia.
+    fn navigate:void (text:string) {
+        def target:string (BrowserApp.addressFor(text))
+        this.go(target true)
+    }
+
+    sfn addressFor:string (text:string) {
+        def t:string (trim text)
+        if ((strlen t) == 0) {
+            return "about:home"
+        }
+        def u:BrUrl (BrUrl.parse(t))
+        if u.valid {
+            if ((u.isWeb()) || (u.isAbout())) {
+                return (u.toString())
+            }
+            if ((u.scheme != "localhost") && ((indexOf t " ") < 0)) {
+                if ((indexOf t "//") >= 0) {
+                    return (u.toString())
+                }
+            }
+        }
+        if (((indexOf t " ") < 0) && ((indexOf t ".") > 0)) {
+            def guess:BrUrl (BrUrl.parse(("https://" + t)))
+            if guess.valid {
+                return (guess.toString())
+            }
+        }
+        return ("https://fi.wikipedia.org/w/index.php?search=" + (BrUrl.encodeComponent(t)))
+    }
+
+    fn go:void (target:string push:boolean) {
+        def u:BrUrl (BrUrl.parse(target))
+        ; the same document, another place in it
+        if (hasPage && ((strlen u.fragment) > 0)) {
+            if ((u.withoutFragment()) == (page.url.withoutFragment())) {
+                this.saveScroll()
+                if push {
+                    this.pushHistory((u.toString()))
+                }
+                this.scrollToFragment(u.fragment)
+                addrText = (u.toString())
+                frameDirty = true
+                return
+            }
+        }
+        if push {
+            this.saveScroll()
+            this.pushHistory((u.toString()))
+        }
+        this.load(u)
+    }
+
+    fn pushHistory:void (url:string) {
+        ; forward entries are dropped, as in every browser
+        while ((array_length history) > (historyIndex + 1)) {
+            removeLast history
+        }
+        def e (new BrHistoryEntry())
+        e.url = url
+        push history e
+        historyIndex = ((array_length history) - 1)
+        if ((array_length history) > 100) {
+            remove_index history 0
+            historyIndex = (historyIndex - 1)
+        }
+    }
+
+    fn saveScroll:void () {
+        if ((historyIndex >= 0) && (historyIndex < (array_length history))) {
+            def e:BrHistoryEntry (itemAt history historyIndex)
+            e.scrollTop = viewport.scrollTop
+        }
+    }
+
+    fn canGoBack:boolean () {
+        return (historyIndex > 0)
+    }
+
+    fn canGoForward:boolean () {
+        return (historyIndex < ((array_length history) - 1))
+    }
+
+    fn back:void () {
+        if (this.canGoBack()) {
+            this.saveScroll()
+            historyIndex = (historyIndex - 1)
+            this.loadEntry()
+        }
+    }
+
+    fn forward:void () {
+        if (this.canGoForward()) {
+            this.saveScroll()
+            historyIndex = (historyIndex + 1)
+            this.loadEntry()
+        }
+    }
+
+    fn reload:void () {
+        if ((historyIndex >= 0) && (historyIndex < (array_length history))) {
+            this.saveScroll()
+            this.loadEntry()
+        }
+    }
+
+    fn loadEntry:void () {
+        def e:BrHistoryEntry (itemAt history historyIndex)
+        this.load((BrUrl.parse(e.url)))
+    }
+
+    fn load:void (u:BrUrl) {
+        navId = (navId + 1)
+        clear requests
+        clear open
+        addrText = (u.toString())
+        addrFocused = false
+        focusedFieldId = ""
+        frameDirty = true
+        lastError = ""
+        pendingFragment = u.fragment
+        if (u.isAbout()) {
+            this.showAbout(u "")
+            return
+        }
+        if ((policy.pageAllowed(u)) == false) {
+            this.showAbout((BrUrl.parse("about:blocked")) (u.toString()))
+            return
+        }
+        loading = true
+        loadingUrl = (u.toString())
+        statusText = ("Ladataan " + u.host + "…")
+        this.request("page" (u.withoutFragment()))
+    }
+
+    fn showAbout:void (u:BrUrl message:string) {
+        def html:string (BuiltinPages.page(u policy message samplesBase))
+        loading = false
+        this.showDocument(u html)
+        if ((u.path == "blocked") || (u.path == "error")) {
+            ; the address field keeps what was asked for
+            if ((strlen message) > 0) {
+                if (u.path == "blocked") {
+                    addrText = message
+                }
+            }
+        }
+    }
+
+    fn request:void (kind:string url:string) {
+        def r (new BrRequest())
+        r.id = nextRequestId
+        nextRequestId = (nextRequestId + 1)
+        r.kind = kind
+        r.url = url
+        r.nav = navId
+        push requests r
+        push open r
+    }
+
+    ; --- the host's side of the queue ----------------------------------------
+
+    fn pendingRequests:int () {
+        return (array_length requests)
+    }
+
+    ; "id<TAB>kind<TAB>url", or "" when there is nothing to fetch.
+    fn nextRequest:string () {
+        if ((array_length requests) == 0) {
+            return ""
+        }
+        def r:BrRequest (itemAt requests 0)
+        remove_index requests 0
+        return ((to_string r.id) + "\t" + r.kind + "\t" + r.url)
+    }
+
+    fn takeOpen@(optional):BrRequest (id:int) {
+        def i:int 0
+        while (i < (array_length open)) {
+            def r:BrRequest (itemAt open i)
+            if (r.id == id) {
+                remove_index open i
+                def hit@(optional):BrRequest r
+                return hit
+            }
+            i = (i + 1)
+        }
+        def none@(optional):BrRequest
+        return none
+    }
+
+    ; A fetch finished. `status` is the HTTP status, 0 for a network error;
+    ; `finalUrl` is where redirects ended; `body` is the text (an error
+    ; message when status is 0).
+    fn deliver:void (id:int status:int finalUrl:string contentType:string body:string) {
+        def found@(optional):BrRequest (this.takeOpen(id))
+        if (null? found) {
+            return
+        }
+        def r:BrRequest (unwrap found)
+        if (r.nav != navId) {
+            return
+        }
+        if (r.kind == "page") {
+            this.pageArrived(r status finalUrl contentType body)
+            return
+        }
+        if (r.kind == "css") {
+            def text:string ""
+            if ((status >= 200) && (status < 300)) {
+                if ((strlen body) <= policy.maxCssBytes) {
+                    text = body
+                }
+            }
+            set sheetCache r.url text
+            page.deliverSheet(r.url text)
+            this.maybeRender()
+            return
+        }
+    }
+
+    fn pageArrived:void (r:BrRequest status:int finalUrl:string contentType:string body:string) {
+        loading = false
+        def u:BrUrl (BrUrl.parse(r.url))
+        if ((strlen finalUrl) > 0) {
+            def fu:BrUrl (BrUrl.parse(finalUrl))
+            if fu.valid {
+                ; a redirect to a host that is not allowed is refused too
+                if ((policy.pageAllowed(fu)) == false) {
+                    this.showAbout((BrUrl.parse("about:blocked")) (fu.toString()))
+                    return
+                }
+                u = fu
+            }
+        }
+        if (status == 0) {
+            lastError = body
+            this.showAbout((BrUrl.parse("about:error")) body)
+            addrText = r.url
+            return
+        }
+        if ((status < 200) || (status >= 400)) {
+            if ((strlen body) == 0) {
+                this.showAbout((BrUrl.parse("about:error")) ("Palvelin vastasi: " + (to_string status)))
+                addrText = r.url
+                return
+            }
+        }
+        def ct:string (to_lowercase contentType)
+        if (((strlen ct) > 0) && (((indexOf ct "html") < 0) && ((indexOf ct "text/plain") < 0))) {
+            if ((indexOf ct "xml") < 0) {
+                this.showAbout((BrUrl.parse("about:error")) ("Tätä tiedostotyyppiä ei voi näyttää: " + contentType))
+                addrText = r.url
+                return
+            }
+        }
+        def html:string body
+        if ((strlen html) > policy.maxPageBytes) {
+            html = (substring html 0 policy.maxPageBytes)
+        }
+        if (startsWith ct "text/plain") {
+            html = ("<pre>" + (BuiltinPages.escape(html)) + "</pre>")
+        }
+        u.fragment = pendingFragment
+        if ((historyIndex >= 0) && (historyIndex < (array_length history))) {
+            def e:BrHistoryEntry (itemAt history historyIndex)
+            e.url = (u.toString())
+        }
+        this.showDocument(u html)
+    }
+
+    fn showDocument:void (u:BrUrl html:string) {
+        page = (new BrPage())
+        page.load(u html policy)
+        hasPage = true
+        addrText = (u.toString())
+        frameDirty = true
+        if ((strlen page.title) > 0) {
+            statusText = page.title
+        } {
+            statusText = ""
+        }
+        ; stylesheets: from the cache, else fetched
+        def needed:[string] (page.neededSheets(policy.maxStylesheets))
+        for needed su:string i {
+            if (has sheetCache su) {
+                page.deliverSheet(su (unwrap (get sheetCache su)))
+            } {
+                this.request("css" su)
+            }
+        }
+        sheetWaitMs = 0.0
+        if (page.sheetsReady()) {
+            this.renderPage(false)
+        } {
+            loading = true
+            statusText = "Ladataan tyylejä…"
+        }
+    }
+
+    fn maybeRender:void () {
+        if (page.sheetsReady()) {
+            if loading {
+                loading = false
+                statusText = page.title
+                frameDirty = true
+                this.renderPage(false)
+            }
+        }
+    }
+
+    ; --- images ---------------------------------------------------------------
+
+    fn imageLoaded:void (url:string w:double h:double) {
+        page.setImageSize(url w h)
+        imagesDirty = true
+    }
+
+    fn imageFailed:void (url:string) {
+        page.setImageFailed(url)
+        imagesDirty = true
+    }
+
+    fn requestImages:void () {
+        for page.imageOrder key:string i {
+            def im:BrImage (unwrap (get page.images key))
+            if ((im.known == false) && (im.failed == false)) {
+                if ((this.isRequested(key)) == false) {
+                    this.request("image" key)
+                }
+            }
+        }
+    }
+
+    fn isRequested:boolean (url:string) {
+        for open r:BrRequest i {
+            if ((r.url == url) && (r.kind == "image")) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn imageDone:void (url:string) {
+        def i:int 0
+        while (i < (array_length open)) {
+            def r:BrRequest (itemAt open i)
+            if ((r.url == url) && (r.kind == "image")) {
+                remove_index open i
+                return
+            }
+            i = (i + 1)
+        }
+    }
+
+    ; --- the page tree --------------------------------------------------------
+
+    ; Cascade (when `restyle`), convert and lay out the page for the current
+    ; width. The scroll position is kept.
+    fn renderPage:void (keepScroll:boolean) {
+        def oldScroll:double viewport.scrollTop
+        def w:double pageW
+        def ph:double (this.pageHeight())
+        page.restyle(w ph)
+        def content:EVGElement (page.render(w ph policy))
+        def vp (EVGElement.createDiv())
+        vp.id = "page"
+        vp.setAttribute("width" ((to_string w) + "px"))
+        vp.setAttribute("height" ((to_string ph) + "px"))
+        vp.setAttribute("overflow" "auto")
+        vp.setAttribute("background-color" "#ffffff")
+        vp.addChild(content)
+        viewport = vp
+        pageLayout = (this.newPageLayout())
+        pageLayout.setPageSize(w ph)
+        if keepScroll {
+            viewport.scrollTop = oldScroll
+        } {
+            viewport.scrollTop = 0.0
+            if ((historyIndex >= 0) && (historyIndex < (array_length history))) {
+                def e:BrHistoryEntry (itemAt history historyIndex)
+                if (e.url == (page.url.toString())) {
+                    viewport.scrollTop = e.scrollTop
+                }
+            }
+        }
+        this.layoutViewport()
+        fling.halt()
+        listDirty = true
+        renderCount = (renderCount + 1)
+        this.requestImages()
+        if ((strlen pendingFragment) > 0) {
+            def frag:string pendingFragment
+            pendingFragment = ""
+            this.scrollToFragment(frag)
+        }
+    }
+
+    ; Lay the same converted content out again: an image arrived.
+    fn reconvert:void () {
+        def oldScroll:double viewport.scrollTop
+        def ph:double (this.pageHeight())
+        def content:EVGElement (page.render(pageW ph policy))
+        def vp (EVGElement.createDiv())
+        vp.id = "page"
+        vp.setAttribute("width" ((to_string pageW) + "px"))
+        vp.setAttribute("height" ((to_string ph) + "px"))
+        vp.setAttribute("overflow" "auto")
+        vp.setAttribute("background-color" "#ffffff")
+        vp.addChild(content)
+        viewport = vp
+        viewport.scrollTop = oldScroll
+        pageLayout = (this.newPageLayout())
+        pageLayout.setPageSize(pageW ph)
+        this.layoutViewport()
+        listDirty = true
+        this.restoreFieldFocus()
+    }
+
+    ; Lay the page out; again if a fluid image's height was only knowable
+    ; after the first pass.
+    fn layoutViewport:void () {
+        def keep:double viewport.scrollTop
+        pageLayout.layout(viewport)
+        if (page.converter.settleFluidImages()) {
+            viewport.scrollTop = keep
+            pageLayout.layout(viewport)
+        }
+    }
+
+    fn newPageLayout:EVGLayout () {
+        def lay (new EVGLayout())
+        def m (new BrImageMeasurer())
+        m.images = page.images
+        lay.setImageMeasurer(m)
+        return lay
+    }
+
+    fn restoreFieldFocus:void () {
+        if ((strlen focusedFieldId) > 0) {
+            if ((has page.converter.fieldById focusedFieldId) == false) {
+                focusedFieldId = ""
+            }
+        }
+    }
+
+    fn scrollToFragment:void (frag:string) {
+        def target@(optional):EVGElement (this.findAnchor(viewport frag))
+        if (null? target) {
+            return
+        }
+        def el:EVGElement (unwrap target)
+        ; where it is now, relative to the viewport, plus where we are
+        def y:double ((el.calculatedY - viewport.calculatedY) + viewport.scrollTop)
+        this.scrollTo((y - 8.0))
+    }
+
+    fn findAnchor@(optional):EVGElement (el:EVGElement name:string) {
+        if (has page.converter.anchors name) {
+            def a@(optional):EVGElement (get page.converter.anchors name)
+            return a
+        }
+        def none@(optional):EVGElement
+        return none
+    }
+
+    fn scrollTo:void (y:double) {
+        viewport.scrollTop = y
+        pageLayout.scrollOnlyFrom(viewport)
+        listDirty = true
+    }
+
+    fn scrollBy:boolean (dy:double) {
+        def before:double viewport.scrollTop
+        viewport.scrollTop = (viewport.scrollTop + dy)
+        pageLayout.scrollOnlyFrom(viewport)
+        if (viewport.scrollTop != before) {
+            listDirty = true
+            return true
+        }
+        return false
+    }
+
+    fn scrollPosition:double () {
+        return viewport.scrollTop
+    }
+
+    fn scrollMax:double () {
+        return (viewport.maxScrollTop())
+    }
+
+    ; --- EvgApp: scrolling -----------------------------------------------------
+
+    fn scrollDrag:boolean (dy:double dtMs:double) {
+        fling.track(dy dtMs)
+        return (this.scrollBy(dy))
+    }
+
+    fn scrollRelease:boolean () {
+        return (fling.release())
+    }
+
+    fn scrollHalt:void () {
+        fling.halt()
+    }
+
+    ; A mouse wheel: straight to the page, no fling.
+    fn wheel:boolean (dy:double) {
+        fling.halt()
+        return (this.scrollBy(dy))
+    }
+
+    fn tick:boolean (dtMs:double) {
+        def moved:boolean false
+        if (fling.running()) {
+            def d:double (fling.step(dtMs))
+            if (d != 0.0) {
+                if (this.scrollBy(d)) {
+                    moved = true
+                } {
+                    fling.halt()
+                }
+            }
+        }
+        if loading {
+            if ((page.sheetsReady()) == false) {
+                sheetWaitMs = (sheetWaitMs + dtMs)
+                if (sheetWaitMs > 8000.0) {
+                    page.abandonSheets()
+                    this.maybeRender()
+                    moved = true
+                }
+            }
+        }
+        if imagesDirty {
+            imageRebuildMs = (imageRebuildMs + dtMs)
+            if (imageRebuildMs > 250.0) {
+                imagesDirty = false
+                imageRebuildMs = 0.0
+                if hasPage {
+                    this.reconvert()
+                    moved = true
+                }
+            }
+        }
+        if listDirty {
+            moved = true
+        }
+        if frameDirty {
+            moved = true
+        }
+        return moved
+    }
+
+    ; --- EvgApp: the pointer -------------------------------------------------
+
+    fn hitId:string (px:double py:double) {
+        if ((py < barH) || (py >= (pageH - statusH))) {
+            this.ensureFrame()
+            def ht (new EVGHitTest())
+            return (ht.idAt(frameRoot px py))
+        }
+        def ht2 (new EVGHitTest())
+        def id:string (ht2.idAt(viewport px (py - barH)))
+        if (id == "page") {
+            return ""
+        }
+        return id
+    }
+
+    fn setHover:void (id:string) {
+        if (id == hovered) {
+            return
+        }
+        hovered = id
+        frameDirty = true
+    }
+
+    fn hoveredId:string () {
+        return hovered
+    }
+
+    fn setPressed:void (id:string) {
+        pressedId = id
+        frameDirty = true
+    }
+
+    ; The link a pointer is over, for the status line.
+    fn hoverUrl:string () {
+        if (has page.converter.linkById hovered) {
+            return (unwrap (get page.converter.linkById hovered))
+        }
+        return ""
+    }
+
+    fn press:boolean (id:string) {
+        if (id == "btn-back") {
+            this.back()
+            return true
+        }
+        if (id == "btn-fwd") {
+            this.forward()
+            return true
+        }
+        if (id == "btn-reload") {
+            this.reload()
+            return true
+        }
+        if (id == "btn-home") {
+            this.navigate("about:home")
+            return true
+        }
+        if (has page.converter.linkById id) {
+            def href:string (unwrap (get page.converter.linkById id))
+            this.navigate(href)
+            return true
+        }
+        if (has page.converter.fieldById id) {
+            def f:BrField (unwrap (get page.converter.fieldById id))
+            if ((f.kind == "submit") || (f.kind == "image")) {
+                this.submitForm(f.form)
+                return true
+            }
+            if ((f.kind == "checkbox") || (f.kind == "radio")) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; --- EvgApp: fields -------------------------------------------------------
+
+    fn hasField:boolean (tid:string) {
+        if (tid == "addr") {
+            return true
+        }
+        if (has page.converter.fieldById tid) {
+            def f:BrField (unwrap (get page.converter.fieldById tid))
+            return ((f.kind == "text") || ((f.kind == "search") || ((f.kind == "url") || ((f.kind == "tel") || ((f.kind == "number") || (f.kind == "textarea"))))))
+        }
+        return false
+    }
+
+    fn focusedField:string () {
+        if addrFocused {
+            return "addr"
+        }
+        return focusedFieldId
+    }
+
+    fn setFocus:void (id:string) {
+        if (id == "addr") {
+            addrFocused = true
+            addrFresh = true
+            focusedFieldId = ""
+            frameDirty = true
+            return
+        }
+        if addrFocused {
+            addrFocused = false
+            frameDirty = true
+            if hasPage {
+                addrText = (page.url.toString())
+            }
+        }
+        def old:string focusedFieldId
+        focusedFieldId = ""
+        if (has page.converter.fieldById id) {
+            focusedFieldId = id
+        }
+        if (old != focusedFieldId) {
+            this.markFields()
+        }
+    }
+
+    fn markFields:void () {
+        for page.converter.fields f:BrField i {
+            if ((f.kind == "text") || ((f.kind == "search") || (f.kind == "textarea"))) {
+                if (f.id == focusedFieldId) {
+                    f.box.setAttribute("border" "2px solid #2b59c3")
+                } {
+                    f.box.setAttribute("border" "1px solid #9aa4b2")
+                }
+            }
+        }
+        this.relayoutPage()
+    }
+
+    fn relayoutPage:void () {
+        def oldScroll:double viewport.scrollTop
+        viewport.resetLayoutState()
+        viewport.scrollTop = oldScroll
+        pageLayout.layout(viewport)
+        listDirty = true
+    }
+
+    fn fieldStateJson:string (tid:string) {
+        def v:string (this.fieldValue(tid))
+        return ("{\"id\":\"" + tid + "\",\"text\":\"" + (BrowserApp.jsonEscape(v)) + "\"}")
+    }
+
+    fn fieldValue:string (tid:string) {
+        if (tid == "addr") {
+            return addrText
+        }
+        if (has page.converter.fieldById tid) {
+            def f:BrField (unwrap (get page.converter.fieldById tid))
+            return f.value
+        }
+        return ""
+    }
+
+    ; The whole text of a field, from a host whose platform keeps it (a web
+    ; page mirrors a real <input>, so IME, paste and undo just work).
+    fn setFieldValue:void (tid:string text:string) {
+        if (tid == "addr") {
+            addrText = text
+            addrFresh = false
+            frameDirty = true
+            return
+        }
+        if (has page.converter.fieldById tid) {
+            def f:BrField (unwrap (get page.converter.fieldById tid))
+            if (f.value != text) {
+                f.value = text
+                page.converter.showFieldText(f.label f)
+                this.relayoutPage()
+            }
+        }
+    }
+
+    fn typeText:boolean (text:string) {
+        if addrFocused {
+            if addrFresh {
+                addrText = ""
+                addrFresh = false
+            }
+            addrText = (addrText + text)
+            frameDirty = true
+            return true
+        }
+        if (has page.converter.fieldById focusedFieldId) {
+            def f:BrField (unwrap (get page.converter.fieldById focusedFieldId))
+            f.value = (f.value + text)
+            page.converter.showFieldText(f.label f)
+            this.relayoutPage()
+            return true
+        }
+        return false
+    }
+
+    fn keyWith:boolean (k:string shift:boolean ctrl:boolean) {
+        if addrFocused {
+            if (k == "Enter") {
+                addrFocused = false
+                this.navigate(addrText)
+                return true
+            }
+            if (k == "Escape") {
+                this.setFocus("")
+                return true
+            }
+            if (k == "Backspace") {
+                if addrFresh {
+                    addrText = ""
+                    addrFresh = false
+                } {
+                    addrText = (BrowserApp.dropLast(addrText))
+                }
+                frameDirty = true
+                return true
+            }
+            if ((k == "ArrowLeft") || ((k == "ArrowRight") || ((k == "End") || (k == "Home")))) {
+                addrFresh = false
+                frameDirty = true
+                return true
+            }
+            return false
+        }
+        if ((strlen focusedFieldId) > 0) {
+            if (has page.converter.fieldById focusedFieldId) {
+                def f:BrField (unwrap (get page.converter.fieldById focusedFieldId))
+                if (k == "Backspace") {
+                    f.value = (BrowserApp.dropLast(f.value))
+                    page.converter.showFieldText(f.label f)
+                    this.relayoutPage()
+                    return true
+                }
+                if (k == "Enter") {
+                    if (f.kind != "textarea") {
+                        this.submitForm(f.form)
+                        return true
+                    }
+                    f.value = (f.value + "\n")
+                    return true
+                }
+                if (k == "Escape") {
+                    this.setFocus("")
+                    return true
+                }
+            }
+            return false
+        }
+        ; the page
+        def step:double 60.0
+        def pageStep:double ((this.pageHeight()) - 60.0)
+        if (k == "ArrowDown") {
+            return (this.scrollBy(step))
+        }
+        if (k == "ArrowUp") {
+            return (this.scrollBy((0.0 - step)))
+        }
+        if ((k == "PageDown") || ((k == " ") && (shift == false))) {
+            return (this.scrollBy(pageStep))
+        }
+        if ((k == "PageUp") || ((k == " ") && shift)) {
+            return (this.scrollBy((0.0 - pageStep)))
+        }
+        if (k == "Home") {
+            this.scrollTo(0.0)
+            return true
+        }
+        if (k == "End") {
+            this.scrollTo((this.scrollMax()))
+            return true
+        }
+        if ((k == "Backspace") || ((k == "ArrowLeft") && ctrl)) {
+            this.back()
+            return true
+        }
+        if ((k == "l") && ctrl) {
+            this.setFocus("addr")
+            return true
+        }
+        if ((k == "r") && ctrl) {
+            this.reload()
+            return true
+        }
+        return false
+    }
+
+    sfn dropLast:string (s:string) {
+        def cs:[int] (to_chars s)
+        def n:int (array_length cs)
+        if (n == 0) {
+            return ""
+        }
+        def out:string ""
+        def i:int 0
+        while (i < (n - 1)) {
+            out = (out + (strfromcode (itemAt cs i)))
+            i = (i + 1)
+        }
+        return out
+    }
+
+    ; GET forms only: a search box works; anything that would post data does
+    ; not.
+    fn submitForm:void (formIndex:int) {
+        if ((formIndex < 0) || (formIndex >= (array_length page.converter.forms))) {
+            return
+        }
+        def f:BrForm (itemAt page.converter.forms formIndex)
+        if (f.method != "get") {
+            statusText = "Tämä lomake lähettäisi tietoja, joten se on poissa käytöstä."
+            frameDirty = true
+            return
+        }
+        def parts:[string]
+        for f.fieldIds fid:string i {
+            def fld:BrField (unwrap (get page.converter.fieldById fid))
+            if ((strlen fld.name) == 0) {
+                continue
+            }
+            if (fld.kind == "disabled") {
+                statusText = "Tämä lomake kysyy henkilötietoja, joten se on poissa käytöstä."
+                frameDirty = true
+                return
+            }
+            if ((fld.kind == "submit") || ((fld.kind == "button") || ((fld.kind == "checkbox") || (fld.kind == "radio")))) {
+                continue
+            }
+            push parts ((BrUrl.encodeComponent(fld.name)) + "=" + (BrUrl.encodeComponent(fld.value)))
+        }
+        def action:BrUrl (BrUrl.parse(f.action))
+        action.query = (join parts "&")
+        action.fragment = ""
+        this.navigate((action.toString()))
+    }
+
+    ; --- the frame ------------------------------------------------------------
+
+    sfn frameCss:string () {
+        def s:string ".frame { display: flex; flex-direction: column; background-color: #eef2f8; }"
+        s = (s + ".bar { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 8px 10px; column-gap: 6px; background-color: #2b3a67; width: 100%; }")
+        s = (s + ".btn { width: 40px; height: 40px; border-radius: 20px; background-color: #3d5192; display: flex; flex-direction: row; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; }")
+        s = (s + ".btn:hover { background-color: #5a70c0; }")
+        s = (s + ".btn-off { opacity: 0.35; }")
+        s = (s + ".btn-t { color: #ffffff; font-size: 20px; font-weight: bold; }")
+        s = (s + ".addr { flex-grow: 1; height: 40px; border-radius: 20px; background-color: #ffffff; padding: 0px 16px; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; cursor: text; margin-left: 6px; }")
+        s = (s + ".addr-on { border: 3px solid #ffcc33; }")
+        s = (s + ".addr-t { font-size: 16px; color: #1a1a1a; white-space: pre; }")
+        s = (s + ".addr-hint { font-size: 16px; color: #8a94a3; white-space: pre; }")
+        s = (s + ".lock { font-size: 14px; color: #2d8a5f; white-space: pre; }")
+        s = (s + ".caret { width: 2px; height: 22px; background-color: #2b59c3; }")
+        s = (s + ".gap { flex-grow: 1; }")
+        s = (s + ".status { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 3px 12px; background-color: #eef1f6; width: 100%; }")
+        s = (s + ".status-t { font-size: 13px; color: #4a5568; white-space: pre; }")
+        s = (s + ".status-busy { color: #b7791f; }")
+        s = (s + "@media (pointer: coarse) { .btn { width: 48px; height: 48px; border-radius: 24px; } .addr { height: 48px; } }")
+        return s
+    }
+
+    fn button:EVGElement (id:string glyph:string enabled:boolean) {
+        def b (EVGElement.createDiv())
+        b.id = id
+        b.className = "btn"
+        if (enabled == false) {
+            b.className = "btn btn-off"
+        }
+        if (hovered == id) {
+            b.isHovered = true
+        }
+        def t (EVGElement.createSpan())
+        t.className = "btn-t"
+        t.textContent = glyph
+        b.addChild(t)
+        return b
+    }
+
+    fn buildFrame:void () {
+        def root (EVGElement.createDiv())
+        root.className = "frame"
+        root.setAttribute("width" ((to_string pageW) + "px"))
+        root.setAttribute("height" ((to_string pageH) + "px"))
+        def bar (EVGElement.createDiv())
+        bar.className = "bar"
+        bar.setAttribute("height" ((to_string barH) + "px"))
+        bar.addChild((this.button("btn-back" "←" (this.canGoBack()))))
+        ; a phone keeps the address field wide: forward and reload go
+        if (pageW >= 520.0) {
+            bar.addChild((this.button("btn-fwd" "→" (this.canGoForward()))))
+            bar.addChild((this.button("btn-reload" "↻" true)))
+        }
+        bar.addChild((this.button("btn-home" "⌂" true)))
+        def addr (EVGElement.createDiv())
+        addr.id = "addr"
+        addr.className = "addr"
+        if addrFocused {
+            addr.className = "addr addr-on"
+        }
+        def shown:string (this.addressShown())
+        if (((addrFocused == false) && (startsWith addrText "https://")) && hasPage) {
+            def lk (EVGElement.createSpan())
+            lk.className = "lock"
+            lk.textContent = "🔒 "
+            addr.addChild(lk)
+        }
+        def at (EVGElement.createSpan())
+        at.className = "addr-t"
+        if ((strlen shown) == 0) {
+            at.className = "addr-hint"
+            at.textContent = "Kirjoita osoite tai hakusana"
+            if addrFocused {
+                at.textContent = ""
+            }
+        } {
+            at.textContent = shown
+        }
+        addr.addChild(at)
+        if addrFocused {
+            def caret (EVGElement.createDiv())
+            caret.className = "caret"
+            addr.addChild(caret)
+        }
+        bar.addChild(addr)
+        root.addChild(bar)
+        def gap (EVGElement.createDiv())
+        gap.className = "gap"
+        root.addChild(gap)
+        def status (EVGElement.createDiv())
+        status.className = "status"
+        status.setAttribute("height" ((to_string statusH) + "px"))
+        def stt (EVGElement.createSpan())
+        stt.className = "status-t"
+        if loading {
+            stt.className = "status-t status-busy"
+        }
+        stt.textContent = (this.statusLine())
+        status.addChild(stt)
+        root.addChild(status)
+        frameSheet.applyTreeIn(root "" pageW pageH coarse)
+        def lay (new EVGLayout())
+        lay.setPageSize(pageW pageH)
+        lay.layout(root)
+        def dl (new EVGDisplayList())
+        dl.setTextEngine((lay.getTextEngine()))
+        dl.build(root)
+        frameRoot = root
+        frameList = dl
+        frameDirty = false
+    }
+
+    ; The address as shown: without `https://` when it is not being edited,
+    ; and cut to fit.
+    fn addressShown:string () {
+        def t:string addrText
+        if (addrFocused == false) {
+            if (startsWith t "https://") {
+                t = (substring t 8 (strlen t))
+            }
+            if (endsWith t "/") {
+                if ((BrowserApp.countChar(t 47)) == 1) {
+                    t = (substring t 0 ((strlen t) - 1))
+                }
+            }
+        }
+        def maxChars:int (to_int ((pageW - 260.0) / 8.5))
+        if (maxChars < 12) {
+            maxChars = 12
+        }
+        def cs:[int] (to_chars t)
+        if ((array_length cs) > maxChars) {
+            if addrFocused {
+                ; the end, where the caret is
+                def out:string "…"
+                def i:int ((array_length cs) - maxChars)
+                while (i < (array_length cs)) {
+                    out = (out + (strfromcode (itemAt cs i)))
+                    i = (i + 1)
+                }
+                return out
+            }
+            def out2:string ""
+            def j:int 0
+            while (j < maxChars) {
+                out2 = (out2 + (strfromcode (itemAt cs j)))
+                j = (j + 1)
+            }
+            return (out2 + "…")
+        }
+        return t
+    }
+
+    sfn countChar:int (s:string c:int) {
+        def n:int 0
+        def i:int 0
+        while (i < (strlen s)) {
+            if ((charAt s i) == c) {
+                n = (n + 1)
+            }
+            i = (i + 1)
+        }
+        return n
+    }
+
+    fn statusLine:string () {
+        def link:string (this.hoverUrl())
+        if ((strlen link) > 0) {
+            if (startsWith link "about:") {
+                return link
+            }
+            def lu:BrUrl (BrUrl.parse(link))
+            if ((policy.pageAllowed(lu)) == false) {
+                return ("🚧 " + link + "  (ei sallittu)")
+            }
+            return link
+        }
+        return statusText
+    }
+
+    fn ensureFrame:void () {
+        if frameDirty {
+            this.buildFrame()
+        }
+    }
+
+    ; --- EvgApp: the frame -----------------------------------------------------
+
+    fn display:EVGDisplayList () {
+        this.ensureFrame()
+        if listDirty {
+            def dl (new EVGDisplayList())
+            dl.setTextEngine((pageLayout.getTextEngine()))
+            dl.setScrollbars(true)
+            dl.build(viewport)
+            dl.offsetBy(0.0 barH)
+            pageList = dl
+            listDirty = false
+        }
+        def out (new EVGDisplayList())
+        out.appendFrom(frameList)
+        if hasPage {
+            out.appendFrom(pageList)
+        }
+        return out
+    }
+
+    ; The frame as the JSON the web painters read.
+    fn frameJson:string () {
+        def dl:EVGDisplayList (this.display())
+        return ("{\"width\":" + (to_string pageW) + ",\"height\":" + (to_string pageH) + ",\"list\":" + (dl.toJson()) + "}")
+    }
+
+    fn rebuild:void () {
+        frameDirty = true
+    }
+
+    fn sceneName:string () {
+        return (page.url.toString())
+    }
+
+    fn openRoute:boolean (route:string) {
+        this.navigate(route)
+        return true
+    }
+
+    ; --- for checks and hosts ----------------------------------------------
+
+    fn currentUrl:string () {
+        return (page.url.toString())
+    }
+
+    fn pageTitle:string () {
+        return page.title
+    }
+
+    fn isLoading:boolean () {
+        return loading
+    }
+
+    fn linkCount:int () {
+        return (array_length page.converter.links)
+    }
+
+    fn linkIdFor:string (href:string) {
+        for page.converter.links l:BrLink i {
+            if (l.href == href) {
+                return l.id
+            }
+        }
+        return ""
+    }
+
+    fn contentHeight:double () {
+        return viewport.scrollHeight
+    }
+
+    fn allowedSitesText:string () {
+        return (policy.allowedText())
+    }
+
+    fn setAllowedSites:void (text:string) {
+        policy.setAllowedText(text)
+    }
+
+    ; The host's own sample pages, which are then also allowed.
+    fn setSamplesBase:void (url:string) {
+        samplesBase = url
+        def u:BrUrl (BrUrl.parse(url))
+        if ((strlen u.host) > 0) {
+            if ((policy.hostAllowed(u.host)) == false) {
+                push policy.allowed u.host
+            }
+        }
+    }
+
+    fn setImagesEnabled:void (on:boolean) {
+        policy.showImages = on
+    }
+
+    sfn jsonEscape:string (s:string) {
+        def t:string (replace s "\\" "\\\\")
+        t = (replace t "\"" "\\\"")
+        t = (replace t "\n" "\\n")
+        return t
+    }
+}
+
+; The host every platform wraps: EvgHost's press/drag/fling/keyboard handling
+; around the browser. A platform names it (one line) and adds its glue.
+class BrowserHost extends EvgHost {
+    def browser:BrowserApp (new BrowserApp())
+
+    Constructor () {
+        app = browser
+    }
+
+    fn startAt:void (w:double h:double coarse:boolean url:string) {
+        this.began(w h coarse)
+        browser.start(url)
+    }
+
+    fn wheel:boolean (dy:double) {
+        return (browser.wheel(dy))
+    }
+}

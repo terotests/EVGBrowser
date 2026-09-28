@@ -1,0 +1,133 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; SafetyPolicy — where this browser may go, and what it will show there.
+; ==============================================================================
+;
+; The browser is meant for children, so the policy is an ALLOWLIST: a page is
+; loaded only from a host on the list (or a subdomain of one). Everything
+; else is answered with the browser's own "not allowed" page, which says
+; which address was refused, so a parent can add it if they want to.
+;
+; What the engine never does, whatever the list says, is not policy but
+; design, and lives in the converter: no scripts are run, no video, audio,
+; iframes, plugins or canvases are shown, forms are submitted only with GET
+; (a search box works, a login form does not), and nothing is ever
+; positioned over the page (`position: fixed` and `absolute` are ignored),
+; so a page cannot put up a pop-up.
+;
+; The list is data. A host may replace it (`setAllowed`) from a parent's
+; settings; `defaults` is what ships.
+; ==============================================================================
+
+Import "BrUrl.rgr"
+
+class SafetyPolicy {
+    def allowed:[string]
+    ; false turns the allowlist off (an "open" mode for grown-ups); the
+    ; engine's own restrictions stay on
+    def enforce:boolean true
+    def maxPageBytes:int 4000000
+    def maxCssBytes:int 1500000
+    def maxStylesheets:int 8
+    def showImages:boolean true
+
+    Constructor () {
+        def a:[string]
+        allowed = a
+        this.defaults()
+    }
+
+    fn defaults:void () {
+        clear allowed
+        ; news
+        push allowed "yle.fi"
+        ; encyclopedias
+        push allowed "wikipedia.org"
+        push allowed "wikimedia.org"
+        push allowed "vikidia.org"
+        ; libraries, museums, science for children
+        push allowed "kirjastot.fi"
+        push allowed "luontoportti.com"
+        push allowed "tiedekeskus.fi"
+        push allowed "heureka.fi"
+        push allowed "korkeasaari.fi"
+        push allowed "nasa.gov"
+        push allowed "esa.int"
+        push allowed "bbc.co.uk"
+        push allowed "natgeokids.com"
+        ; small, plain pages that are good for testing
+        push allowed "example.com"
+        push allowed "info.cern.ch"
+        push allowed "terotests.github.io"
+    }
+
+    fn setAllowed:void (list:[string]) {
+        clear allowed
+        for list h:string i {
+            def t:string (to_lowercase (trim h))
+            if ((strlen t) > 0) {
+                push allowed t
+            }
+        }
+    }
+
+    ; A comma or newline separated list, as a settings field holds it.
+    fn setAllowedText:void (text:string) {
+        def items:[string] (strsplit (replace text "\n" ",") ",")
+        this.setAllowed(items)
+    }
+
+    fn allowedText:string () {
+        return (join allowed ", ")
+    }
+
+    fn hostAllowed:boolean (host:string) {
+        if (enforce == false) {
+            return true
+        }
+        def h:string (to_lowercase host)
+        for allowed a:string i {
+            if (h == a) {
+                return true
+            }
+            if (endsWith h ("." + a)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; May a page at this URL be loaded? `about:` pages always may.
+    fn pageAllowed:boolean (u:BrUrl) {
+        if (u.isAbout()) {
+            return true
+        }
+        if ((u.isWeb()) == false) {
+            return false
+        }
+        return (this.hostAllowed(u.host))
+    }
+
+    ; Why not, in words for the "not allowed" page.
+    fn reasonFor:string (u:BrUrl) {
+        if ((u.isWeb()) == false) {
+            if ((strlen u.scheme) > 0) {
+                return ("Osoitteet, jotka alkavat \"" + u.scheme + ":\", eivät toimi tässä selaimessa.")
+            }
+            return "Tämä ei näytä verkko-osoitteelta."
+        }
+        return ("Sivusto " + u.host + " ei ole sallittujen sivustojen listalla.")
+    }
+
+    ; Images are fetched from wherever an allowed page points (news photos
+    ; come from a CDN on another host); they can be switched off entirely.
+    fn imageAllowed:boolean (u:BrUrl) {
+        if (showImages == false) {
+            return false
+        }
+        if (u.scheme == "data") {
+            return true
+        }
+        return (u.isWeb())
+    }
+}

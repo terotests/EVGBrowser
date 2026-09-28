@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Esimerkkiuutiset – EVG Browserin testisivu</title>
+<link rel="stylesheet" href="uutiset.css">
+<script>window.dataLayer = []; document.documentElement.className += " js";</script>
+<script src="https://tracker.example/track.js" async></script>
+</head>
+<body>
+<a class="visually-hidden" href="#content">Siirry sisältöön</a>
+<header class="site-header">
+  <div class="site-header__inner">
+    <a class="logo" href="uutiset.html">Esimerkki<span>uutiset</span></a>
+    <nav class="main-nav" aria-label="Päävalikko">
+      <ul>
+        <li><a href="uutiset.html" aria-current="page">Etusivu</a></li>
+        <li><a href="#tiede">Tiede</a></li>
+        <li><a href="#luonto">Luonto</a></li>
+        <li><a href="#saa">Sää</a></li>
+        <li><a href="https://yle.fi/selkouutiset">Selkouutiset</a></li>
+      </ul>
+    </nav>
+    <button class="search-toggle" type="button"><svg width="20" height="20"><circle cx="8" cy="8" r="6"/></svg> Haku</button>
+  </div>
+</header>
+
+<main id="content">
+  <div class="breaking"><strong>Tiedote:</strong> Tämä on EVG Browserin esimerkkisivu. Uutiset ovat keksittyjä, mutta sivun rakenne ja tyylit on kirjoitettu kuten oikeilla uutissivuilla.</div>
+
+  <article class="lead-story">
+    <div>
+      <span class="tag">Tiede</span>
+      <h1><a href="#tiede">Koululaiset löysivät pihalta uuden kovakuoriaislajin</a></h1>
+      <p>Viidesluokkalaiset tutkivat koulun pihaa suurennuslasien kanssa ja huomasivat kuoriaisen, jota kukaan ei ollut aiemmin kuvannut Suomessa.</p>
+      <p class="meta">Julkaistu <time datetime="2026-09-28T08:00">28.9.2026 klo 8.00</time> · Lukuaika 3 min</p>
+    </div>
+    <img src="kuva-metsa.svg" alt="Metsä ja aurinko" width="640" height="360">
+  </article>
+
+  <h2 class="section-title" id="tiede">Tuoreimmat</h2>
+  <div class="card-grid">
+    <div class="card"><a href="#luonto"><img src="kuva-meri.svg" alt="Meri" width="640" height="360"><div class="card__body"><span class="tag">Luonto</span><h3 class="card__title">Valaat laulavat pidempiä lauluja kuin ennen</h3><p class="card__text">Tutkijat nauhoittivat valaiden lauluja kymmenen vuoden ajan.</p></div></a></div>
+    <div class="card"><a href="#tiede"><img src="kuva-avaruus.svg" alt="Planeetta" width="640" height="360"><div class="card__body"><span class="tag">Avaruus</span><h3 class="card__title">Saturnuksen renkaat näkyvät tänä syksynä hyvin</h3><p class="card__text">Kaukoputkella renkaat erottuvat jo pienellä suurennoksella.</p></div></a></div>
+    <div class="card"><a href="#kulttuuri"><img src="kuva-kirjasto.svg" alt="Kirjahylly" width="640" height="360"><div class="card__body"><span class="tag">Kulttuuri</span><h3 class="card__title">Kirjastot lainasivat kesällä ennätysmäärän sarjakuvia</h3><p class="card__text">Suosituimpia olivat seikkailusarjat ja eläintarinat.</p></div></a></div>
+    <div class="card"><a href="#luonto"><img data-src="kuva-metsa.svg" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="Metsä" width="640" height="360" loading="lazy"><div class="card__body"><span class="tag">Luonto</span><h3 class="card__title">Mustikkasato oli tänä vuonna runsas</h3><p class="card__text">Kuva on laiskasti ladattava, kuten monilla sivuilla (data-src).</p></div></a></div>
+  </div>
+
+  <section class="most-read" id="luonto">
+    <h2 class="section-title">Luetuimmat</h2>
+    <ol>
+      <li><a href="#tiede">Miksi taivas on sininen? Fyysikko vastaa lasten kysymyksiin</a></li>
+      <li><a href="#saa">Ensimmäinen pakkasyö koetaan Lapissa tällä viikolla</a></li>
+      <li><a href="https://fi.wikipedia.org/wiki/Siili">Siilit valmistautuvat talviuneen – lue lisää Wikipediasta</a></li>
+      <li><a href="https://www.youtube.com/watch?v=x">Katso video (tämä linkki on estetty)</a></li>
+    </ol>
+  </section>
+
+  <section id="saa">
+    <h2 class="section-title">Sää</h2>
+    <div class="weather">
+      <div class="weather__day"><div>Ma</div><div class="weather__temp">12°</div><div>☀️</div></div>
+      <div class="weather__day"><div>Ti</div><div class="weather__temp">9°</div><div>🌧️</div></div>
+      <div class="weather__day"><div>Ke</div><div class="weather__temp">7°</div><div>⛅</div></div>
+      <div class="weather__day"><div>To</div><div class="weather__temp">5°</div><div>🌬️</div></div>
+    </div>
+  </section>
+
+  <section id="kulttuuri">
+    <h2 class="section-title">Video</h2>
+    <video controls poster="kuva-meri.svg"><source src="video.mp4" type="video/mp4"></video>
+    <iframe src="https://www.youtube.com/embed/x" width="560" height="315"></iframe>
+  </section>
+</main>
+
+<div class="cookie-banner">Hyväksy evästeet! <button>OK</button></div>
+
+<footer class="site-footer">
+  <p>Esimerkkiuutiset on EVG Browserin testisivu. <a href="about:home">Selaimen aloitussivu</a></p>
+</footer>
+<noscript><p>Tämä sivu toimii ilman JavaScriptiä.</p></noscript>
+<script>console.log("never run")</script>
+</body>
+</html>

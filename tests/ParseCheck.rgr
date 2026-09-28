@@ -1,0 +1,34 @@
+Import "../src/BrUrl.rgr"
+Import "../src/HtmlParser.rgr"
+class ParseCheck {
+  sfn dump:void (n:HNode depth:int) {
+    def pad:string ""
+    def i:int 0
+    while (i < depth) {
+      pad = (pad + "  ")
+      i = (i + 1)
+    }
+    if n.isText {
+      print (pad + "\"" + n.text + "\"")
+      return
+    }
+    print (pad + "<" + n.tag + ">" + (join n.attrNames ","))
+    for n.children c:HNode k {
+      ParseCheck.dump(c (depth + 1))
+    }
+  }
+  sfn main:void () {
+    def d:HNode (HtmlParser.parseDocument("<!doctype html><html><head><title>T &amp; t</title><style>p{color:red}</style></head><body><p>Hei <b>maailma</b>&auml;&#228;&#x41;<p>Toinen<ul><li>a<li>b<ul><li>c</ul></ul><img src=x.png alt='kuva'><br/>loppu</body></html>"))
+    ParseCheck.dump(d 0)
+    def b:BrUrl (BrUrl.parse("https://yle.fi/uutiset/a/b?x=1#h"))
+    print (b.toString())
+    print ((b.resolve("../c")).toString())
+    print ((b.resolve("/d/./e/../f")).toString())
+    print ((b.resolve("//example.com/z")).toString())
+    print ((b.resolve("?q=2")).toString())
+    print ((b.resolve("#top")).toString())
+    print ((BrUrl.parse("https://yle.fi@evil.example:8080/x")).host)
+    print (BrUrl.encodeComponent("kissa ja ä"))
+    print (BrUrl.decodeComponent("kissa+ja+%C3%A4"))
+  }
+}

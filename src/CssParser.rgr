@@ -1,0 +1,788 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; CssParser — the author's stylesheets, as rules with real selectors.
+; ==============================================================================
+;
+; EVG's own stylesheet is class-only on purpose (lib/evg/README.md, "The CSS
+; subset"). A web page is not written that way: it uses element names, ids,
+; descendant and child combinators and attribute tests. This file and
+; `CssCascade` are the layer that answers those selectors ABOVE EVG: the
+; cascade resolves every element's properties here, and what reaches EVG is
+; the result, written inline on each element. EVG is not changed.
+;
+; What is understood:
+;
+;   selectors   `*`, `p`, `.a`, `#b`, `p.a.b`, `[attr]`, `[attr=v]`,
+;               `a b`, `a > b`, lists `a, b`, and the pseudo-classes
+;               `:link`, `:first-child`, `:last-child`, `:not(simple)`.
+;               A selector with anything else in it (`:hover`, `::before`,
+;               `+`, `~`, …) is kept but never matches, which is the safe
+;               answer: a rule that styles nothing is better than one that
+;               styles everything.
+;   at-rules    `@media` is evaluated against the viewport (`screen`, `all`,
+;               min/max-width, `prefers-color-scheme: light`); `@supports`
+;               blocks are read as if supported; everything else
+;               (`@font-face`, `@keyframes`, `@import`, …) is skipped.
+;   values      kept as text, with `!important` split off. Shorthands are
+;               expanded by the cascade, not here.
+; ==============================================================================
+
+class CssCompound {
+    def tag:string ""
+    def id:string ""
+    def classes:[string]
+    def attrNames:[string]
+    def attrOps:[string]
+    def attrValues:[string]
+    def pseudos:[string]
+    ; the combinator to the compound on the LEFT: " " descendant, ">" child
+    def combinator:string ""
+    ; one :not(...) per entry
+    def nots:[CssCompound]
+    ; something in it this engine cannot evaluate
+    def never:boolean false
+
+    Constructor () {
+        def c:[string]
+        classes = c
+        def an:[string]
+        attrNames = an
+        def ao:[string]
+        attrOps = ao
+        def av:[string]
+        attrValues = av
+        def ps:[string]
+        pseudos = ps
+        def ns:[CssCompound]
+        nots = ns
+    }
+}
+
+class CssSelector {
+    ; right to left: parts[0] is the subject
+    def parts:[CssCompound]
+    def specificity:int 0
+    def never:boolean false
+
+    Constructor () {
+        def p:[CssCompound]
+        parts = p
+    }
+
+    fn subject:CssCompound () {
+        return (itemAt parts 0)
+    }
+}
+
+class CssDecl {
+    def name:string ""
+    def value:string ""
+    def important:boolean false
+}
+
+class CssRule {
+    def selectors:[CssSelector]
+    def decls:[CssDecl]
+    def order:int 0
+    ; 0 user agent, 1 author
+    def origin:int 1
+
+    Constructor () {
+        def s:[CssSelector]
+        selectors = s
+        def d:[CssDecl]
+        decls = d
+    }
+}
+
+class CssParser {
+    def src:string ""
+    def pos:int 0
+    def len:int 0
+    def rules:[CssRule]
+    def viewportWidth:double 1024.0
+    def viewportHeight:double 768.0
+    def nextOrder:int 0
+    def origin:int 1
+    def maxRules:int 20000
+
+    Constructor () {
+        def r:[CssRule]
+        rules = r
+    }
+
+    fn parseSheet:void (css:string) {
+        src = (CssParser.stripComments(css))
+        pos = 0
+        len = (strlen src)
+        this.parseBlockContents(false)
+    }
+
+    ; Rules until the end of input, or until a `}` when `nested`.
+    fn parseBlockContents:void (nested:boolean) {
+        while (pos < len) {
+            this.skipSpace()
+            if (pos >= len) {
+                return
+            }
+            def c:int (charAt src pos)
+            if (c == 125) {
+                if nested {
+                    pos = (pos + 1)
+                    return
+                }
+                pos = (pos + 1)
+                continue
+            }
+            if (c == 64) {
+                this.parseAtRule()
+                continue
+            }
+            if ((array_length rules) > maxRules) {
+                pos = len
+                return
+            }
+            this.parseRule()
+        }
+    }
+
+    fn parseAtRule:void () {
+        def start:int pos
+        pos = (pos + 1)
+        while (pos < len) {
+            def c:int (charAt src pos)
+            if ((c == 123) || ((c == 59) || (CssParser.isSpace(c)))) {
+                break
+            }
+            pos = (pos + 1)
+        }
+        def name:string (to_lowercase (substring src (start + 1) pos))
+        ; the prelude runs to `{` or `;`
+        def ps:int pos
+        while (pos < len) {
+            def c2:int (charAt src pos)
+            if ((c2 == 123) || (c2 == 59)) {
+                break
+            }
+            pos = (pos + 1)
+        }
+        def prelude:string (trim (substring src ps pos))
+        if (pos >= len) {
+            return
+        }
+        if ((charAt src pos) == 59) {
+            pos = (pos + 1)
+            return
+        }
+        ; a block
+        pos = (pos + 1)
+        if (name == "media") {
+            if (this.mediaMatches(prelude)) {
+                this.parseBlockContents(true)
+            } {
+                this.skipBlock()
+            }
+            return
+        }
+        if ((name == "supports") || (name == "layer")) {
+            this.parseBlockContents(true)
+            return
+        }
+        this.skipBlock()
+    }
+
+    ; pos is just past a `{`: skip to the matching `}`.
+    fn skipBlock:void () {
+        def depth:int 1
+        while (pos < len) {
+            def c:int (charAt src pos)
+            if (c == 123) {
+                depth = (depth + 1)
+            }
+            if (c == 125) {
+                depth = (depth - 1)
+                if (depth == 0) {
+                    pos = (pos + 1)
+                    return
+                }
+            }
+            if ((c == 34) || (c == 39)) {
+                this.skipString(c)
+                continue
+            }
+            pos = (pos + 1)
+        }
+    }
+
+    fn skipString:void (q:int) {
+        pos = (pos + 1)
+        while (pos < len) {
+            def c:int (charAt src pos)
+            if (c == 92) {
+                pos = (pos + 2)
+                continue
+            }
+            pos = (pos + 1)
+            if (c == q) {
+                return
+            }
+        }
+    }
+
+    fn parseRule:void () {
+        def ss:int pos
+        while (pos < len) {
+            def c:int (charAt src pos)
+            if (c == 123) {
+                break
+            }
+            if (c == 125) {
+                ; a stray `}` or garbage: drop what we read
+                return
+            }
+            if ((c == 34) || (c == 39)) {
+                this.skipString(c)
+                continue
+            }
+            pos = (pos + 1)
+        }
+        if (pos >= len) {
+            return
+        }
+        def selText:string (substring src ss pos)
+        pos = (pos + 1)
+        def bs:int pos
+        def depth:int 1
+        while (pos < len) {
+            def c2:int (charAt src pos)
+            if ((c2 == 34) || (c2 == 39)) {
+                this.skipString(c2)
+                continue
+            }
+            if (c2 == 123) {
+                depth = (depth + 1)
+            }
+            if (c2 == 125) {
+                depth = (depth - 1)
+                if (depth == 0) {
+                    break
+                }
+            }
+            pos = (pos + 1)
+        }
+        def body:string (substring src bs pos)
+        pos = (pos + 1)
+        def rule (new CssRule())
+        rule.origin = origin
+        rule.order = nextOrder
+        nextOrder = (nextOrder + 1)
+        def sels:[string] (CssParser.splitTop(selText 44))
+        for sels st:string i {
+            def sel:CssSelector (CssParser.parseSelector((trim st)))
+            if ((array_length sel.parts) > 0) {
+                push rule.selectors sel
+            }
+        }
+        if ((array_length rule.selectors) == 0) {
+            return
+        }
+        rule.decls = (CssParser.parseDeclarations(body))
+        if ((array_length rule.decls) == 0) {
+            return
+        }
+        push rules rule
+    }
+
+    fn skipSpace:void () {
+        while (pos < len) {
+            if ((CssParser.isSpace((charAt src pos))) == false) {
+                return
+            }
+            pos = (pos + 1)
+        }
+    }
+
+    ; --- media ----------------------------------------------------------------
+
+    fn mediaMatches:boolean (prelude:string) {
+        def q:string (to_lowercase (trim prelude))
+        if ((strlen q) == 0) {
+            return true
+        }
+        ; a list: any one matching is enough
+        def alts:[string] (CssParser.splitTop(q 44))
+        for alts alt:string i {
+            if (this.mediaQueryMatches((trim alt))) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn mediaQueryMatches:boolean (q:string) {
+        def s:string q
+        def negate:boolean false
+        if (startsWith s "not ") {
+            negate = true
+            s = (trim (substring s 4 (strlen s)))
+        }
+        if (startsWith s "only ") {
+            s = (trim (substring s 5 (strlen s)))
+        }
+        def parts:[string] (strsplit s " and ")
+        def ok:boolean true
+        for parts part:string i {
+            def p:string (trim part)
+            if ((strlen p) == 0) {
+                continue
+            }
+            if (startsWith p "(") {
+                if ((this.featureMatches(p)) == false) {
+                    ok = false
+                }
+            } {
+                if ((p != "screen") && (p != "all")) {
+                    ok = false
+                }
+            }
+        }
+        if negate {
+            return (ok == false)
+        }
+        return ok
+    }
+
+    fn featureMatches:boolean (paren:string) {
+        def inner:string (trim (substring paren 1 ((strlen paren) - 1)))
+        def colon:int (indexOf inner ":")
+        if (colon < 0) {
+            ; `(color)`, `(hover)` …: true on a screen
+            if ((inner == "color") || (inner == "hover")) {
+                return true
+            }
+            return false
+        }
+        def name:string (trim (substring inner 0 colon))
+        def value:string (trim (substring inner (colon + 1) (strlen inner)))
+        if (name == "prefers-color-scheme") {
+            return (value == "light")
+        }
+        if (name == "prefers-reduced-motion") {
+            return (value == "reduce")
+        }
+        if (name == "orientation") {
+            if (viewportWidth >= viewportHeight) {
+                return (value == "landscape")
+            }
+            return (value == "portrait")
+        }
+        if ((name == "hover") || (name == "any-hover")) {
+            return (value == "hover")
+        }
+        if ((name == "pointer") || (name == "any-pointer")) {
+            return (value == "fine")
+        }
+        def px:double (CssParser.mediaLength(value))
+        if (px < 0.0) {
+            return false
+        }
+        if (name == "min-width") {
+            return (viewportWidth >= px)
+        }
+        if (name == "max-width") {
+            return (viewportWidth <= px)
+        }
+        if (name == "min-height") {
+            return (viewportHeight >= px)
+        }
+        if (name == "max-height") {
+            return (viewportHeight <= px)
+        }
+        if (name == "width") {
+            return (viewportWidth == px)
+        }
+        return false
+    }
+
+    sfn mediaLength:double (v:string) {
+        if (endsWith v "px") {
+            return (CssParser.num((substring v 0 ((strlen v) - 2))))
+        }
+        if (endsWith v "rem") {
+            return ((CssParser.num((substring v 0 ((strlen v) - 3)))) * 16.0)
+        }
+        if (endsWith v "em") {
+            return ((CssParser.num((substring v 0 ((strlen v) - 2)))) * 16.0)
+        }
+        return (CssParser.num(v))
+    }
+
+    ; --- selectors ------------------------------------------------------------
+
+    sfn parseSelector:CssSelector (text:string) {
+        def sel (new CssSelector())
+        def n:int (strlen text)
+        def i:int 0
+        def lefts:[CssCompound]
+        def pendingComb:string ""
+        while (i < n) {
+            def c:int (charAt text i)
+            if (CssParser.isSpace(c)) {
+                if ((array_length lefts) > 0) {
+                    if (pendingComb == "") {
+                        pendingComb = " "
+                    }
+                }
+                i = (i + 1)
+                continue
+            }
+            if ((c == 62) || ((c == 43) || (c == 126))) {
+                pendingComb = (substring text i (i + 1))
+                i = (i + 1)
+                continue
+            }
+            ; a compound runs until whitespace or a combinator, outside ( [ )
+            def start:int i
+            def depth:int 0
+            while (i < n) {
+                def d:int (charAt text i)
+                if ((d == 40) || (d == 91)) {
+                    depth = (depth + 1)
+                }
+                if ((d == 41) || (d == 93)) {
+                    depth = (depth - 1)
+                }
+                if (depth <= 0) {
+                    if ((CssParser.isSpace(d)) || ((d == 62) || ((d == 43) || (d == 126)))) {
+                        break
+                    }
+                }
+                i = (i + 1)
+            }
+            def comp:CssCompound (CssParser.parseCompound((substring text start i)))
+            if ((array_length lefts) > 0) {
+                if ((pendingComb == "+") || (pendingComb == "~")) {
+                    sel.never = true
+                }
+                comp.combinator = pendingComb
+            }
+            pendingComb = ""
+            push lefts comp
+        }
+        ; right to left; the combinator is stored on the right-hand compound
+        ; and describes its relation to the one on its left
+        def k:int ((array_length lefts) - 1)
+        while (k >= 0) {
+            def cp:CssCompound (itemAt lefts k)
+            if cp.never {
+                sel.never = true
+            }
+            push sel.parts cp
+            k = (k - 1)
+        }
+        sel.specificity = (CssParser.specificityOf(sel))
+        return sel
+    }
+
+    sfn parseCompound:CssCompound (text:string) {
+        def cp (new CssCompound())
+        def n:int (strlen text)
+        def i:int 0
+        while (i < n) {
+            def c:int (charAt text i)
+            if (c == 42) {
+                i = (i + 1)
+                continue
+            }
+            if ((c == 46) || (c == 35)) {
+                def s:int (i + 1)
+                i = (i + 1)
+                while (i < n) {
+                    def d:int (charAt text i)
+                    if ((d == 46) || ((d == 35) || ((d == 91) || (d == 58)))) {
+                        break
+                    }
+                    i = (i + 1)
+                }
+                def name:string (CssParser.unescapeIdent((substring text s i)))
+                if (c == 46) {
+                    push cp.classes name
+                } {
+                    cp.id = name
+                }
+                continue
+            }
+            if (c == 91) {
+                def close:int (indexOfFrom text "]" i)
+                if (close < 0) {
+                    close = n
+                }
+                def inside:string (trim (substring text (i + 1) close))
+                i = (close + 1)
+                def eq:int (indexOf inside "=")
+                if (eq < 0) {
+                    push cp.attrNames (to_lowercase inside)
+                    push cp.attrOps ""
+                    push cp.attrValues ""
+                } {
+                    def op:string "="
+                    def nameEnd:int eq
+                    if (eq > 0) {
+                        def pc:int (charAt inside (eq - 1))
+                        if ((pc == 126) || ((pc == 94) || ((pc == 36) || ((pc == 42) || (pc == 124))))) {
+                            op = (substring inside (eq - 1) (eq + 1))
+                            nameEnd = (eq - 1)
+                        }
+                    }
+                    def v:string (trim (substring inside (eq + 1) (strlen inside)))
+                    if ((endsWith v " i") || (endsWith v " s")) {
+                        v = (trim (substring v 0 ((strlen v) - 2)))
+                    }
+                    push cp.attrNames (to_lowercase (trim (substring inside 0 nameEnd)))
+                    push cp.attrOps op
+                    push cp.attrValues (CssParser.unquote(v))
+                }
+                continue
+            }
+            if (c == 58) {
+                def s2:int (i + 1)
+                if (((i + 1) < n) && ((charAt text (i + 1)) == 58)) {
+                    ; a pseudo-element: never matched, it is generated content
+                    cp.never = true
+                    return cp
+                }
+                i = (i + 1)
+                def depth:int 0
+                while (i < n) {
+                    def d2:int (charAt text i)
+                    if (d2 == 40) {
+                        depth = (depth + 1)
+                    }
+                    if (d2 == 41) {
+                        depth = (depth - 1)
+                    }
+                    if ((depth == 0) && ((d2 == 46) || ((d2 == 35) || ((d2 == 91) || (d2 == 58))))) {
+                        break
+                    }
+                    i = (i + 1)
+                }
+                def pseudo:string (to_lowercase (substring text s2 i))
+                if (startsWith pseudo "not(") {
+                    def arg:string (trim (substring pseudo 4 ((strlen pseudo) - 1)))
+                    ; argument case: keep the original spelling for class names
+                    def origArg:string (trim (substring text (s2 + 4) (i - 1)))
+                    if ((indexOf origArg " ") >= 0) {
+                        cp.never = true
+                    } {
+                        push cp.nots (CssParser.parseCompound(origArg))
+                    }
+                    continue
+                }
+                if ((pseudo == "link") || ((pseudo == "any-link") || ((pseudo == "first-child") || ((pseudo == "last-child") || ((pseudo == "root") || (pseudo == "only-child")))))) {
+                    push cp.pseudos pseudo
+                } {
+                    if ((pseudo == "visited") || ((pseudo == "hover") || ((pseudo == "focus") || ((pseudo == "active") || ((pseudo == "focus-visible") || (pseudo == "focus-within")))))) {
+                        cp.never = true
+                    } {
+                        if ((startsWith pseudo "is(") || (startsWith pseudo "where(")) {
+                            cp.never = true
+                        } {
+                            cp.never = true
+                        }
+                    }
+                }
+                continue
+            }
+            ; a type selector
+            def ts:int i
+            while (i < n) {
+                def d3:int (charAt text i)
+                if ((d3 == 46) || ((d3 == 35) || ((d3 == 91) || (d3 == 58)))) {
+                    break
+                }
+                i = (i + 1)
+            }
+            cp.tag = (to_lowercase (substring text ts i))
+            if ((indexOf cp.tag "|") >= 0) {
+                cp.never = true
+            }
+        }
+        return cp
+    }
+
+    sfn specificityOf:int (sel:CssSelector) {
+        def a:int 0
+        def b:int 0
+        def c:int 0
+        for sel.parts p:CssCompound i {
+            if ((strlen p.id) > 0) {
+                a = (a + 1)
+            }
+            b = (b + (array_length p.classes) + (array_length p.attrNames) + (array_length p.pseudos))
+            if ((strlen p.tag) > 0) {
+                c = (c + 1)
+            }
+            for p.nots nt:CssCompound k {
+                if ((strlen nt.id) > 0) {
+                    a = (a + 1)
+                }
+                b = (b + (array_length nt.classes) + (array_length nt.attrNames))
+                if ((strlen nt.tag) > 0) {
+                    c = (c + 1)
+                }
+            }
+        }
+        return ((a * 10000) + ((b * 100) + c))
+    }
+
+    ; --- declarations ---------------------------------------------------------
+
+    sfn parseDeclarations:[CssDecl] (body:string) {
+        def out:[CssDecl]
+        def items:[string] (CssParser.splitTop(body 59))
+        for items item:string i {
+            def colon:int (indexOf item ":")
+            if (colon <= 0) {
+                continue
+            }
+            def name:string (to_lowercase (trim (substring item 0 colon)))
+            def value:string (trim (substring item (colon + 1) (strlen item)))
+            if (((strlen name) == 0) || ((strlen value) == 0)) {
+                continue
+            }
+            if ((indexOf name "{") >= 0) {
+                ; nested rule (CSS nesting): not supported
+                continue
+            }
+            def d (new CssDecl())
+            d.name = name
+            def lower:string (to_lowercase value)
+            def bang:int (indexOf lower "!important")
+            if (bang >= 0) {
+                d.important = true
+                value = (trim (substring value 0 bang))
+            }
+            d.value = value
+            push out d
+        }
+        return out
+    }
+
+    ; --- helpers --------------------------------------------------------------
+
+    ; Split on `sep` outside parentheses, brackets and quotes.
+    sfn splitTop:[string] (s:string sep:int) {
+        def out:[string]
+        def depth:int 0
+        def quote:int 0
+        def start:int 0
+        def i:int 0
+        def n:int (strlen s)
+        while (i < n) {
+            def c:int (charAt s i)
+            if (quote != 0) {
+                if (c == 92) {
+                    i = (i + 2)
+                    continue
+                }
+                if (c == quote) {
+                    quote = 0
+                }
+                i = (i + 1)
+                continue
+            }
+            if ((c == 34) || (c == 39)) {
+                quote = c
+            }
+            if ((c == 40) || (c == 91)) {
+                depth = (depth + 1)
+            }
+            if ((c == 41) || (c == 93)) {
+                depth = (depth - 1)
+            }
+            if ((c == sep) && (depth <= 0)) {
+                push out (substring s start i)
+                start = (i + 1)
+            }
+            i = (i + 1)
+        }
+        if (start < n) {
+            push out (substring s start n)
+        }
+        return out
+    }
+
+    sfn stripComments:string (s:string) {
+        if ((indexOf s "/*") < 0) {
+            return s
+        }
+        def out:string ""
+        def i:int 0
+        def n:int (strlen s)
+        while (i < n) {
+            def at:int (indexOfFrom s "/*" i)
+            if (at < 0) {
+                out = (out + (substring s i n))
+                return out
+            }
+            out = (out + (substring s i at))
+            def end:int (indexOfFrom s "*/" (at + 2))
+            if (end < 0) {
+                return out
+            }
+            i = (end + 2)
+        }
+        return out
+    }
+
+    sfn unquote:string (v:string) {
+        def n:int (strlen v)
+        if (n >= 2) {
+            def f:int (charAt v 0)
+            if (((f == 34) || (f == 39)) && ((charAt v (n - 1)) == f)) {
+                return (substring v 1 (n - 1))
+            }
+        }
+        return v
+    }
+
+    sfn unescapeIdent:string (s:string) {
+        if ((indexOf s "\\") < 0) {
+            return s
+        }
+        return (replace s "\\" "")
+    }
+
+    sfn isSpace:boolean (c:int) {
+        return ((c == 32) || ((c == 10) || ((c == 9) || ((c == 13) || (c == 12)))))
+    }
+
+    ; A leading number, or -1 when there is none.
+    sfn num:double (s:string) {
+        def t:string (trim s)
+        def n:int (strlen t)
+        def i:int 0
+        def end:int 0
+        def seen:boolean false
+        while (i < n) {
+            def c:int (charAt t i)
+            if (((c >= 48) && (c <= 57)) || ((c == 46) || ((c == 45) && (i == 0)))) {
+                if ((c >= 48) && (c <= 57)) {
+                    seen = true
+                }
+                end = (i + 1)
+                i = (i + 1)
+            } {
+                break
+            }
+        }
+        if (seen == false) {
+            return -1.0
+        }
+        def v@(optional):double (str2double (substring t 0 end))
+        if (null? v) {
+            return -1.0
+        }
+        return (unwrap v)
+    }
+}

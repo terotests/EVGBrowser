@@ -1,0 +1,1057 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; CssCascade — every element's computed style, from the UA sheet, the page's
+; sheets and its `style` attributes.
+; ==============================================================================
+;
+; The order is CSS's:
+;
+;   UA normal < author normal < style="" < author !important < style="" !important
+;
+; and within each, specificity and then source order. Rules are bucketed by
+; the most selective part of their subject (id, else first class, else tag,
+; else universal), so an element only tests the rules that could match it.
+;
+; Only the properties this browser renders are kept (`isKnown`); shorthands
+; are expanded to the longhands at the moment they are declared, so
+; `margin: 0` followed by `margin-top: 4px` means what it means in CSS.
+;
+; Inheritance: the inherited properties are copied from the parent when the
+; element did not set them, `inherit` copies explicitly, `initial` / `unset`
+; clear. `font-size` is resolved to pixels here (em, rem, %, keywords),
+; because the words of one line are separate EVG elements and each must be
+; handed a number. Custom properties (`--x`) inherit by lookup along the
+; ancestor chain, and `var()` is substituted before a value is kept.
+; ==============================================================================
+
+Import "HtmlParser.rgr"
+Import "CssParser.rgr"
+
+class CssHit {
+    def rule:CssRule (new CssRule())
+    def sel:CssSelector (new CssSelector())
+    def key:double 0.0
+
+    Constructor (r:CssRule s:CssSelector) {
+        rule = r
+        sel = s
+        key = (((to_double r.origin) * 1000000000000.0) + (((to_double s.specificity) * 100000.0) + (to_double r.order)))
+    }
+}
+
+class CssBucket {
+    def hits:[CssHit]
+
+    Constructor () {
+        def h:[CssHit]
+        hits = h
+    }
+}
+
+class CssCascade {
+    def byId:[string:CssBucket]
+    def byClass:[string:CssBucket]
+    def byTag:[string:CssBucket]
+    def universal:CssBucket (new CssBucket())
+    def ruleCount:int 0
+    def rootFontSize:double 16.0
+    def viewportWidth:double 1024.0
+    def viewportHeight:double 768.0
+    ; the element chain being styled, root first
+    def chain:[HNode]
+    def chainIndex:[int]
+    def chainCount:[int]
+    def styledCount:int 0
+
+    Constructor () {
+        def a:[string:CssBucket]
+        byId = a
+        def b:[string:CssBucket]
+        byClass = b
+        def c:[string:CssBucket]
+        byTag = c
+        def ch:[HNode]
+        chain = ch
+        def ci:[int]
+        chainIndex = ci
+        def cc:[int]
+        chainCount = cc
+    }
+
+    fn addRules:void (rules:[CssRule]) {
+        for rules r:CssRule i {
+            for r.selectors s:CssSelector k {
+                if s.never {
+                    continue
+                }
+                def subj:CssCompound (s.subject())
+                def hit (new CssHit(r s))
+                if ((strlen subj.id) > 0) {
+                    this.bucketIn(byId subj.id hit)
+                } {
+                    if ((array_length subj.classes) > 0) {
+                        this.bucketIn(byClass (itemAt subj.classes 0) hit)
+                    } {
+                        if ((strlen subj.tag) > 0) {
+                            this.bucketIn(byTag subj.tag hit)
+                        } {
+                            push universal.hits hit
+                        }
+                    }
+                }
+            }
+            ruleCount = (ruleCount + 1)
+        }
+    }
+
+    fn bucketIn:void (m:[string:CssBucket] key:string hit:CssHit) {
+        if (has m key) {
+            def b:CssBucket (unwrap (get m key))
+            push b.hits hit
+            return
+        }
+        def nb (new CssBucket())
+        push nb.hits hit
+        set m key nb
+    }
+
+    ; --- the walk -------------------------------------------------------------
+
+    fn styleDocument:void (root:HNode) {
+        clear chain
+        clear chainIndex
+        clear chainCount
+        styledCount = 0
+        def empty (HNode.element("#none"))
+        this.styleNode(root empty 0 1)
+    }
+
+    fn styleNode:void (node:HNode parent:HNode index:int count:int) {
+        if node.isText {
+            return
+        }
+        styledCount = (styledCount + 1)
+        this.computeFor(node parent index count)
+        push chain node
+        push chainIndex index
+        push chainCount count
+        ; children are indexed among ELEMENT siblings, for :first-child
+        def elems:int 0
+        for node.children c:HNode i {
+            if (c.isText == false) {
+                elems = (elems + 1)
+            }
+        }
+        def k:int 0
+        if ((this.displayOf(node)) != "none") {
+            for node.children c2:HNode j {
+                if (c2.isText == false) {
+                    this.styleNode(c2 node k elems)
+                    k = (k + 1)
+                }
+            }
+        }
+        removeLast chain
+        removeLast chainIndex
+        removeLast chainCount
+    }
+
+    fn displayOf:string (n:HNode) {
+        if (has n.style "display") {
+            return (unwrap (get n.style "display"))
+        }
+        return "inline"
+    }
+
+    fn computeFor:void (node:HNode parent:HNode index:int count:int) {
+        ; candidates
+        def cands:[CssHit]
+        def id:string (node.attr("id"))
+        if ((strlen id) > 0) {
+            this.collect(byId id cands)
+        }
+        def cls:[string] (node.classes())
+        for cls cn:string i {
+            this.collect(byClass cn cands)
+        }
+        this.collect(byTag node.tag cands)
+        for universal.hits uh:CssHit i2 {
+            push cands uh
+        }
+        ; the ones that match, in cascade order
+        def matched:[CssHit]
+        for cands h:CssHit j {
+            if (this.matches(h.sel node index count)) {
+                push matched h
+            }
+        }
+        this.sortHits(matched)
+        def st:[string:string]
+        def vs:[string:string]
+        node.style = st
+        node.vars = vs
+        node.hasVars = false
+        ; normal declarations
+        for matched m:CssHit a {
+            for m.rule.decls d:CssDecl b {
+                if (d.important == false) {
+                    this.declare(node d.name d.value)
+                }
+            }
+        }
+        def inlineDecls:[CssDecl]
+        if (node.hasAttr("style")) {
+            inlineDecls = (CssParser.parseDeclarations((node.attr("style"))))
+            for inlineDecls idl:CssDecl c {
+                if (idl.important == false) {
+                    this.declare(node idl.name idl.value)
+                }
+            }
+        }
+        for matched m2:CssHit a2 {
+            for m2.rule.decls d2:CssDecl b2 {
+                if d2.important {
+                    this.declare(node d2.name d2.value)
+                }
+            }
+        }
+        for inlineDecls idl2:CssDecl c2 {
+            if idl2.important {
+                this.declare(node idl2.name idl2.value)
+            }
+        }
+        this.presentationalHints(node)
+        this.finish(node parent)
+    }
+
+    fn collect:void (m:[string:CssBucket] key:string out:[CssHit]) {
+        if (has m key) {
+            def b:CssBucket (unwrap (get m key))
+            for b.hits h:CssHit i {
+                push out h
+            }
+        }
+    }
+
+    fn sortHits:void (list:[CssHit]) {
+        def n:int (array_length list)
+        def i:int 1
+        while (i < n) {
+            def cur:CssHit (itemAt list i)
+            def j:int (i - 1)
+            while (j >= 0) {
+                def prev:CssHit (itemAt list j)
+                if (prev.key <= cur.key) {
+                    break
+                }
+                set_at list (j + 1) prev
+                j = (j - 1)
+            }
+            set_at list (j + 1) cur
+            i = (i + 1)
+        }
+    }
+
+    ; --- matching -------------------------------------------------------------
+
+    fn matches:boolean (sel:CssSelector node:HNode index:int count:int) {
+        def parts:[CssCompound] sel.parts
+        if ((this.compoundMatches((itemAt parts 0) node index count)) == false) {
+            return false
+        }
+        def np:int (array_length parts)
+        if (np == 1) {
+            return true
+        }
+        def subj:CssCompound (itemAt parts 0)
+        return (this.matchFrom(sel 1 ((array_length chain) - 1) subj.combinator))
+    }
+
+    ; Does parts[pi..] match somewhere at or above chain[ci], given how
+    ; parts[pi-1] relates to its left (`comb`)?
+    fn matchFrom:boolean (sel:CssSelector pi:int ci:int comb:string) {
+        if (pi >= (array_length sel.parts)) {
+            return true
+        }
+        if (ci < 0) {
+            return false
+        }
+        def cp:CssCompound (itemAt sel.parts pi)
+        if (comb == ">") {
+            def anc:HNode (itemAt chain ci)
+            if (this.compoundMatches(cp anc (itemAt chainIndex ci) (itemAt chainCount ci))) {
+                return (this.matchFrom(sel (pi + 1) (ci - 1) cp.combinator))
+            }
+            return false
+        }
+        def k:int ci
+        while (k >= 0) {
+            def anc2:HNode (itemAt chain k)
+            if (this.compoundMatches(cp anc2 (itemAt chainIndex k) (itemAt chainCount k))) {
+                if (this.matchFrom(sel (pi + 1) (k - 1) cp.combinator)) {
+                    return true
+                }
+            }
+            k = (k - 1)
+        }
+        return false
+    }
+
+    fn compoundMatches:boolean (cp:CssCompound node:HNode index:int count:int) {
+        if cp.never {
+            return false
+        }
+        if ((strlen cp.tag) > 0) {
+            if (cp.tag != node.tag) {
+                return false
+            }
+        }
+        if ((strlen cp.id) > 0) {
+            if ((node.attr("id")) != cp.id) {
+                return false
+            }
+        }
+        if ((array_length cp.classes) > 0) {
+            def cls:[string] (node.classes())
+            for cp.classes want:string i {
+                def found:boolean false
+                for cls have:string j {
+                    if (have == want) {
+                        found = true
+                        break
+                    }
+                }
+                if (found == false) {
+                    return false
+                }
+            }
+        }
+        def an:int 0
+        while (an < (array_length cp.attrNames)) {
+            def aname:string (itemAt cp.attrNames an)
+            if ((node.hasAttr(aname)) == false) {
+                return false
+            }
+            def op:string (itemAt cp.attrOps an)
+            def want2:string (itemAt cp.attrValues an)
+            def got:string (node.attr(aname))
+            if (op == "=") {
+                if (got != want2) {
+                    return false
+                }
+            }
+            if (op == "^=") {
+                if ((startsWith got want2) == false) {
+                    return false
+                }
+            }
+            if (op == "$=") {
+                if ((endsWith got want2) == false) {
+                    return false
+                }
+            }
+            if (op == "*=") {
+                if ((indexOf got want2) < 0) {
+                    return false
+                }
+            }
+            if (op == "~=") {
+                def words:[string] (strsplit (HtmlParser.collapseSpace(got)) " ")
+                def hitw:boolean false
+                for words w:string wi {
+                    if (w == want2) {
+                        hitw = true
+                    }
+                }
+                if (hitw == false) {
+                    return false
+                }
+            }
+            if (op == "|=") {
+                if ((got != want2) && ((startsWith got (want2 + "-")) == false)) {
+                    return false
+                }
+            }
+            an = (an + 1)
+        }
+        for cp.pseudos ps:string p {
+            if ((ps == "link") || (ps == "any-link")) {
+                if ((node.tag != "a") || ((node.hasAttr("href")) == false)) {
+                    return false
+                }
+            }
+            if (ps == "first-child") {
+                if (index != 0) {
+                    return false
+                }
+            }
+            if (ps == "last-child") {
+                if (index != (count - 1)) {
+                    return false
+                }
+            }
+            if (ps == "only-child") {
+                if (count != 1) {
+                    return false
+                }
+            }
+            if (ps == "root") {
+                if (node.tag != "html") {
+                    return false
+                }
+            }
+        }
+        for cp.nots nt:CssCompound q {
+            if (this.compoundMatches(nt node index count)) {
+                return false
+            }
+        }
+        return true
+    }
+
+    ; --- declaring ------------------------------------------------------------
+
+    fn declare:void (node:HNode name:string value:string) {
+        if (startsWith name "--") {
+            set node.vars name value
+            node.hasVars = true
+            return
+        }
+        if ((CssCascade.isKnown(name)) == false) {
+            return
+        }
+        def v:string value
+        if ((indexOf v "var(") >= 0) {
+            v = (this.substituteVars(v node 0))
+            if ((strlen v) == 0) {
+                return
+            }
+        }
+        this.setExpanded(node.style name v)
+    }
+
+    ; `var(--x, fallback)`, looked up on this element and then its ancestors.
+    fn substituteVars:string (v:string node:HNode depth:int) {
+        if (depth > 8) {
+            return ""
+        }
+        def at:int (indexOf v "var(")
+        if (at < 0) {
+            return v
+        }
+        ; the matching parenthesis
+        def i:int (at + 4)
+        def n:int (strlen v)
+        def d:int 1
+        while (i < n) {
+            def c:int (charAt v i)
+            if (c == 40) {
+                d = (d + 1)
+            }
+            if (c == 41) {
+                d = (d - 1)
+                if (d == 0) {
+                    break
+                }
+            }
+            i = (i + 1)
+        }
+        if (i >= n) {
+            return ""
+        }
+        def inner:string (substring v (at + 4) i)
+        def comma:int (indexOf inner ",")
+        def vname:string (trim inner)
+        def fallback:string ""
+        def hasFallback:boolean false
+        if (comma >= 0) {
+            vname = (trim (substring inner 0 comma))
+            fallback = (trim (substring inner (comma + 1) (strlen inner)))
+            hasFallback = true
+        }
+        def found:string (this.lookupVar(vname node))
+        def rep:string found
+        if ((strlen found) == 0) {
+            if (hasFallback == false) {
+                return ""
+            }
+            rep = fallback
+        }
+        def next:string ((substring v 0 at) + rep + (substring v (i + 1) n))
+        return (this.substituteVars(next node (depth + 1)))
+    }
+
+    fn lookupVar:string (name:string node:HNode) {
+        if node.hasVars {
+            if (has node.vars name) {
+                return (unwrap (get node.vars name))
+            }
+        }
+        def k:int ((array_length chain) - 1)
+        while (k >= 0) {
+            def anc:HNode (itemAt chain k)
+            if anc.hasVars {
+                if (has anc.vars name) {
+                    return (unwrap (get anc.vars name))
+                }
+            }
+            k = (k - 1)
+        }
+        return ""
+    }
+
+    fn setExpanded:void (st:[string:string] name:string value:string) {
+        if ((name == "margin") || (name == "padding")) {
+            def parts:[string] (CssCascade.splitValues(value))
+            def np:int (array_length parts)
+            if ((np == 0) || (np > 4)) {
+                return
+            }
+            def t:string (itemAt parts 0)
+            def r:string t
+            def b:string t
+            def l:string t
+            if (np >= 2) {
+                r = (itemAt parts 1)
+                l = r
+            }
+            if (np >= 3) {
+                b = (itemAt parts 2)
+            }
+            if (np == 4) {
+                l = (itemAt parts 3)
+            }
+            set st (name + "-top") t
+            set st (name + "-right") r
+            set st (name + "-bottom") b
+            set st (name + "-left") l
+            return
+        }
+        if ((name == "margin-inline") || (name == "padding-inline")) {
+            def base:string (substring name 0 ((strlen name) - 7))
+            def pi:[string] (CssCascade.splitValues(value))
+            if ((array_length pi) >= 1) {
+                set st (base + "-left") (itemAt pi 0)
+                set st (base + "-right") (itemAt pi ((array_length pi) - 1))
+            }
+            return
+        }
+        if ((name == "margin-block") || (name == "padding-block")) {
+            def base2:string (substring name 0 ((strlen name) - 6))
+            def pb:[string] (CssCascade.splitValues(value))
+            if ((array_length pb) >= 1) {
+                set st (base2 + "-top") (itemAt pb 0)
+                set st (base2 + "-bottom") (itemAt pb ((array_length pb) - 1))
+            }
+            return
+        }
+        if (name == "border") {
+            this.borderSide(st "top" value)
+            this.borderSide(st "right" value)
+            this.borderSide(st "bottom" value)
+            this.borderSide(st "left" value)
+            return
+        }
+        if ((name == "border-top") || ((name == "border-right") || ((name == "border-bottom") || (name == "border-left")))) {
+            this.borderSide(st (substring name 7 (strlen name)) value)
+            return
+        }
+        if ((name == "border-width") || ((name == "border-color") || (name == "border-style"))) {
+            def kind:string (substring name 7 (strlen name))
+            def bp:[string] (CssCascade.splitValues(value))
+            def nb:int (array_length bp)
+            if ((nb == 0) || (nb > 4)) {
+                return
+            }
+            def bt:string (itemAt bp 0)
+            def br:string bt
+            def bb:string bt
+            def bl:string bt
+            if (nb >= 2) {
+                br = (itemAt bp 1)
+                bl = br
+            }
+            if (nb >= 3) {
+                bb = (itemAt bp 2)
+            }
+            if (nb == 4) {
+                bl = (itemAt bp 3)
+            }
+            set st ("border-top-" + kind) bt
+            set st ("border-right-" + kind) br
+            set st ("border-bottom-" + kind) bb
+            set st ("border-left-" + kind) bl
+            return
+        }
+        if (name == "background") {
+            def bgs:[string] (CssCascade.splitValues(value))
+            def colorSet:boolean false
+            for bgs tok:string i {
+                if (CssCascade.looksLikeColor(tok)) {
+                    set st "background-color" tok
+                    colorSet = true
+                }
+            }
+            if (colorSet == false) {
+                if ((value == "none") || ((value == "transparent") || (startsWith value "url("))) {
+                    set st "background-color" "transparent"
+                }
+            }
+            return
+        }
+        if (name == "font") {
+            this.fontShorthand(st value)
+            return
+        }
+        if (name == "list-style") {
+            def ls:[string] (CssCascade.splitValues(value))
+            for ls lt:string i2 {
+                if ((lt == "none") || ((lt == "disc") || ((lt == "circle") || ((lt == "square") || ((lt == "decimal") || ((lt == "lower-alpha") || (lt == "upper-alpha"))))))) {
+                    set st "list-style-type" lt
+                }
+            }
+            return
+        }
+        if (name == "flex") {
+            def fp:[string] (CssCascade.splitValues(value))
+            if ((array_length fp) == 0) {
+                return
+            }
+            def f0:string (itemAt fp 0)
+            if (f0 == "none") {
+                set st "flex-grow" "0"
+                set st "flex-shrink" "0"
+                set st "flex-basis" "auto"
+                return
+            }
+            if (f0 == "auto") {
+                set st "flex-grow" "1"
+                set st "flex-shrink" "1"
+                set st "flex-basis" "auto"
+                return
+            }
+            if ((CssParser.num(f0)) >= 0.0) {
+                if ((CssCascade.unitOf(f0)) == "") {
+                    set st "flex-grow" f0
+                    set st "flex-shrink" "1"
+                    set st "flex-basis" "0px"
+                    if ((array_length fp) >= 2) {
+                        def f1:string (itemAt fp 1)
+                        if ((CssCascade.unitOf(f1)) == "") {
+                            set st "flex-shrink" f1
+                            if ((array_length fp) >= 3) {
+                                set st "flex-basis" (itemAt fp 2)
+                            }
+                        } {
+                            set st "flex-basis" f1
+                        }
+                    }
+                    return
+                }
+                set st "flex-basis" f0
+                set st "flex-grow" "1"
+            }
+            return
+        }
+        if (name == "gap") {
+            def gp:[string] (CssCascade.splitValues(value))
+            if ((array_length gp) >= 1) {
+                set st "row-gap" (itemAt gp 0)
+                set st "column-gap" (itemAt gp ((array_length gp) - 1))
+            }
+            return
+        }
+        if (name == "text-decoration") {
+            if ((indexOf value "underline") >= 0) {
+                set st "text-decoration-line" "underline"
+            } {
+                if ((indexOf value "none") >= 0) {
+                    set st "text-decoration-line" "none"
+                }
+            }
+            return
+        }
+        if (name == "inset") {
+            return
+        }
+        set st name value
+    }
+
+    fn borderSide:void (st:[string:string] side:string value:string) {
+        def parts:[string] (CssCascade.splitValues(value))
+        def width:string "medium"
+        def style:string "none"
+        def color:string "currentcolor"
+        for parts p:string i {
+            def lower:string (to_lowercase p)
+            if ((lower == "none") || ((lower == "solid") || ((lower == "dashed") || ((lower == "dotted") || ((lower == "double") || ((lower == "hidden") || ((lower == "groove") || ((lower == "ridge") || ((lower == "inset") || (lower == "outset")))))))))) {
+                style = lower
+                continue
+            }
+            if ((lower == "thin") || ((lower == "medium") || (lower == "thick"))) {
+                width = lower
+                continue
+            }
+            if ((CssParser.num(p)) >= 0.0) {
+                if ((CssCascade.looksLikeColor(p)) == false) {
+                    width = p
+                    continue
+                }
+            }
+            color = p
+        }
+        set st ("border-" + side + "-width") width
+        set st ("border-" + side + "-style") style
+        set st ("border-" + side + "-color") color
+    }
+
+    fn fontShorthand:void (st:[string:string] value:string) {
+        ; [style] [weight] size[/line-height] family
+        def parts:[string] (CssCascade.splitValues(value))
+        def i:int 0
+        def n:int (array_length parts)
+        while (i < n) {
+            def p:string (itemAt parts i)
+            def lower:string (to_lowercase p)
+            if ((lower == "italic") || (lower == "oblique")) {
+                set st "font-style" "italic"
+                i = (i + 1)
+                continue
+            }
+            if ((lower == "bold") || ((lower == "bolder") || ((lower == "600") || ((lower == "700") || ((lower == "800") || (lower == "900")))))) {
+                set st "font-weight" lower
+                i = (i + 1)
+                continue
+            }
+            if ((lower == "normal") || ((lower == "400") || ((lower == "300") || ((lower == "500") || ((lower == "small-caps") || (lower == "lighter")))))) {
+                i = (i + 1)
+                continue
+            }
+            ; the size, maybe with a line height
+            def slash:int (indexOf p "/")
+            if (slash >= 0) {
+                set st "font-size" (substring p 0 slash)
+                set st "line-height" (substring p (slash + 1) (strlen p))
+            } {
+                set st "font-size" p
+            }
+            i = (i + 1)
+            if ((i < n) && ((itemAt parts i) == "/")) {
+                if ((i + 1) < n) {
+                    set st "line-height" (itemAt parts (i + 1))
+                }
+                i = (i + 2)
+            }
+            def fam:[string]
+            while (i < n) {
+                push fam (itemAt parts i)
+                i = (i + 1)
+            }
+            if ((array_length fam) > 0) {
+                set st "font-family" (join fam " ")
+            }
+            return
+        }
+    }
+
+    ; HTML attributes that are really style: <img width>, <td align>, <font color>.
+    fn presentationalHints:void (node:HNode) {
+        def st:[string:string] node.style
+        def tag:string node.tag
+        if ((tag == "img") || ((tag == "td") || ((tag == "th") || ((tag == "table") || (tag == "video"))))) {
+            if (node.hasAttr("width")) {
+                if ((has st "width") == false) {
+                    def w:string (trim (node.attr("width")))
+                    if ((CssParser.num(w)) > 0.0) {
+                        if (endsWith w "%") {
+                            set st "width" w
+                        } {
+                            set st "width" ((to_string (CssParser.num(w))) + "px")
+                        }
+                    }
+                }
+            }
+            if (node.hasAttr("height")) {
+                if ((has st "height") == false) {
+                    def h:string (trim (node.attr("height")))
+                    if ((CssParser.num(h)) > 0.0) {
+                        if ((endsWith h "%") == false) {
+                            set st "height" ((to_string (CssParser.num(h))) + "px")
+                        }
+                    }
+                }
+            }
+        }
+        if (node.hasAttr("align")) {
+            if ((has st "text-align") == false) {
+                def al:string (to_lowercase (node.attr("align")))
+                if ((al == "center") || ((al == "right") || (al == "left"))) {
+                    if ((tag == "img") == false) {
+                        set st "text-align" al
+                    }
+                }
+            }
+        }
+        if (node.hasAttr("bgcolor")) {
+            if ((has st "background-color") == false) {
+                set st "background-color" (node.attr("bgcolor"))
+            }
+        }
+        if (tag == "font") {
+            if (node.hasAttr("color")) {
+                if ((has st "color") == false) {
+                    set st "color" (node.attr("color"))
+                }
+            }
+        }
+        if (node.hasAttr("hidden")) {
+            set st "display" "none"
+        }
+    }
+
+    ; --- computed values ------------------------------------------------------
+
+    fn finish:void (node:HNode parent:HNode) {
+        def ps:[string:string] parent.style
+        def isRoot:boolean (parent.tag == "#none")
+        ; explicit inherit / initial: maps cannot drop a key, so the style is
+        ; copied without the ones that go
+        def raw:[string:string] node.style
+        def st:[string:string]
+        def ks:[string] (keys raw)
+        for ks k:string i {
+            def v:string (unwrap (get raw k))
+            if (v == "inherit") {
+                if (has ps k) {
+                    set st k (unwrap (get ps k))
+                }
+                continue
+            }
+            if ((v == "initial") || ((v == "unset") || (v == "revert"))) {
+                continue
+            }
+            set st k v
+        }
+        node.style = st
+        ; inherited properties
+        def inh:[string] (CssCascade.inheritedProps())
+        for inh ip:string j {
+            if ((has st ip) == false) {
+                if (has ps ip) {
+                    set st ip (unwrap (get ps ip))
+                }
+            }
+        }
+        ; font-size to pixels
+        def parentSize:double 16.0
+        if (has ps "font-size") {
+            parentSize = (CssCascade.pxOf((unwrap (get ps "font-size")) 16.0 16.0))
+        }
+        def size:double parentSize
+        if (has st "font-size") {
+            size = (CssCascade.fontSizePx((unwrap (get st "font-size")) parentSize rootFontSize))
+        }
+        if (size <= 0.0) {
+            size = parentSize
+        }
+        if (size < 6.0) {
+            size = 6.0
+        }
+        if (size > 96.0) {
+            size = 96.0
+        }
+        set st "font-size" ((to_string size) + "px")
+        if isRoot {
+            rootFontSize = size
+        }
+        if (node.tag == "html") {
+            rootFontSize = size
+        }
+        ; currentColor
+        def ck:[string] ([] _:string ( "background-color" "border-top-color" "border-right-color" "border-bottom-color" "border-left-color" ))
+        for ck c:string j2 {
+            if (has st c) {
+                def cv:string (to_lowercase (unwrap (get st c)))
+                if (cv == "currentcolor") {
+                    if (has st "color") {
+                        set st c (unwrap (get st "color"))
+                    } {
+                        set st c "#000000"
+                    }
+                }
+            }
+        }
+    }
+
+    sfn inheritedProps:[string] () {
+        return ([] _:string ( "color" "font-family" "font-style" "font-weight" "line-height" "text-align" "text-transform" "white-space" "visibility" "list-style-type" "text-decoration-line" "word-break" "overflow-wrap" ))
+    }
+
+    sfn isKnown:boolean (name:string) {
+        if ((startsWith name "margin") || ((startsWith name "padding") || ((startsWith name "border") || ((startsWith name "flex") || (startsWith name "font"))))) {
+            return true
+        }
+        if ((startsWith name "min-") || ((startsWith name "max-") || (startsWith name "list-style"))) {
+            return true
+        }
+        def list:[string] ([] _:string ( "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "word-break" "overflow-wrap" "order" ))
+        for list k:string i {
+            if (k == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; --- value helpers --------------------------------------------------------
+
+    ; Space-separated values, keeping `rgb(1, 2, 3)` and quoted names whole.
+    sfn splitValues:[string] (v:string) {
+        def out:[string]
+        def parts:[string] (CssParser.splitTop((trim v) 32))
+        for parts p:string i {
+            def t:string (trim p)
+            if ((strlen t) > 0) {
+                push out t
+            }
+        }
+        return out
+    }
+
+    sfn unitOf:string (v:string) {
+        def t:string (to_lowercase (trim v))
+        def i:int 0
+        def n:int (strlen t)
+        while (i < n) {
+            def c:int (charAt t i)
+            if (((c >= 48) && (c <= 57)) || ((c == 46) || ((c == 45) || (c == 43)))) {
+                i = (i + 1)
+            } {
+                break
+            }
+        }
+        return (substring t i n)
+    }
+
+    sfn looksLikeColor:boolean (v:string) {
+        def t:string (to_lowercase (trim v))
+        if (startsWith t "#") {
+            return true
+        }
+        if ((startsWith t "rgb") || (startsWith t "hsl")) {
+            return true
+        }
+        if ((startsWith t "url(") || ((startsWith t "linear-gradient") || (startsWith t "radial-gradient"))) {
+            return false
+        }
+        def names:[string] ([] _:string ( "transparent" "white" "black" "red" "green" "blue" "yellow" "gray" "grey" "silver" "navy" "teal" "purple" "orange" "maroon" "olive" "lime" "aqua" "fuchsia" "pink" "brown" "gold" "beige" "ivory" "khaki" "lavender" "coral" "salmon" "tomato" "crimson" "indigo" "violet" "cyan" "magenta" "whitesmoke" "gainsboro" "lightgray" "lightgrey" "darkgray" "darkgrey" "dimgray" "lightblue" "skyblue" "steelblue" "darkblue" "lightgreen" "darkgreen" "currentcolor" ))
+        for names nm:string i {
+            if (nm == t) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; A length in pixels; `em` against `em`, `%` against `pct`. -1 when it is
+    ; not a length this can resolve.
+    sfn pxOf:double (v:string em:double pct:double) {
+        def t:string (to_lowercase (trim v))
+        def u:string (CssCascade.unitOf(t))
+        def n:double (CssParser.num(t))
+        if ((strlen t) > 0) {
+            if ((charAt t 0) == 45) {
+                ; negative lengths
+                def pos:double (CssCascade.pxOf((substring t 1 (strlen t)) em pct))
+                if (pos < 0.0) {
+                    return -1.0
+                }
+                return (0.0 - pos)
+            }
+        }
+        if (n < 0.0) {
+            return -1.0
+        }
+        if ((u == "px") || (u == "")) {
+            return n
+        }
+        if (u == "em") {
+            return (n * em)
+        }
+        if (u == "rem") {
+            return (n * 16.0)
+        }
+        if (u == "%") {
+            return ((n * pct) / 100.0)
+        }
+        if (u == "pt") {
+            return ((n * 96.0) / 72.0)
+        }
+        if (u == "ex") {
+            return ((n * em) * 0.5)
+        }
+        if (u == "ch") {
+            return ((n * em) * 0.55)
+        }
+        return -1.0
+    }
+
+    sfn fontSizePx:double (v:string parent:double root:double) {
+        def t:string (to_lowercase (trim v))
+        if (t == "xx-small") {
+            return 9.0
+        }
+        if (t == "x-small") {
+            return 10.0
+        }
+        if (t == "small") {
+            return 13.0
+        }
+        if (t == "medium") {
+            return 16.0
+        }
+        if (t == "large") {
+            return 18.0
+        }
+        if (t == "x-large") {
+            return 24.0
+        }
+        if (t == "xx-large") {
+            return 32.0
+        }
+        if (t == "smaller") {
+            return (parent * 0.83)
+        }
+        if (t == "larger") {
+            return (parent * 1.2)
+        }
+        if ((startsWith t "clamp(") || ((startsWith t "calc(") || ((startsWith t "min(") || (startsWith t "max(")))) {
+            ; take the middle term of a clamp, otherwise the first length
+            def inner:string (substring t ((indexOf t "(") + 1) ((strlen t) - 1))
+            def args:[string] (CssParser.splitTop(inner 44))
+            def pick:string (trim (itemAt args 0))
+            if ((array_length args) == 3) {
+                pick = (trim (itemAt args 1))
+            }
+            def tokens:[string] (CssCascade.splitValues(pick))
+            for tokens tk:string i {
+                def pv:double (CssCascade.fontSizePx(tk parent root))
+                if (pv > 0.0) {
+                    return pv
+                }
+            }
+            return parent
+        }
+        if (endsWith t "rem") {
+            return ((CssParser.num(t)) * root)
+        }
+        if ((endsWith t "vw") || (endsWith t "vh")) {
+            return parent
+        }
+        def px:double (CssCascade.pxOf(t parent parent))
+        if (px <= 0.0) {
+            return parent
+        }
+        return px
+    }
+}

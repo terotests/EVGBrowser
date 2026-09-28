@@ -1,0 +1,61 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; UaSheet — the browser's own stylesheet: what an unstyled page looks like.
+; ==============================================================================
+;
+; Close to the defaults of the HTML specification's rendering section, with
+; two deliberate differences:
+;
+;   * EVG does not collapse margins, so blocks get a bottom margin only; a
+;     paragraph after a paragraph is then one gap apart, as in a browser.
+;   * the type is a little larger (17px) and the line a little looser, because
+;     the readers this is for include children.
+; ==============================================================================
+
+class UaSheet {
+    sfn css:string () {
+        return "
+html, address, blockquote, body, center, dialog, div, figure, figcaption, footer, form, header, hr, legend, listing, main, p, plaintext, pre, search, xmp, article, aside, h1, h2, h3, h4, h5, h6, hgroup, nav, section, dl, dt, dd, ol, ul, menu, li, table, caption, thead, tbody, tfoot, tr, td, th, details, summary, fieldset, noscript, picture, figure { display: block; }
+li { display: list-item; }
+table { display: table; }
+tr { display: table-row; }
+td, th { display: table-cell; }
+thead, tbody, tfoot { display: table-row-group; }
+caption { display: table-caption; }
+head, script, style, template, title, meta, link, base, datalist, param, source, track, area, map, dialog, svg, math, noembed, noframes { display: none; }
+img, input, button, select, textarea, video, audio, iframe, object, embed, canvas { display: inline-block; }
+html { color: #1a1a1a; font-size: 17px; line-height: 1.5; }
+body { padding: 12px 16px; }
+p, dl, blockquote, pre, figure, table, fieldset, form, hr { margin-bottom: 1em; }
+ul, ol, menu { margin-bottom: 1em; padding-left: 28px; }
+li ul, li ol { margin-bottom: 0; }
+ul { list-style-type: disc; }
+ol { list-style-type: decimal; }
+dd { margin-left: 28px; margin-bottom: 0.4em; }
+dt { font-weight: bold; }
+h1 { font-size: 2em; font-weight: bold; margin-bottom: 0.5em; line-height: 1.2; }
+h2 { font-size: 1.5em; font-weight: bold; margin-bottom: 0.5em; line-height: 1.25; }
+h3 { font-size: 1.25em; font-weight: bold; margin-bottom: 0.5em; line-height: 1.3; }
+h4 { font-size: 1.1em; font-weight: bold; margin-bottom: 0.5em; }
+h5, h6 { font-size: 1em; font-weight: bold; margin-bottom: 0.5em; }
+b, strong, th { font-weight: bold; }
+small { font-size: 0.83em; }
+big { font-size: 1.2em; }
+sub, sup { font-size: 0.75em; }
+code, kbd, samp, tt, pre, var { font-family: monospace; }
+code, kbd, samp { background-color: #f1f2f4; }
+pre { white-space: pre; background-color: #f5f6f8; padding: 10px; border-radius: 6px; }
+mark { background-color: #fff3a3; }
+blockquote { margin-left: 24px; padding-left: 12px; color: #444444; }
+hr { height: 1px; background-color: #d0d4da; }
+a:link { color: #1a56c4; }
+th, td { padding: 4px 8px; }
+th { text-align: left; }
+caption { font-weight: bold; }
+figcaption { font-size: 0.9em; color: #555555; }
+fieldset { border: 1px solid #c8ccd2; padding: 8px; }
+center { text-align: center; }
+summary { font-weight: bold; }
+"
+    }
+}

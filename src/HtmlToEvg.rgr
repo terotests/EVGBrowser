@@ -1,0 +1,1689 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; HtmlToEvg — a styled HTML tree as an EVG element tree.
+; ==============================================================================
+;
+; EVG lays out boxes: block flow, flex and grid. It has no inline formatting
+; context — "there are no inline spans here" (EVGElement.rgr) — so the one
+; thing this file has to invent is the LINE:
+;
+;   a run of inline content (text, <b>, <a>, <img>, …) becomes one flex row
+;   with `flex-wrap: wrap` and `align-items: baseline`, and every WORD in it
+;   is its own text element, carrying its own font, colour and link.
+;
+; The flex line breaks where a browser's line box would, words of different
+; sizes sit on one baseline, and a link is simply the words that carry its
+; id — which is also what the hit test answers. A <br> is an empty item as
+; wide as the line, which forces the wrap. A block inside an inline (the
+; news-site card: `<a><div>…</div></a>`) ends the line, becomes a block, and
+; takes the link with it, so the whole card is one target.
+;
+; Every other property is written inline on the element (`setAttribute`),
+; after being checked: a value EVG would reject or misread (`calc()`,
+; `auto` margins, unsupported grids, reversed flex directions) is dropped or
+; translated here rather than handed on.
+;
+; What is left out on purpose, see SafetyPolicy: positioned boxes are laid out
+; in flow, video/audio/iframes become a small notice, scripts are never run.
+; ==============================================================================
+
+Import "pkg:evg/EVGElement.rgr"
+Import "HtmlParser.rgr"
+Import "CssParser.rgr"
+Import "CssCascade.rgr"
+Import "BrUrl.rgr"
+Import "SafetyPolicy.rgr"
+
+class BrLink {
+    def id:string ""
+    def href:string ""
+}
+
+class BrImage {
+    def url:string ""
+    def width:double 0.0
+    def height:double 0.0
+    def known:boolean false
+    def failed:boolean false
+}
+
+class BrField {
+    def id:string ""
+    def name:string ""
+    def kind:string "text"
+    def value:string ""
+    def placeholder:string ""
+    def form:int -1
+    ; the text element that shows the value
+    def label:EVGElement (EVGElement.createSpan())
+    def box:EVGElement (EVGElement.createDiv())
+}
+
+class BrForm {
+    def action:string ""
+    def method:string "get"
+    def fieldIds:[string]
+
+    Constructor () {
+        def f:[string]
+        fieldIds = f
+    }
+}
+
+; Where inline content is being collected: the block it belongs to, and the
+; line (flex row) currently open in it.
+class BrFlow {
+    def container:EVGElement
+    def style:[string:string]
+    def line@(optional):EVGElement
+    def lastWord@(optional):EVGElement
+    def spacePending:boolean false
+    def markerPending:string ""
+
+    Constructor (c:EVGElement st:[string:string]) {
+        container = c
+        style = st
+    }
+}
+
+class HtmlToEvg {
+    def base:BrUrl (BrUrl.parse("about:blank"))
+    def policy:SafetyPolicy (new SafetyPolicy())
+    def contentWidth:double 800.0
+    ; the viewport's height: the page is at least this tall, so its
+    ; background reaches the bottom of the window
+    def minHeight:double 0.0
+    def links:[BrLink]
+    def linkById:[string:string]
+    def images:[string:BrImage]
+    def imageOrder:[string]
+    def fields:[BrField]
+    def fieldById:[string:BrField]
+    def forms:[BrForm]
+    def title:string ""
+    def elementCount:int 0
+    def maxElements:int 60000
+    def blockedMedia:int 0
+    def formStack:[int]
+    def olCounters:[int]
+    ; `#name` targets: an element id, or an <a name>, to the box it became
+    def anchors:[string:EVGElement]
+    ; images sized as a share of their box, and their shape: their height is
+    ; settled after a first layout has said how wide the box is
+    def fluidImages:[EVGElement]
+    def fluidAspect:[double]
+
+    Constructor () {
+        def l:[BrLink]
+        links = l
+        def lb:[string:string]
+        linkById = lb
+        def im:[string:BrImage]
+        images = im
+        def io:[string]
+        imageOrder = io
+        def f:[BrField]
+        fields = f
+        def fb:[string:BrField]
+        fieldById = fb
+        def fo:[BrForm]
+        forms = fo
+        def fs:[int]
+        formStack = fs
+        def oc:[int]
+        olCounters = oc
+        def an:[string:EVGElement]
+        anchors = an
+        def fi:[EVGElement]
+        fluidImages = fi
+        def fa:[double]
+        fluidAspect = fa
+    }
+
+    ; The page, from the body down, as one EVG block.
+    fn build:EVGElement (doc:HNode) {
+        def body@(optional):HNode (doc.find("body"))
+        def top:HNode doc
+        if (!null? body) {
+            top = (unwrap body)
+        }
+        def htmlNode@(optional):HNode (doc.find("html"))
+        def page (EVGElement.createDiv())
+        page.setAttribute("width" "100%")
+        if (minHeight > 0.0) {
+            page.setAttribute("min-height" ((to_string minHeight) + "px"))
+        }
+        ; the canvas colour: the html's background, else the body's
+        def canvas:string ""
+        if (!null? htmlNode) {
+            def hn:HNode (unwrap htmlNode)
+            canvas = (HtmlToEvg.prop(hn.style "background-color" ""))
+        }
+        if ((HtmlToEvg.isPaintableColor(canvas)) == false) {
+            canvas = (HtmlToEvg.prop(top.style "background-color" ""))
+        }
+        if (HtmlToEvg.isPaintableColor(canvas)) {
+            page.setAttribute("background-color" canvas)
+        } {
+            page.setAttribute("background-color" "#ffffff")
+        }
+        def el:EVGElement (this.blockBox(top ""))
+        page.addChild(el)
+        return page
+    }
+
+    ; --- blocks ---------------------------------------------------------------
+
+    fn blockBox:EVGElement (node:HNode linkId:string) {
+        def st:[string:string] node.style
+        def el (EVGElement.createDiv())
+        elementCount = (elementCount + 1)
+        def disp:string (HtmlToEvg.prop(st "display" "block"))
+        this.applyBox(el st)
+        if ((strlen linkId) > 0) {
+            el.id = linkId
+            el.setAttribute("cursor" "pointer")
+        }
+        this.noteAnchor(node el)
+        def isForm:boolean false
+        if (node.tag == "form") {
+            isForm = true
+            def f (new BrForm())
+            f.action = ((base.resolve((node.attr("action")))).toString())
+            if (node.hasAttr("method")) {
+                f.method = (to_lowercase (node.attr("method")))
+            }
+            push formStack (array_length forms)
+            push forms f
+        }
+        def isOl:boolean false
+        if (node.tag == "ol") {
+            isOl = true
+            def start:int 1
+            if (node.hasAttr("start")) {
+                def sv:double (CssParser.num((node.attr("start"))))
+                if (sv >= 0.0) {
+                    start = (to_int sv)
+                }
+            }
+            push olCounters start
+        }
+        if ((disp == "flex") || (disp == "inline-flex")) {
+            this.applyFlexContainer(el st)
+            this.fillFlexItems(el node linkId)
+        } {
+            if ((disp == "grid") || (disp == "inline-grid")) {
+                if (this.applyGridContainer(el st)) {
+                    this.fillFlexItems(el node linkId)
+                } {
+                    this.fillFlow(el node linkId "")
+                }
+            } {
+                if (disp == "table-row") {
+                    el.setAttribute("display" "flex")
+                    el.setAttribute("flex-direction" "row")
+                    el.setAttribute("flex-wrap" "nowrap")
+                    el.setAttribute("align-items" "stretch")
+                    this.fillFlexItems(el node linkId)
+                } {
+                    def marker:string ""
+                    if (disp == "list-item") {
+                        marker = (this.markerFor(st))
+                    }
+                    this.fillFlow(el node linkId marker)
+                }
+            }
+        }
+        if isOl {
+            removeLast olCounters
+        }
+        if isForm {
+            removeLast formStack
+        }
+        this.edgeBorders(el st)
+        return (this.centred(el st))
+    }
+
+    ; The children of a flex (or grid, or table row) container: each child is
+    ; an item. Runs of text between element children become anonymous items.
+    fn fillFlexItems:void (el:EVGElement node:HNode linkId:string) {
+        def pendingText:[HNode]
+        for node.children c:HNode i {
+            if (elementCount > maxElements) {
+                return
+            }
+            if c.isText {
+                if ((strlen (trim c.text)) > 0) {
+                    push pendingText c
+                }
+                continue
+            }
+            if (this.skipped(c)) {
+                continue
+            }
+            if ((array_length pendingText) > 0) {
+                el.addChild((this.anonymousItem(pendingText node.style linkId)))
+                clear pendingText
+            }
+            def item:EVGElement (this.boxFor(c linkId))
+            this.applyFlexItem(item c.style)
+            this.fitInRow(el item c.style)
+            el.addChild(item)
+        }
+        if ((array_length pendingText) > 0) {
+            el.addChild((this.anonymousItem(pendingText node.style linkId)))
+        }
+    }
+
+    fn anonymousItem:EVGElement (texts:[HNode] st:[string:string] linkId:string) {
+        def wrap (EVGElement.createDiv())
+        def flow (new BrFlow(wrap st))
+        for texts t:HNode i {
+            this.addText(flow t.text st linkId)
+        }
+        this.endLine(flow)
+        return wrap
+    }
+
+    ; Any element as a box of its own: a block, or an atomic inline.
+    fn boxFor:EVGElement (c:HNode linkId:string) {
+        def lid:string (this.linkFor(c linkId))
+        def disp:string (HtmlToEvg.prop(c.style "display" "inline"))
+        if (this.isReplaced(c)) {
+            def rep:EVGElement (this.replaced(c lid))
+            return rep
+        }
+        if (this.shrinksToText(c)) {
+            def tb:EVGElement (this.textBox(c lid))
+            return tb
+        }
+        if ((disp == "inline") || (disp == "contents")) {
+            ; an inline element as an item: its content, in a line of its own
+            def wrap (EVGElement.createDiv())
+            this.applyBox(wrap c.style)
+            if ((strlen lid) > 0) {
+                wrap.id = lid
+                wrap.setAttribute("cursor" "pointer")
+            }
+            this.fillFlow(wrap c lid "")
+            return wrap
+        }
+        def b:EVGElement (this.blockBox(c lid))
+        return b
+    }
+
+    ; Block flow: inline content into lines, blocks as they come.
+    fn fillFlow:void (el:EVGElement node:HNode linkId:string marker:string) {
+        def flow (new BrFlow(el node.style))
+        flow.markerPending = marker
+        for node.children c:HNode i {
+            if (elementCount > maxElements) {
+                break
+            }
+            this.flowChild(flow c node.style linkId)
+        }
+        this.endLine(flow)
+        if ((strlen flow.markerPending) > 0) {
+            ; an empty list item still shows its bullet
+            this.addWord(flow flow.markerPending node.style "")
+            flow.markerPending = ""
+            this.endLine(flow)
+        }
+    }
+
+    fn flowChild:void (flow:BrFlow c:HNode parentStyle:[string:string] linkId:string) {
+        if c.isText {
+            this.addText(flow c.text parentStyle linkId)
+            return
+        }
+        if (this.skipped(c)) {
+            return
+        }
+        if (c.tag == "br") {
+            this.lineBreak(flow parentStyle)
+            return
+        }
+        def lid:string (this.linkFor(c linkId))
+        def disp:string (HtmlToEvg.prop(c.style "display" "inline"))
+        if ((c.hasAttr("id")) || ((c.tag == "a") && (c.hasAttr("name")))) {
+            if ((disp == "inline") || (disp == "contents")) {
+                this.noteAnchor(c (this.openLine(flow)))
+            }
+        }
+        if (this.isReplaced(c)) {
+            this.addItem(flow (this.replaced(c lid)))
+            return
+        }
+        if ((disp == "inline") || (disp == "contents")) {
+            for c.children gc:HNode j {
+                this.flowChild(flow gc c.style lid)
+            }
+            return
+        }
+        if ((disp == "inline-block") || ((disp == "inline-flex") || (disp == "inline-grid"))) {
+            if (this.shrinksToText(c)) {
+                this.addItem(flow (this.textBox(c lid)))
+                return
+            }
+            this.addItem(flow (this.blockBox(c lid)))
+            return
+        }
+        ; a block: the line so far ends, the block follows
+        this.endLine(flow)
+        if ((strlen flow.markerPending) > 0) {
+            this.addWord(flow flow.markerPending parentStyle "")
+            flow.markerPending = ""
+            this.endLine(flow)
+        }
+        flow.container.addChild((this.blockBox(c lid)))
+    }
+
+    fn noteAnchor:void (node:HNode el:EVGElement) {
+        def names:[string]
+        if (node.hasAttr("id")) {
+            push names (node.attr("id"))
+        }
+        if ((node.tag == "a") && (node.hasAttr("name"))) {
+            push names (node.attr("name"))
+        }
+        for names nm:string i {
+            if ((strlen nm) > 0) {
+                if ((has anchors nm) == false) {
+                    set anchors nm el
+                }
+            }
+        }
+    }
+
+    ; --- text boxes -------------------------------------------------------------
+    ;
+    ; An EVG container in a flex line takes the whole line; a text element
+    ; shrinks to its words. So a box that holds nothing but a little text — a
+    ; menu link, a tag, a button-looking link — is drawn as ONE text element
+    ; carrying the box's padding, background and border. Its words then share
+    ; one style, which is what such a box nearly always has anyway.
+
+    fn shrinksToText:boolean (c:HNode) {
+        if ((strlen (HtmlToEvg.prop(c.style "width" ""))) > 0) {
+            return false
+        }
+        if ((CssParser.num((HtmlToEvg.prop(c.style "flex-grow" "0")))) > 0.0) {
+            return false
+        }
+        def d:string (HtmlToEvg.prop(c.style "display" "inline"))
+        if ((d == "flex") || ((d == "grid") || ((d == "inline-flex") || (d == "inline-grid")))) {
+            if ((this.elementChildren(c)) > 1) {
+                return false
+            }
+        }
+        if ((this.onlyInlineText(c 0)) == false) {
+            return false
+        }
+        def t:string (HtmlParser.collapseSpace((c.textContent())))
+        return (((strlen t) > 0) && ((strlen t) <= 80))
+    }
+
+    fn elementChildren:int (c:HNode) {
+        def n:int 0
+        for c.children k:HNode i {
+            if ((k.isText == false) && ((this.skipped(k)) == false)) {
+                n = (n + 1)
+            }
+        }
+        return n
+    }
+
+    fn onlyInlineText:boolean (n:HNode depth:int) {
+        if (depth > 6) {
+            return false
+        }
+        for n.children k:HNode i {
+            if k.isText {
+                continue
+            }
+            if (this.skipped(k)) {
+                continue
+            }
+            if ((this.isReplaced(k)) || (k.tag == "br")) {
+                return false
+            }
+            def d:string (HtmlToEvg.prop(k.style "display" "inline"))
+            if ((d != "inline") && (d != "contents")) {
+                ; a single block child that is itself only text is the same
+                ; thing one level down (<li><a style=display:block>…)
+                if ((this.elementChildren(n)) != 1) {
+                    return false
+                }
+            }
+            if ((this.onlyInlineText(k (depth + 1))) == false) {
+                return false
+            }
+        }
+        return true
+    }
+
+    ; The element the text really belongs to: down through single children.
+    fn innermost:HNode (c:HNode) {
+        def cur:HNode c
+        def guard:int 0
+        while (guard < 8) {
+            if ((this.elementChildren(cur)) != 1) {
+                return cur
+            }
+            def hasText:boolean false
+            def only:HNode cur
+            for cur.children k:HNode i {
+                if k.isText {
+                    if ((strlen (trim k.text)) > 0) {
+                        hasText = true
+                    }
+                } {
+                    if ((this.skipped(k)) == false) {
+                        only = k
+                    }
+                }
+            }
+            if hasText {
+                return cur
+            }
+            cur = only
+            guard = (guard + 1)
+        }
+        return cur
+    }
+
+    fn firstLink@(optional):HNode (c:HNode) {
+        if ((c.tag == "a") && (c.hasAttr("href"))) {
+            def selfHit@(optional):HNode c
+            return selfHit
+        }
+        for c.children k:HNode i {
+            if (k.isText == false) {
+                def hit@(optional):HNode (this.firstLink(k))
+                if (!null? hit) {
+                    return hit
+                }
+            }
+        }
+        def none@(optional):HNode
+        return none
+    }
+
+    fn textBox:EVGElement (c:HNode linkId:string) {
+        def lid:string linkId
+        if ((strlen lid) == 0) {
+            def a@(optional):HNode (this.firstLink(c))
+            if (!null? a) {
+                lid = (this.linkFor((unwrap a) ""))
+            }
+        }
+        def inner:HNode (this.innermost(c))
+        def span (EVGElement.createSpan())
+        elementCount = (elementCount + 1)
+        span.textContent = (HtmlToEvg.nbspToSpace((HtmlToEvg.transform((HtmlParser.collapseSpace((c.textContent()))) (HtmlToEvg.prop(inner.style "text-transform" "none"))))))
+        this.textStyle(span inner.style)
+        this.applyBox(span c.style)
+        if (inner != c) {
+            this.applyBox(span inner.style)
+        }
+        span.setAttribute("max-width" "100%")
+        span.setAttribute("flex-shrink" "1")
+        if ((strlen lid) > 0) {
+            span.id = lid
+            span.setAttribute("cursor" "pointer")
+        }
+        this.noteAnchor(c span)
+        return span
+    }
+
+    fn linkFor:string (c:HNode linkId:string) {
+        if ((c.tag == "a") && (c.hasAttr("href"))) {
+            def href:string (trim (c.attr("href")))
+            if ((strlen href) > 0) {
+                if ((startsWith (to_lowercase href) "javascript:") == false) {
+                    def lk (new BrLink())
+                    lk.id = ("L" + (to_string (array_length links)))
+                    lk.href = ((base.resolve(href)).toString())
+                    push links lk
+                    set linkById lk.id lk.href
+                    return lk.id
+                }
+            }
+        }
+        return linkId
+    }
+
+    fn skipped:boolean (c:HNode) {
+        def disp:string (HtmlToEvg.prop(c.style "display" "inline"))
+        if (disp == "none") {
+            return true
+        }
+        if ((HtmlToEvg.prop(c.style "visibility" "visible")) == "hidden") {
+            return true
+        }
+        def position:string (HtmlToEvg.prop(c.style "position" "static"))
+        if (position == "fixed") {
+            ; pinned over the page: cookie banners, chat bubbles, pop-ups
+            return true
+        }
+        if (position == "absolute") {
+            ; the 1-pixel box screen-reader text is hidden in
+            def w:double (CssParser.num((HtmlToEvg.prop(c.style "width" ""))))
+            if ((w >= 0.0) && (w <= 1.0)) {
+                return true
+            }
+        }
+        def t:string c.tag
+        if ((t == "script") || ((t == "style") || ((t == "head") || ((t == "template") || ((t == "svg") || (t == "math")))))) {
+            return true
+        }
+        if ((t == "input") && ((to_lowercase (c.attr("type"))) == "hidden")) {
+            return true
+        }
+        ; screen-reader-only text: clipped to nothing by the page's own CSS
+        if (c.hasClass("sr-only")) {
+            return true
+        }
+        if (c.hasClass("visually-hidden")) {
+            return true
+        }
+        if (c.hasClass("screen-reader-text")) {
+            return true
+        }
+        return false
+    }
+
+    ; --- lines ----------------------------------------------------------------
+
+    fn openLine:EVGElement (flow:BrFlow) {
+        if (!null? flow.line) {
+            def cur:EVGElement (unwrap flow.line)
+            return cur
+        }
+        def line (EVGElement.createDiv())
+        elementCount = (elementCount + 1)
+        line.setAttribute("display" "flex")
+        line.setAttribute("flex-direction" "row")
+        line.setAttribute("flex-wrap" "wrap")
+        line.setAttribute("align-items" "baseline")
+        line.setAttribute("width" "100%")
+        def ta:string (HtmlToEvg.prop(flow.style "text-align" "left"))
+        if ((ta == "center") || (ta == "-webkit-center")) {
+            line.setAttribute("justify-content" "center")
+        }
+        if ((ta == "right") || (ta == "end")) {
+            line.setAttribute("justify-content" "flex-end")
+        }
+        flow.container.addChild(line)
+        flow.line = line
+        flow.lastWord = (HtmlToEvg.noElement())
+        flow.spacePending = false
+        if ((strlen flow.markerPending) > 0) {
+            def m:string flow.markerPending
+            flow.markerPending = ""
+            this.addWord(flow m flow.style "")
+        }
+        return line
+    }
+
+    fn endLine:void (flow:BrFlow) {
+        flow.line = (HtmlToEvg.noElement())
+        flow.lastWord = (HtmlToEvg.noElement())
+        flow.spacePending = false
+    }
+
+    sfn noElement@(optional):EVGElement () {
+        def none@(optional):EVGElement
+        return none
+    }
+
+    fn lineBreak:void (flow:BrFlow st:[string:string]) {
+        def line:EVGElement (this.openLine(flow))
+        if ((array_length line.children) == 0) {
+            ; an empty line still has the height of one
+            def strut (EVGElement.createSpan())
+            strut.textContent = " "
+            this.textStyle(strut st)
+            strut.setAttribute("white-space" "pre")
+            line.addChild(strut)
+        }
+        def brk (EVGElement.createDiv())
+        brk.setAttribute("width" "100%")
+        brk.setAttribute("height" "0px")
+        line.addChild(brk)
+        flow.lastWord = (HtmlToEvg.noElement())
+        flow.spacePending = false
+    }
+
+    fn addItem:void (flow:BrFlow item:EVGElement) {
+        def line:EVGElement (this.openLine(flow))
+        if flow.spacePending {
+            if (!null? flow.lastWord) {
+                def lw:EVGElement (unwrap flow.lastWord)
+                if ((endsWith lw.textContent " ") == false) {
+                    lw.textContent = (lw.textContent + " ")
+                }
+            }
+        }
+        line.addChild(item)
+        flow.lastWord = (HtmlToEvg.noElement())
+        flow.spacePending = false
+    }
+
+    fn addText:void (flow:BrFlow raw:string st:[string:string] linkId:string) {
+        def ws:string (HtmlToEvg.prop(st "white-space" "normal"))
+        if ((ws == "pre") || ((ws == "pre-wrap") || (ws == "break-spaces"))) {
+            this.addPreText(flow raw st linkId)
+            return
+        }
+        def t:string (HtmlToEvg.transform(raw (HtmlToEvg.prop(st "text-transform" "none"))))
+        def n:int (strlen t)
+        if (n == 0) {
+            return
+        }
+        def i:int 0
+        def startsWithSpace:boolean (HtmlParser.isSpace((charAt t 0)))
+        if startsWithSpace {
+            flow.spacePending = true
+        }
+        while (i < n) {
+            ; skip spaces
+            while (i < n) {
+                if ((HtmlParser.isSpace((charAt t i))) == false) {
+                    break
+                }
+                flow.spacePending = true
+                i = (i + 1)
+            }
+            if (i >= n) {
+                break
+            }
+            def ws2:int i
+            while (i < n) {
+                if (HtmlParser.isSpace((charAt t i))) {
+                    break
+                }
+                i = (i + 1)
+            }
+            def word:string (substring t ws2 i)
+            ; a space before this word belongs to the word before it
+            if flow.spacePending {
+                if (!null? flow.lastWord) {
+                    def lw:EVGElement (unwrap flow.lastWord)
+                    if ((endsWith lw.textContent " ") == false) {
+                        lw.textContent = (lw.textContent + " ")
+                    }
+                }
+                flow.spacePending = false
+            }
+            this.addWord(flow (HtmlToEvg.nbspToSpace(word)) st linkId)
+        }
+    }
+
+    fn addPreText:void (flow:BrFlow raw:string st:[string:string] linkId:string) {
+        def t:string (replace raw "\r" "")
+        def lines:[string] (strsplit t "\n")
+        def n:int (array_length lines)
+        for lines ln:string i {
+            def txt:string (replace ln "\t" "    ")
+            if ((strlen txt) > 0) {
+                this.addWord(flow txt st linkId)
+            }
+            if (i < (n - 1)) {
+                this.lineBreak(flow st)
+            }
+        }
+    }
+
+    fn addWord:void (flow:BrFlow word:string st:[string:string] linkId:string) {
+        def line:EVGElement (this.openLine(flow))
+        def s (EVGElement.createSpan())
+        elementCount = (elementCount + 1)
+        s.textContent = word
+        this.textStyle(s st)
+        s.setAttribute("white-space" "pre")
+        s.setAttribute("flex-shrink" "0")
+        if ((strlen linkId) > 0) {
+            s.id = linkId
+            s.setAttribute("cursor" "pointer")
+        }
+        def bg:string (HtmlToEvg.prop(st "background-color" ""))
+        if (HtmlToEvg.isPaintableColor(bg)) {
+            s.setAttribute("background-color" bg)
+        }
+        line.addChild(s)
+        flow.lastWord = s
+    }
+
+    fn markerFor:string (st:[string:string]) {
+        def t:string (HtmlToEvg.prop(st "list-style-type" "disc"))
+        if (t == "none") {
+            return ""
+        }
+        if ((t == "decimal") || (t == "decimal-leading-zero")) {
+            def n:int (array_length olCounters)
+            if (n > 0) {
+                def v:int (itemAt olCounters (n - 1))
+                set_at olCounters (n - 1) (v + 1)
+                return ((to_string v) + ". ")
+            }
+            return "1. "
+        }
+        if ((t == "lower-alpha") || (t == "lower-latin")) {
+            def n2:int (array_length olCounters)
+            if (n2 > 0) {
+                def v2:int (itemAt olCounters (n2 - 1))
+                set_at olCounters (n2 - 1) (v2 + 1)
+                return ((strfromcode (96 + (((v2 - 1) % 26) + 1))) + ". ")
+            }
+        }
+        if (t == "circle") {
+            return "◦ "
+        }
+        if (t == "square") {
+            return "▪ "
+        }
+        return "• "
+    }
+
+    ; --- replaced elements ----------------------------------------------------
+
+    fn isReplaced:boolean (c:HNode) {
+        def t:string c.tag
+        return ((t == "img") || ((t == "input") || ((t == "button") || ((t == "select") || ((t == "textarea") || ((t == "video") || ((t == "audio") || ((t == "iframe") || ((t == "object") || ((t == "embed") || (t == "canvas")))))))))))
+    }
+
+    fn replaced:EVGElement (c:HNode linkId:string) {
+        def t:string c.tag
+        if (t == "img") {
+            return (this.image(c linkId))
+        }
+        if ((t == "input") || ((t == "button") || ((t == "select") || (t == "textarea")))) {
+            return (this.control(c))
+        }
+        return (this.mediaNotice(c))
+    }
+
+    fn mediaNotice:EVGElement (c:HNode) {
+        blockedMedia = (blockedMedia + 1)
+        def box (EVGElement.createDiv())
+        box.setAttribute("padding" "8px 12px")
+        box.setAttribute("margin-bottom" "8px")
+        box.setAttribute("background-color" "#eef1f6")
+        box.setAttribute("border-radius" "8px")
+        def label (EVGElement.createSpan())
+        label.setAttribute("font-size" "14px")
+        label.setAttribute("color" "#4a5568")
+        if ((c.tag == "video") || (c.tag == "audio")) {
+            label.textContent = "Video ja ääni eivät ole tässä selaimessa käytössä."
+        } {
+            label.textContent = "Upotettu sisältö on piilotettu."
+        }
+        box.addChild(label)
+        return box
+    }
+
+    fn imageSource:string (c:HNode) {
+        def candidates:[string] ([] _:string ( "src" "data-src" "data-lazy-src" "data-original" ))
+        for candidates a:string i {
+            def v:string (trim (c.attr(a)))
+            if (((strlen v) > 0) && ((startsWith v "data:image/gif") == false)) {
+                return v
+            }
+        }
+        def srcset:string (c.attr("srcset"))
+        if ((strlen srcset) == 0) {
+            srcset = (c.attr("data-srcset"))
+        }
+        if ((strlen srcset) > 0) {
+            ; the first candidate; srcsets list the small ones first
+            def first:string (trim (itemAt (strsplit srcset ",") 0))
+            def sp:int (indexOf first " ")
+            if (sp > 0) {
+                first = (substring first 0 sp)
+            }
+            return first
+        }
+        return (trim (c.attr("src")))
+    }
+
+    fn image:EVGElement (c:HNode linkId:string) {
+        def src:string (this.imageSource(c))
+        def st:[string:string] c.style
+        def em:double (HtmlToEvg.fontPx(st))
+        def cssW:string (trim (HtmlToEvg.prop(st "width" "")))
+        def pctW:boolean (endsWith cssW "%")
+        def w:double (CssCascade.pxOf(cssW em contentWidth))
+        def h:double (CssCascade.pxOf((HtmlToEvg.prop(st "height" "")) em 0.0))
+        def url:BrUrl (base.resolve(src))
+        def info@(optional):BrImage
+        if (((strlen src) > 0) && (policy.imageAllowed(url))) {
+            def key:string (url.toString())
+            if (has images key) {
+                info = (get images key)
+            } {
+                def bi (new BrImage())
+                bi.url = key
+                set images key bi
+                push imageOrder key
+                info = bi
+            }
+        }
+        def natW:double 0.0
+        def natH:double 0.0
+        def usable:boolean false
+        if (!null? info) {
+            def inf:BrImage (unwrap info)
+            if (inf.known && (inf.failed == false)) {
+                natW = inf.width
+                natH = inf.height
+                usable = true
+            }
+            if inf.failed {
+                info = (HtmlToEvg.noImage())
+            }
+        }
+        if ((w <= 0.0) && (h <= 0.0)) {
+            if usable {
+                w = natW
+                h = natH
+            }
+        } {
+            if (w <= 0.0) {
+                if (usable && (natH > 0.0)) {
+                    w = ((h * natW) / natH)
+                }
+            }
+            if (h <= 0.0) {
+                if (usable && (natW > 0.0)) {
+                    h = ((w * natH) / natW)
+                }
+            }
+        }
+        ; max-width: 100%, as nearly every page asks
+        if ((w > contentWidth) && (contentWidth > 0.0)) {
+            h = ((h * contentWidth) / w)
+            w = contentWidth
+        }
+        if ((null? info) || ((w < 2.0) || (h < 2.0))) {
+            ; not loaded yet, failed, or a tracking pixel: the alt text, if any
+            def alt:string (trim (c.attr("alt")))
+            def box (EVGElement.createDiv())
+            if ((strlen linkId) > 0) {
+                box.id = linkId
+            }
+            if ((strlen alt) > 0) {
+                if (null? info) {
+                    def at (EVGElement.createSpan())
+                    at.textContent = ("[" + alt + "]")
+                    at.setAttribute("font-size" "13px")
+                    at.setAttribute("color" "#667085")
+                    box.addChild(at)
+                }
+            }
+            if ((w >= 2.0) && (h >= 2.0)) {
+                box.setAttribute("width" ((to_string w) + "px"))
+                box.setAttribute("height" ((to_string h) + "px"))
+                box.setAttribute("background-color" "#eceff3")
+            }
+            return box
+        }
+        def im (EVGElement.createImg())
+        elementCount = (elementCount + 1)
+        def loaded:BrImage (unwrap info)
+        im.setAttribute("src" loaded.url)
+        if (pctW && usable) {
+            ; a share of whatever box it lands in; `settleFluidImages` gives
+            ; it its height once a layout has said how wide that is
+            im.setAttribute("width" cssW)
+            im.setAttribute("max-width" "100%")
+        } {
+            im.setAttribute("width" ((to_string w) + "px"))
+            im.setAttribute("height" ((to_string h) + "px"))
+            im.setAttribute("max-width" "100%")
+        }
+        im.setAttribute("object-fit" "cover")
+        def radius:string (HtmlToEvg.prop(st "border-top-left-radius" (HtmlToEvg.prop(st "border-radius" ""))))
+        if ((CssParser.num(radius)) > 0.0) {
+            im.setAttribute("border-radius" radius)
+        }
+        if ((strlen linkId) > 0) {
+            im.id = linkId
+            im.setAttribute("cursor" "pointer")
+        }
+        this.applyMargins(im st)
+        if (pctW && usable) {
+            push fluidImages im
+            push fluidAspect (natW / natH)
+        }
+        return im
+    }
+
+    ; After a layout: each fluid image's width is known, so it is given that
+    ; width and the height its shape asks for, in pixels. True when anything
+    ; changed and the page must be laid out again.
+    fn settleFluidImages:boolean () {
+        def changed:boolean false
+        for fluidImages im:EVGElement i {
+            def w:double im.calculatedWidth
+            def a:double (itemAt fluidAspect i)
+            if ((w > 1.0) && (a > 0.0)) {
+                im.setAttribute("width" ((to_string w) + "px"))
+                im.setAttribute("height" ((to_string (w / a)) + "px"))
+                changed = true
+            }
+        }
+        clear fluidImages
+        clear fluidAspect
+        return changed
+    }
+
+    sfn noImage@(optional):BrImage () {
+        def none@(optional):BrImage
+        return none
+    }
+
+    ; --- form controls --------------------------------------------------------
+
+    fn control:EVGElement (c:HNode) {
+        def t:string c.tag
+        def kind:string (to_lowercase (c.attr("type")))
+        if (t == "button") {
+            kind = "button"
+            if (((to_lowercase (c.attr("type"))) == "submit") || ((c.hasAttr("type")) == false)) {
+                kind = "submit"
+            }
+        }
+        if (t == "select") {
+            kind = "select"
+        }
+        if (t == "textarea") {
+            kind = "textarea"
+        }
+        if ((strlen kind) == 0) {
+            kind = "text"
+        }
+        def f (new BrField())
+        f.id = ("F" + (to_string (array_length fields)))
+        f.kind = kind
+        f.name = (c.attr("name"))
+        f.value = (c.attr("value"))
+        f.placeholder = (c.attr("placeholder"))
+        if ((strlen f.placeholder) == 0) {
+            f.placeholder = (c.attr("aria-label"))
+        }
+        if ((array_length formStack) > 0) {
+            f.form = (itemAt formStack ((array_length formStack) - 1))
+            def fm:BrForm (itemAt forms f.form)
+            push fm.fieldIds f.id
+        }
+        ; A text field has a width of its own and holds its text in a label.
+        ; Anything else is ONE text element with padding and a background: a
+        ; text leaf is what shrink-wraps to its content in a flex line, and a
+        ; container would take the whole line.
+        def textField:boolean false
+        def textKinds:[string] ([] _:string ( "text" "search" "url" "tel" "number" "email" "password" "file" "textarea" ))
+        for textKinds tk:string tki {
+            if (tk == kind) {
+                textField = true
+            }
+        }
+        def label (EVGElement.createSpan())
+        label.setAttribute("font-size" "15px")
+        label.setAttribute("white-space" "pre")
+        def box (EVGElement.createDiv())
+        if (textField == false) {
+            box = label
+        }
+        elementCount = (elementCount + 1)
+        box.id = f.id
+        box.setAttribute("cursor" "pointer")
+        box.setAttribute("margin" "2px 4px 2px 0px")
+        if ((kind == "submit") || ((kind == "button") || ((kind == "reset") || (kind == "image")))) {
+            def text:string f.value
+            if (t == "button") {
+                text = (HtmlParser.collapseSpace((c.textContent())))
+            }
+            if ((strlen text) == 0) {
+                text = (c.attr("aria-label"))
+            }
+            if ((strlen text) == 0) {
+                text = "Lähetä"
+                if (kind == "button") {
+                    text = "Painike"
+                }
+            }
+            label.textContent = text
+            label.setAttribute("color" "#ffffff")
+            box.setAttribute("padding" "6px 14px")
+            box.setAttribute("background-color" "#2b59c3")
+            box.setAttribute("border-radius" "8px")
+        } {
+            if ((kind == "checkbox") || (kind == "radio")) {
+                label.textContent = "☐"
+                if (c.hasAttr("checked")) {
+                    label.textContent = "☑"
+                }
+                box.setAttribute("padding" "0px 2px")
+            } {
+                if (kind == "select") {
+                    def opt:string ""
+                    def opts:[HNode]
+                    c.findAll("option" opts)
+                    for opts o:HNode oi {
+                        if ((oi == 0) || (o.hasAttr("selected"))) {
+                            opt = (HtmlParser.collapseSpace((o.textContent())))
+                        }
+                    }
+                    label.textContent = (opt + "  ▾")
+                    label.setAttribute("color" "#1a1a1a")
+                } {
+                    ; text-like fields
+                    if (kind == "textarea") {
+                        f.value = (c.textContent())
+                    }
+                    if ((kind == "password") || ((kind == "file") || (kind == "email"))) {
+                        f.kind = "disabled"
+                    }
+                    this.showFieldText(label f)
+                    def width:double (CssCascade.pxOf((HtmlToEvg.prop(c.style "width" "")) 16.0 contentWidth))
+                    if (width <= 0.0) {
+                        width = 220.0
+                    }
+                    if (width > contentWidth) {
+                        width = contentWidth
+                    }
+                    box.setAttribute("width" ((to_string width) + "px"))
+                    f.box = box
+                }
+                box.setAttribute("padding" "6px 10px")
+                box.setAttribute("border" "1px solid #9aa4b2")
+                box.setAttribute("border-radius" "6px")
+                box.setAttribute("background-color" "#ffffff")
+            }
+        }
+        f.label = label
+        if textField {
+            box.addChild(label)
+        }
+        push fields f
+        set fieldById f.id f
+        return box
+    }
+
+    fn showFieldText:void (label:EVGElement f:BrField) {
+        if ((strlen f.value) > 0) {
+            label.textContent = f.value
+            label.setAttribute("color" "#1a1a1a")
+        } {
+            label.textContent = f.placeholder
+            if ((strlen f.placeholder) == 0) {
+                label.textContent = " "
+            }
+            label.setAttribute("color" "#8a94a3")
+        }
+    }
+
+    ; --- boxes ----------------------------------------------------------------
+
+    fn applyBox:void (el:EVGElement st:[string:string]) {
+        def em:double (HtmlToEvg.fontPx(st))
+        this.lengthProp(el st "width" em true)
+        this.lengthProp(el st "min-width" em true)
+        this.lengthProp(el st "max-width" em true)
+        this.lengthProp(el st "height" em false)
+        this.lengthProp(el st "min-height" em false)
+        this.lengthProp(el st "max-height" em false)
+        this.applyMargins(el st)
+        def sides:[string] ([] _:string ( "top" "right" "bottom" "left" ))
+        for sides s:string i {
+            def pv:string (HtmlToEvg.prop(st ("padding-" + s) ""))
+            def pp:double (CssCascade.pxOf(pv em contentWidth))
+            if (pp > 0.0) {
+                el.setAttribute(("padding-" + s) ((to_string pp) + "px"))
+            }
+        }
+        this.applyBackground(el st)
+        ; a border all round, when the four sides agree
+        def bw:double (this.borderWidth(st "top"))
+        if (bw > 0.0) {
+            def same:boolean true
+            def c0:string (HtmlToEvg.prop(st "border-top-color" "#000000"))
+            for sides s2:string k {
+                if ((this.borderWidth(st s2)) != bw) {
+                    same = false
+                }
+                if ((HtmlToEvg.prop(st ("border-" + s2 + "-color") "#000000")) != c0) {
+                    same = false
+                }
+            }
+            if same {
+                if (HtmlToEvg.isPaintableColor(c0)) {
+                    el.setAttribute("border" ((to_string bw) + "px solid " + c0))
+                }
+            }
+        }
+        def radius:string (HtmlToEvg.prop(st "border-radius" ""))
+        if ((strlen radius) > 0) {
+            def rv:double (CssCascade.pxOf((itemAt (CssCascade.splitValues(radius)) 0) em 0.0))
+            if (rv > 0.0) {
+                el.setAttribute("border-radius" ((to_string rv) + "px"))
+            }
+            if (endsWith radius "%") {
+                def rp:double (CssParser.num(radius))
+                if (rp >= 50.0) {
+                    el.setAttribute("border-radius" "50%")
+                }
+            }
+        }
+        def op:string (HtmlToEvg.prop(st "opacity" ""))
+        if ((strlen op) > 0) {
+            def ov:double (CssParser.num(op))
+            if ((ov >= 0.0) && (ov < 1.0)) {
+                if (ov < 0.3) {
+                    ; nearly invisible content is usually waiting for a script
+                    ov = 1.0
+                }
+                el.setAttribute("opacity" (to_string ov))
+            }
+        }
+    }
+
+    fn applyBackground:void (el:EVGElement st:[string:string]) {
+        def bg:string (HtmlToEvg.prop(st "background-color" ""))
+        if (HtmlToEvg.isPaintableColor(bg)) {
+            el.setAttribute("background-color" bg)
+        }
+    }
+
+    fn borderWidth:double (st:[string:string] side:string) {
+        def style:string (HtmlToEvg.prop(st ("border-" + side + "-style") "none"))
+        if ((style == "none") || (style == "hidden")) {
+            return 0.0
+        }
+        def w:string (HtmlToEvg.prop(st ("border-" + side + "-width") "medium"))
+        if (w == "thin") {
+            return 1.0
+        }
+        if (w == "medium") {
+            return 3.0
+        }
+        if (w == "thick") {
+            return 5.0
+        }
+        def px:double (CssCascade.pxOf(w (HtmlToEvg.fontPx(st)) 0.0))
+        if (px < 0.0) {
+            return 0.0
+        }
+        if (px > 20.0) {
+            return 20.0
+        }
+        return px
+    }
+
+    ; A border on the top or bottom only — a separator line — is drawn as a
+    ; thin block, since EVG's border is all-round.
+    fn edgeBorders:void (el:EVGElement st:[string:string]) {
+        def top:double (this.borderWidth(st "top"))
+        def bottom:double (this.borderWidth(st "bottom"))
+        def left:double (this.borderWidth(st "left"))
+        def right:double (this.borderWidth(st "right"))
+        if (((top > 0.0) && (bottom > 0.0)) && ((left > 0.0) && (right > 0.0))) {
+            return
+        }
+        if (bottom > 0.0) {
+            def c:string (HtmlToEvg.prop(st "border-bottom-color" "#000000"))
+            if (HtmlToEvg.isPaintableColor(c)) {
+                def rule (EVGElement.createDiv())
+                rule.setAttribute("height" ((to_string bottom) + "px"))
+                rule.setAttribute("width" "100%")
+                rule.setAttribute("background-color" c)
+                rule.setAttribute("margin-top" "4px")
+                el.addChild(rule)
+            }
+        }
+        if (top > 0.0) {
+            def c2:string (HtmlToEvg.prop(st "border-top-color" "#000000"))
+            if (HtmlToEvg.isPaintableColor(c2)) {
+                def rule2 (EVGElement.createDiv())
+                rule2.setAttribute("height" ((to_string top) + "px"))
+                rule2.setAttribute("width" "100%")
+                rule2.setAttribute("background-color" c2)
+                rule2.setAttribute("margin-bottom" "4px")
+                def kids:[EVGElement]
+                push kids rule2
+                for el.children k:EVGElement ki {
+                    push kids k
+                }
+                el.children = kids
+            }
+        }
+    }
+
+    fn applyMargins:void (el:EVGElement st:[string:string]) {
+        def em:double (HtmlToEvg.fontPx(st))
+        def sides:[string] ([] _:string ( "top" "right" "bottom" "left" ))
+        for sides s:string i {
+            def mv:string (HtmlToEvg.prop(st ("margin-" + s) ""))
+            def mp:double (CssCascade.pxOf(mv em contentWidth))
+            if (mp > 0.0) {
+                if (mp > 200.0) {
+                    mp = 200.0
+                }
+                el.setAttribute(("margin-" + s) ((to_string mp) + "px"))
+            }
+        }
+    }
+
+    ; `margin: 0 auto` on a box with a width: EVG has no auto margins, so the
+    ; box goes inside a full-width row that centres it.
+    fn centred:EVGElement (el:EVGElement st:[string:string]) {
+        def ml:string (HtmlToEvg.prop(st "margin-left" ""))
+        def mr:string (HtmlToEvg.prop(st "margin-right" ""))
+        if ((ml != "auto") || (mr != "auto")) {
+            return el
+        }
+        def hasWidth:boolean ((HtmlToEvg.prop(st "max-width" "") != "") || (HtmlToEvg.prop(st "width" "") != ""))
+        if (hasWidth == false) {
+            return el
+        }
+        def row (EVGElement.createDiv())
+        row.setAttribute("display" "flex")
+        row.setAttribute("flex-direction" "row")
+        row.setAttribute("flex-wrap" "nowrap")
+        row.setAttribute("justify-content" "center")
+        row.setAttribute("width" "100%")
+        ; the box itself must now say how wide it is, or a flex item shrinks
+        ; to its content
+        if ((HtmlToEvg.prop(st "width" "")) == "") {
+            el.setAttribute("width" "100%")
+        }
+        el.setAttribute("flex-shrink" "1")
+        row.addChild(el)
+        return row
+    }
+
+    fn lengthProp:void (el:EVGElement st:[string:string] name:string em:double horizontal:boolean) {
+        def v:string (HtmlToEvg.prop(st name ""))
+        if ((strlen v) == 0) {
+            return
+        }
+        def t:string (to_lowercase v)
+        if ((t == "auto") || (t == "none")) {
+            return
+        }
+        def unusable:[string] ([] _:string ( "calc(" "min(" "max(" "clamp(" "fit-content" "max-content" "min-content" "var(" ))
+        for unusable prefix:string ui {
+            if (startsWith t prefix) {
+                return
+            }
+        }
+        if (endsWith t "%") {
+            if (horizontal == false) {
+                ; a percentage height needs a parent with a height; leave it
+                return
+            }
+            def pc:double (CssParser.num(t))
+            if ((pc > 0.0) && (pc <= 100.0)) {
+                el.setAttribute(name ((to_string pc) + "%"))
+            }
+            return
+        }
+        if ((endsWith t "vh") || (endsWith t "vw")) {
+            return
+        }
+        def px:double (CssCascade.pxOf(t em contentWidth))
+        if (px <= 0.0) {
+            if ((px == 0.0) && ((name == "height") || (name == "max-height"))) {
+                ; height: 0 hides content that a script would open
+                el.setAttribute(name "0px")
+                el.setAttribute("overflow" "hidden")
+            }
+            return
+        }
+        if (horizontal && (px > contentWidth)) {
+            if (name == "min-width") {
+                px = contentWidth
+            }
+        }
+        el.setAttribute(name ((to_string px) + "px"))
+    }
+
+    fn applyFlexContainer:void (el:EVGElement st:[string:string]) {
+        el.setAttribute("display" "flex")
+        def dir:string (HtmlToEvg.prop(st "flex-direction" "row"))
+        if (startsWith dir "column") {
+            el.setAttribute("flex-direction" "column")
+        } {
+            el.setAttribute("flex-direction" "row")
+        }
+        def wrap:string (HtmlToEvg.prop(st "flex-wrap" "nowrap"))
+        if (startsWith wrap "wrap") {
+            el.setAttribute("flex-wrap" "wrap")
+        } {
+            if (startsWith dir "column") {
+                el.setAttribute("flex-wrap" "nowrap")
+            } {
+                ; a row that does not fit a phone screen wraps rather than
+                ; running off the side, which is kinder than CSS's answer
+                el.setAttribute("flex-wrap" "wrap")
+            }
+        }
+        def jc:string (HtmlToEvg.alignValue((HtmlToEvg.prop(st "justify-content" "flex-start")) true))
+        if ((strlen jc) > 0) {
+            el.setAttribute("justify-content" jc)
+        }
+        def ai:string (HtmlToEvg.alignValue((HtmlToEvg.prop(st "align-items" "stretch")) false))
+        if ((strlen ai) > 0) {
+            el.setAttribute("align-items" ai)
+        }
+        this.applyGaps(el st)
+    }
+
+    fn applyGaps:void (el:EVGElement st:[string:string]) {
+        def em:double (HtmlToEvg.fontPx(st))
+        def rg:double (CssCascade.pxOf((HtmlToEvg.prop(st "row-gap" "")) em contentWidth))
+        def cg:double (CssCascade.pxOf((HtmlToEvg.prop(st "column-gap" "")) em contentWidth))
+        if (rg > 0.0) {
+            el.setAttribute("row-gap" ((to_string rg) + "px"))
+        }
+        if (cg > 0.0) {
+            el.setAttribute("column-gap" ((to_string cg) + "px"))
+        }
+    }
+
+    ; Grids EVG can lay out: fixed track lists, `fr`, `repeat(N, …)`,
+    ; `minmax`. `auto-fill` / `auto-fit` become a wrapping row instead.
+    fn applyGridContainer:boolean (el:EVGElement st:[string:string]) {
+        def cols:string (HtmlToEvg.prop(st "grid-template-columns" ""))
+        def lower:string (to_lowercase cols)
+        if ((strlen cols) == 0) {
+            this.gridAsWrap(el st)
+            return true
+        }
+        if (((indexOf lower "auto-fill") >= 0) || ((indexOf lower "auto-fit") >= 0)) {
+            ; `repeat(auto-fill, minmax(260px, 1fr))`: as many columns as fit
+            ; the width this page is being laid out at
+            def minCol:double (this.autoTrackMin(lower (HtmlToEvg.fontPx(st))))
+            if (minCol > 0.0) {
+                def gap:double (CssCascade.pxOf((HtmlToEvg.prop(st "column-gap" "0px")) (HtmlToEvg.fontPx(st)) contentWidth))
+                if (gap < 0.0) {
+                    gap = 0.0
+                }
+                def n:int (to_int ((contentWidth + gap) / (minCol + gap)))
+                if (n < 1) {
+                    n = 1
+                }
+                if (n > 12) {
+                    n = 12
+                }
+                el.setAttribute("display" "grid")
+                el.setAttribute("grid-template-columns" ("repeat(" + (to_string n) + ", 1fr)"))
+                this.applyGaps(el st)
+                return true
+            }
+            this.gridAsWrap(el st)
+            return true
+        }
+        if ((indexOf lower "calc(") >= 0) {
+            this.gridAsWrap(el st)
+            return true
+        }
+        if (((indexOf lower "[") >= 0) || (((indexOf lower "min-content") >= 0) || ((indexOf lower "max-content") >= 0))) {
+            this.gridAsWrap(el st)
+            return true
+        }
+        if (((indexOf lower "subgrid") >= 0) || ((indexOf lower "var(") >= 0)) {
+            this.gridAsWrap(el st)
+            return true
+        }
+        el.setAttribute("display" "grid")
+        el.setAttribute("grid-template-columns" (replace cols "auto" "1fr"))
+        this.applyGaps(el st)
+        return true
+    }
+
+    ; The smallest track of an auto-repeat: `minmax(260px, 1fr)` or `200px`.
+    fn autoTrackMin:double (cols:string em:double) {
+        def comma:int (indexOf cols ",")
+        if (comma < 0) {
+            return 0.0
+        }
+        def rest:string (trim (substring cols (comma + 1) (strlen cols)))
+        if (startsWith rest "minmax(") {
+            rest = (substring rest 7 (strlen rest))
+        }
+        def end:int 0
+        while (end < (strlen rest)) {
+            def ch:int (charAt rest end)
+            if ((ch == 44) || ((ch == 41) || (ch == 32))) {
+                break
+            }
+            end = (end + 1)
+        }
+        def v:double (CssCascade.pxOf((substring rest 0 end) em contentWidth))
+        if (v > contentWidth) {
+            return contentWidth
+        }
+        return v
+    }
+
+    fn gridAsWrap:void (el:EVGElement st:[string:string]) {
+        el.setAttribute("display" "flex")
+        el.setAttribute("flex-direction" "row")
+        el.setAttribute("flex-wrap" "wrap")
+        el.setAttribute("align-items" "flex-start")
+        this.applyGaps(el st)
+    }
+
+    fn applyFlexItem:void (item:EVGElement st:[string:string]) {
+        def grow:string (HtmlToEvg.prop(st "flex-grow" ""))
+        if ((strlen grow) > 0) {
+            def g:double (CssParser.num(grow))
+            if (g > 0.0) {
+                item.setAttribute("flex-grow" (to_string g))
+            }
+        }
+        def shrink:string (HtmlToEvg.prop(st "flex-shrink" ""))
+        if ((strlen shrink) > 0) {
+            def sv:double (CssParser.num(shrink))
+            if (sv >= 0.0) {
+                item.setAttribute("flex-shrink" (to_string sv))
+            }
+        }
+        def basis:string (HtmlToEvg.prop(st "flex-basis" ""))
+        if (((strlen basis) > 0) && (basis != "auto")) {
+            def bp:double (CssCascade.pxOf(basis (HtmlToEvg.fontPx(st)) contentWidth))
+            if (bp >= 0.0) {
+                if (endsWith basis "%") {
+                    item.setAttribute("flex-basis" basis)
+                } {
+                    item.setAttribute("flex-basis" ((to_string bp) + "px"))
+                }
+            }
+        }
+        def as:string (HtmlToEvg.alignValue((HtmlToEvg.prop(st "align-self" "")) false))
+        if ((strlen as) > 0) {
+            item.setAttribute("align-self" as)
+        }
+        if ((HtmlToEvg.prop(st "display" "")) == "table-cell") {
+            item.setAttribute("flex-grow" "1")
+            item.setAttribute("flex-basis" "0px")
+            item.setAttribute("min-width" "0px")
+        }
+    }
+
+    ; A block with no width in a flex ROW is as wide as its content in CSS.
+    ; In EVG a block fills the row, but a flex container shrink-wraps — so the
+    ; block becomes a one-column flex container, which lays its children out
+    ; the same way and takes its content's width.
+    fn fitInRow:void (row:EVGElement item:EVGElement st:[string:string]) {
+        if ((row.display != "flex") || (row.flexDirection != "row")) {
+            return
+        }
+        if ((item.elementType != 0) || (item.display == "flex")) {
+            return
+        }
+        if (item.width.isSet || (item.flex > 0.0)) {
+            return
+        }
+        if ((strlen (HtmlToEvg.prop(st "flex-basis" ""))) > 0) {
+            if ((HtmlToEvg.prop(st "flex-basis" "")) != "auto") {
+                return
+            }
+        }
+        item.setAttribute("display" "flex")
+        item.setAttribute("flex-direction" "column")
+        item.setAttribute("flex-wrap" "nowrap")
+        item.setAttribute("align-items" "stretch")
+    }
+
+    ; CSS box-alignment keywords as the ones EVG knows; "" when there is none.
+    sfn alignValue:string (v:string main:boolean) {
+        def t:string (to_lowercase (trim v))
+        if ((t == "flex-start") || ((t == "start") || ((t == "left") || ((t == "normal") || (t == "self-start"))))) {
+            return "flex-start"
+        }
+        if ((t == "flex-end") || ((t == "end") || ((t == "right") || (t == "self-end")))) {
+            return "flex-end"
+        }
+        if (t == "center") {
+            return "center"
+        }
+        if ((t == "space-between") || ((t == "space-around") || (t == "space-evenly"))) {
+            if main {
+                return t
+            }
+            return ""
+        }
+        if (t == "stretch") {
+            if main {
+                return "flex-start"
+            }
+            return "stretch"
+        }
+        if ((t == "baseline") || (t == "first baseline")) {
+            return "baseline"
+        }
+        return ""
+    }
+
+    fn textStyle:void (s:EVGElement st:[string:string]) {
+        def size:double (HtmlToEvg.fontPx(st))
+        s.setAttribute("font-size" ((to_string size) + "px"))
+        def weight:string (HtmlToEvg.prop(st "font-weight" "normal"))
+        if ((weight == "bold") || ((weight == "bolder") || ((CssParser.num(weight)) >= 600.0))) {
+            s.setAttribute("font-weight" "bold")
+        }
+        def color:string (HtmlToEvg.prop(st "color" "#1a1a1a"))
+        if (HtmlToEvg.isPaintableColor(color)) {
+            s.setAttribute("color" color)
+        }
+        def lh:string (HtmlToEvg.prop(st "line-height" ""))
+        if ((strlen lh) > 0) {
+            def lhv:double (HtmlToEvg.lineHeight(lh size))
+            if (lhv > 0.0) {
+                s.setAttribute("line-height" (to_string lhv))
+            }
+        }
+        def fam:string (to_lowercase (HtmlToEvg.prop(st "font-family" "")))
+        if (((indexOf fam "monospace") >= 0) || (((indexOf fam "courier") >= 0) || ((indexOf fam "consolas") >= 0))) {
+            s.setAttribute("font-family" "Courier New")
+        }
+    }
+
+    ; line-height as a multiplier of the font size, which is the form that
+    ; survives the per-word elements; 0 for "normal" or unknown.
+    sfn lineHeight:double (v:string size:double) {
+        def t:string (to_lowercase (trim v))
+        if (t == "normal") {
+            return 0.0
+        }
+        def u:string (CssCascade.unitOf(t))
+        def n:double (CssParser.num(t))
+        if (n <= 0.0) {
+            return 0.0
+        }
+        def mult:double 0.0
+        if (u == "") {
+            mult = n
+        }
+        if (u == "%") {
+            mult = (n / 100.0)
+        }
+        if (u == "em") {
+            mult = n
+        }
+        if ((u == "px") && (size > 0.0)) {
+            mult = (n / size)
+        }
+        if (u == "rem") {
+            mult = ((n * 16.0) / size)
+        }
+        if ((mult < 1.0) && (mult > 0.0)) {
+            mult = 1.0
+        }
+        if (mult > 3.0) {
+            mult = 3.0
+        }
+        return mult
+    }
+
+    ; --- small helpers --------------------------------------------------------
+
+    sfn prop:string (st:[string:string] name:string fallback:string) {
+        if (has st name) {
+            return (unwrap (get st name))
+        }
+        return fallback
+    }
+
+    sfn fontPx:double (st:[string:string]) {
+        def v:double (CssParser.num((HtmlToEvg.prop(st "font-size" "16px"))))
+        if (v <= 0.0) {
+            return 16.0
+        }
+        return v
+    }
+
+    sfn isPaintableColor:boolean (c:string) {
+        def t:string (to_lowercase (trim c))
+        if ((strlen t) == 0) {
+            return false
+        }
+        if ((t == "transparent") || ((t == "none") || ((t == "inherit") || ((t == "initial") || (t == "currentcolor"))))) {
+            return false
+        }
+        if ((indexOf t "var(") >= 0) {
+            return false
+        }
+        if ((startsWith t "rgba(") || (startsWith t "hsla(")) {
+            ; fully transparent
+            if ((endsWith t ", 0)") || ((endsWith t ",0)") || (endsWith t " / 0)"))) {
+                return false
+            }
+        }
+        if (startsWith t "color-mix") {
+            return false
+        }
+        return true
+    }
+
+    sfn transform:string (s:string how:string) {
+        if (how == "uppercase") {
+            return (to_uppercase s)
+        }
+        if (how == "lowercase") {
+            return (to_lowercase s)
+        }
+        return s
+    }
+
+    sfn nbspToSpace:string (s:string) {
+        def nb:string (strfromcode 160)
+        if ((indexOf s nb) < 0) {
+            return s
+        }
+        return (replace s nb " ")
+    }
+}

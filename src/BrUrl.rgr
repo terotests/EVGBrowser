@@ -1,0 +1,396 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; BrUrl — a URL, split into its parts, and resolved against a base.
+; ==============================================================================
+;
+; Enough of RFC 3986 for following links on ordinary pages: scheme, host,
+; port, path, query and fragment; relative references (`../a`, `/a`, `?q`,
+; `#f`, `//host/a`) resolved the way a browser resolves them, with the dot
+; segments removed. Userinfo is dropped on purpose: `https://yle.fi@evil.example/`
+; must not look like yle.fi to anything that reads the host.
+;
+; `about:` URLs are the browser's own pages. They have a scheme and a path
+; and nothing else.
+; ==============================================================================
+
+class BrUrl {
+    def scheme:string ""
+    def host:string ""
+    def port:string ""
+    def path:string ""
+    def query:string ""
+    def fragment:string ""
+    def valid:boolean false
+
+    sfn parse:BrUrl (text:string) {
+        def u (new BrUrl())
+        def s:string (trim text)
+        ; the fragment first, then the query: `?` may appear inside a fragment
+        def hashAt:int (indexOf s "#")
+        if (hashAt >= 0) {
+            u.fragment = (substring s (hashAt + 1) (strlen s))
+            s = (substring s 0 hashAt)
+        }
+        def qAt:int (indexOf s "?")
+        if (qAt >= 0) {
+            u.query = (substring s (qAt + 1) (strlen s))
+            s = (substring s 0 qAt)
+        }
+        def colon:int (indexOf s ":")
+        if (colon <= 0) {
+            return u
+        }
+        def sch:string (to_lowercase (substring s 0 colon))
+        if ((BrUrl.isSchemeName(sch)) == false) {
+            return u
+        }
+        u.scheme = sch
+        def rest:string (substring s (colon + 1) (strlen s))
+        if (startsWith rest "//") {
+            rest = (substring rest 2 (strlen rest))
+            def slash:int (indexOf rest "/")
+            def authority:string rest
+            if (slash >= 0) {
+                authority = (substring rest 0 slash)
+                rest = (substring rest slash (strlen rest))
+            } {
+                rest = "/"
+            }
+            def at:int (lastIndexOf authority "@")
+            if (at >= 0) {
+                authority = (substring authority (at + 1) (strlen authority))
+            }
+            def pc:int (lastIndexOf authority ":")
+            if ((pc >= 0) && ((indexOf authority "]") < pc)) {
+                u.port = (substring authority (pc + 1) (strlen authority))
+                authority = (substring authority 0 pc)
+            }
+            u.host = (to_lowercase authority)
+            if (u.port == "443") {
+                if (sch == "https") {
+                    u.port = ""
+                }
+            }
+            if (u.port == "80") {
+                if (sch == "http") {
+                    u.port = ""
+                }
+            }
+        }
+        u.path = rest
+        if (u.isHierarchical()) {
+            if ((strlen u.path) == 0) {
+                u.path = "/"
+            }
+            u.path = (BrUrl.removeDots(u.path))
+        }
+        u.valid = true
+        return u
+    }
+
+    sfn isSchemeName:boolean (s:string) {
+        def i:int 0
+        def n:int (strlen s)
+        if (n == 0) {
+            return false
+        }
+        while (i < n) {
+            def c:int (charAt s i)
+            def ok:boolean false
+            if ((c >= 97) && (c <= 122)) {
+                ok = true
+            }
+            if ((i > 0) && (((c >= 48) && (c <= 57)) || ((c == 43) || ((c == 45) || (c == 46))))) {
+                ok = true
+            }
+            if (ok == false) {
+                return false
+            }
+            i = (i + 1)
+        }
+        return true
+    }
+
+    fn isHierarchical:boolean () {
+        return ((scheme == "http") || ((scheme == "https") || (scheme == "file")))
+    }
+
+    fn isWeb:boolean () {
+        return ((scheme == "http") || (scheme == "https"))
+    }
+
+    fn isAbout:boolean () {
+        return (scheme == "about")
+    }
+
+    ; The URL without its fragment: what is fetched, and what history keys on.
+    fn withoutFragment:string () {
+        def out:string (scheme + ":")
+        if (this.isHierarchical()) {
+            out = (out + "//" + host)
+            if ((strlen port) > 0) {
+                out = (out + ":" + port)
+            }
+        }
+        out = (out + path)
+        if ((strlen query) > 0) {
+            out = (out + "?" + query)
+        }
+        return out
+    }
+
+    fn toString:string () {
+        def out:string (this.withoutFragment())
+        if ((strlen fragment) > 0) {
+            out = (out + "#" + fragment)
+        }
+        return out
+    }
+
+    fn origin:string () {
+        def out:string (scheme + "://" + host)
+        if ((strlen port) > 0) {
+            out = (out + ":" + port)
+        }
+        return out
+    }
+
+    ; Resolve `ref` against this URL, as an <a href> on this page would be.
+    fn resolve:BrUrl (ref:string) {
+        def r:string (trim ref)
+        if ((strlen r) == 0) {
+            def same:BrUrl (BrUrl.parse((this.withoutFragment())))
+            return same
+        }
+        def abs:BrUrl (BrUrl.parse(r))
+        if abs.valid {
+            return abs
+        }
+        if ((this.isHierarchical()) == false) {
+            return abs
+        }
+        if (startsWith r "//") {
+            def net:BrUrl (BrUrl.parse((scheme + ":" + r)))
+            return net
+        }
+        def out (new BrUrl())
+        out.scheme = scheme
+        out.host = host
+        out.port = port
+        out.valid = true
+        def rest:string r
+        def hashAt:int (indexOf rest "#")
+        if (hashAt >= 0) {
+            out.fragment = (substring rest (hashAt + 1) (strlen rest))
+            rest = (substring rest 0 hashAt)
+        }
+        def qAt:int (indexOf rest "?")
+        def hasQuery:boolean false
+        if (qAt >= 0) {
+            out.query = (substring rest (qAt + 1) (strlen rest))
+            rest = (substring rest 0 qAt)
+            hasQuery = true
+        }
+        if ((strlen rest) == 0) {
+            out.path = path
+            if (hasQuery == false) {
+                out.query = query
+            }
+            return out
+        }
+        if (startsWith rest "/") {
+            out.path = (BrUrl.removeDots(rest))
+            return out
+        }
+        def dirEnd:int (lastIndexOf path "/")
+        def dir:string "/"
+        if (dirEnd >= 0) {
+            dir = (substring path 0 (dirEnd + 1))
+        }
+        out.path = (BrUrl.removeDots((dir + rest)))
+        return out
+    }
+
+    ; RFC 3986 5.2.4, on whole segments.
+    sfn removeDots:string (p:string) {
+        def parts:[string] (strsplit p "/")
+        def out:[string]
+        def n:int (array_length parts)
+        def i:int 0
+        def endsDir:boolean false
+        while (i < n) {
+            def seg:string (itemAt parts i)
+            def last:boolean (i == (n - 1))
+            if (seg == ".") {
+                if last {
+                    endsDir = true
+                }
+            } {
+                if (seg == "..") {
+                    if ((array_length out) > 1) {
+                        removeLast out
+                    }
+                    if last {
+                        endsDir = true
+                    }
+                } {
+                    push out seg
+                }
+            }
+            i = (i + 1)
+        }
+        def joined:string (join out "/")
+        if endsDir {
+            joined = (joined + "/")
+        }
+        if ((startsWith joined "/") == false) {
+            joined = ("/" + joined)
+        }
+        return joined
+    }
+
+    ; `%xx` escapes, for the text of a query that is shown to a person.
+    sfn decodeComponent:string (s:string) {
+        def out:string ""
+        def i:int 0
+        def n:int (strlen s)
+        def bytes:[int]
+        while (i < n) {
+            def c:int (charAt s i)
+            if ((c == 37) && ((i + 2) < n)) {
+                def h:int (BrUrl.hexVal((charAt s (i + 1))))
+                def l:int (BrUrl.hexVal((charAt s (i + 2))))
+                if ((h >= 0) && (l >= 0)) {
+                    push bytes ((h * 16) + l)
+                    i = (i + 3)
+                    continue
+                }
+            }
+            if ((array_length bytes) > 0) {
+                out = (out + (BrUrl.utf8(bytes)))
+                clear bytes
+            }
+            if (c == 43) {
+                out = (out + " ")
+            } {
+                out = (out + (substring s i (i + 1)))
+            }
+            i = (i + 1)
+        }
+        if ((array_length bytes) > 0) {
+            out = (out + (BrUrl.utf8(bytes)))
+        }
+        return out
+    }
+
+    ; Text into a query value: unreserved characters as they are, the rest as
+    ; the %xx of their UTF-8 bytes.
+    sfn encodeComponent:string (s:string) {
+        def out:string ""
+        def cps:[int] (to_chars s)
+        def hex:string "0123456789ABCDEF"
+        for cps cp:int i {
+            def isUnreserved:boolean false
+            if (((cp >= 65) && (cp <= 90)) || ((cp >= 97) && (cp <= 122))) {
+                isUnreserved = true
+            }
+            if ((cp >= 48) && (cp <= 57)) {
+                isUnreserved = true
+            }
+            if ((cp == 45) || ((cp == 46) || ((cp == 95) || (cp == 126)))) {
+                isUnreserved = true
+            }
+            if isUnreserved {
+                out = (out + (strfromcode cp))
+            } {
+                if (cp == 32) {
+                    out = (out + "+")
+                } {
+                    def bytes:[int] (BrUrl.utf8Bytes(cp))
+                    for bytes b:int j {
+                        out = (out + "%" + (substring hex (idiv b 16) ((idiv b 16) + 1)) + (substring hex (b % 16) ((b % 16) + 1)))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    sfn utf8Bytes:[int] (cp:int) {
+        def out:[int]
+        if (cp < 128) {
+            push out cp
+            return out
+        }
+        if (cp < 2048) {
+            push out (192 + (idiv cp 64))
+            push out (128 + (cp % 64))
+            return out
+        }
+        if (cp < 65536) {
+            push out (224 + (idiv cp 4096))
+            push out (128 + ((idiv cp 64) % 64))
+            push out (128 + (cp % 64))
+            return out
+        }
+        push out (240 + (idiv cp 262144))
+        push out (128 + ((idiv cp 4096) % 64))
+        push out (128 + ((idiv cp 64) % 64))
+        push out (128 + (cp % 64))
+        return out
+    }
+
+    sfn utf8:string (bytes:[int]) {
+        def out:string ""
+        def i:int 0
+        def n:int (array_length bytes)
+        while (i < n) {
+            def b:int (itemAt bytes i)
+            if (b < 128) {
+                out = (out + (strfromcode b))
+                i = (i + 1)
+                continue
+            }
+            def need:int 0
+            def cp:int 0
+            if ((b >= 192) && (b < 224)) {
+                need = 1
+                cp = (b - 192)
+            }
+            if ((b >= 224) && (b < 240)) {
+                need = 2
+                cp = (b - 224)
+            }
+            if (b >= 240) {
+                need = 3
+                cp = (b - 240)
+            }
+            if ((need == 0) || ((i + need) >= n)) {
+                out = (out + "?")
+                i = (i + 1)
+                continue
+            }
+            def k:int 1
+            while (k <= need) {
+                cp = ((cp * 64) + ((itemAt bytes (i + k)) % 64))
+                k = (k + 1)
+            }
+            out = (out + (strfromcode cp))
+            i = (i + need + 1)
+        }
+        return out
+    }
+
+    sfn hexVal:int (c:int) {
+        if ((c >= 48) && (c <= 57)) {
+            return (c - 48)
+        }
+        if ((c >= 97) && (c <= 102)) {
+            return (c - 87)
+        }
+        if ((c >= 65) && (c <= 70)) {
+            return (c - 55)
+        }
+        return -1
+    }
+}

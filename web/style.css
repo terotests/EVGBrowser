@@ -1,0 +1,8 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #eef2f8; }
+body { font: 14px/1.4 system-ui, sans-serif; overscroll-behavior: none; }
+#stage { position: fixed; inset: 0; outline: none; touch-action: none; user-select: none; -webkit-user-select: none; }
+#stage svg { display: block; }
+#ime { position: fixed; left: -1000px; top: 0; width: 200px; height: 20px; opacity: 0; font-size: 16px; }
+#err { position: fixed; left: 16px; right: 16px; bottom: 16px; padding: 12px; background: #fdecee; color: #7a1f2b;
+       border-radius: 8px; font: 13px ui-monospace, monospace; white-space: pre-wrap; max-height: 40vh; overflow: auto; }

@@ -1,0 +1,951 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; HtmlParser — real-world HTML into a tree, forgivingly.
+; ==============================================================================
+;
+; Not the HTML5 tree construction algorithm, but the parts of it that decide
+; what an ordinary page looks like:
+;
+;   * void elements (`<br>`, `<img>`, `<meta>`, …) never take children;
+;   * raw text: the inside of `<script>` and `<style>` is not markup, and
+;     `<textarea>` / `<title>` hold text with entities but no tags;
+;   * implied end tags: a `<p>` ends when a block starts, an `<li>` when the
+;     next `<li>` starts, and the same for `<dt>`/`<dd>`, table rows and cells
+;     and `<option>`;
+;   * an end tag with no open element of that name is ignored, and one that
+;     does match closes everything opened after it;
+;   * entities, named (the common ones) and numeric.
+;
+; What a script would have built is never built: this browser does not run
+; JavaScript, so the tree is exactly what the server sent. Pages that render
+; their content with JavaScript show their `<noscript>` content instead, which
+; is parsed as ordinary markup for that reason.
+;
+; The parser has limits (`maxNodes`, `maxDepth`) because the input is whatever
+; a server sends; a page past them is cut off rather than allowed to run the
+; host out of memory.
+; ==============================================================================
+
+class HNode {
+    ; lowercase tag name; "#text" for text, "#document" for the root
+    def tag:string ""
+    def text:string ""
+    def isText:boolean false
+    def attrNames:[string]
+    def attrValues:[string]
+    def children:[HNode]
+    ; written by CssCascade: the computed properties this browser uses, and
+    ; the custom properties (`--x`) the element itself declared
+    def style:[string:string]
+    def vars:[string:string]
+    def hasVars:boolean false
+    def cachedClasses:[string]
+    def classesCached:boolean false
+
+    Constructor () {
+        def st:[string:string]
+        style = st
+        def vs:[string:string]
+        vars = vs
+        def cc:[string]
+        cachedClasses = cc
+        def an:[string]
+        attrNames = an
+        def av:[string]
+        attrValues = av
+        def ch:[HNode]
+        children = ch
+    }
+
+    sfn element:HNode (name:string) {
+        def n (new HNode())
+        n.tag = name
+        return n
+    }
+
+    sfn textNode:HNode (t:string) {
+        def n (new HNode())
+        n.tag = "#text"
+        n.isText = true
+        n.text = t
+        return n
+    }
+
+    fn hasAttr:boolean (name:string) {
+        for attrNames a:string i {
+            if (a == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn attr:string (name:string) {
+        for attrNames a:string i {
+            if (a == name) {
+                return (itemAt attrValues i)
+            }
+        }
+        return ""
+    }
+
+    fn setAttr:void (name:string value:string) {
+        for attrNames a:string i {
+            if (a == name) {
+                set attrValues i value
+                return
+            }
+        }
+        push attrNames name
+        push attrValues value
+    }
+
+    fn addChild:void (c:HNode) {
+        push children c
+    }
+
+    fn childCount:int () {
+        return (array_length children)
+    }
+
+    ; the class attribute, split on whitespace
+    fn classList:[string] () {
+        def out:[string]
+        def parts:[string] (strsplit (HtmlParser.collapseSpace((this.attr("class")))) " ")
+        for parts p:string i {
+            if ((strlen p) > 0) {
+                push out p
+            }
+        }
+        return out
+    }
+
+    fn classes:[string] () {
+        if (classesCached == false) {
+            cachedClasses = (this.classList())
+            classesCached = true
+        }
+        return cachedClasses
+    }
+
+    fn hasClass:boolean (name:string) {
+        def cl:[string] (this.classes())
+        for cl c:string i {
+            if (c == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; All the text below this node, as it appears in the source.
+    fn textContent:string () {
+        if isText {
+            return text
+        }
+        def out:string ""
+        for children c:HNode i {
+            out = (out + (c.textContent()))
+        }
+        return out
+    }
+
+    ; First element with this tag, depth first, this node included.
+    fn find@(optional):HNode (name:string) {
+        if (tag == name) {
+            def selfHit@(optional):HNode this
+            return selfHit
+        }
+        for children c:HNode i {
+            if (c.isText == false) {
+                def hit@(optional):HNode (c.find(name))
+                if (!null? hit) {
+                    return hit
+                }
+            }
+        }
+        def none@(optional):HNode
+        return none
+    }
+
+    fn findAll:void (name:string out:[HNode]) {
+        if (tag == name) {
+            push out this
+        }
+        for children c:HNode i {
+            if (c.isText == false) {
+                c.findAll(name out)
+            }
+        }
+    }
+
+    fn countNodes:int () {
+        def n:int 1
+        for children c:HNode i {
+            n = (n + (c.countNodes()))
+        }
+        return n
+    }
+}
+
+class HtmlParser {
+    def src:string ""
+    def pos:int 0
+    def len:int 0
+    def root:HNode (HNode.element("#document"))
+    def stack:[HNode]
+    def nodeCount:int 0
+    def maxNodes:int 80000
+    def maxDepth:int 200
+    def truncated:boolean false
+    def entities:[string:string]
+
+    Constructor () {
+        def s:[HNode]
+        stack = s
+        def e:[string:string]
+        entities = e
+        this.initEntities()
+    }
+
+    sfn parseDocument:HNode (html:string) {
+        def p (new HtmlParser())
+        def doc:HNode (p.parse(html))
+        return doc
+    }
+
+    fn parse:HNode (html:string) {
+        src = html
+        pos = 0
+        len = (strlen html)
+        root = (HNode.element("#document"))
+        clear stack
+        push stack root
+        nodeCount = 0
+        truncated = false
+        def textStart:int 0
+        while (pos < len) {
+            if (nodeCount > maxNodes) {
+                truncated = true
+                break
+            }
+            def c:int (charAt src pos)
+            if (c == 60) {
+                def next:int 0
+                if ((pos + 1) < len) {
+                    next = (charAt src (pos + 1))
+                }
+                def isTagStart:boolean false
+                if (HtmlParser.isAlpha(next)) {
+                    isTagStart = true
+                }
+                if ((next == 47) || ((next == 33) || (next == 63))) {
+                    isTagStart = true
+                }
+                if isTagStart {
+                    if (pos > textStart) {
+                        this.addText((substring src textStart pos))
+                    }
+                    this.readMarkup()
+                    textStart = pos
+                    continue
+                }
+            }
+            pos = (pos + 1)
+        }
+        if ((pos > textStart) && (textStart < len)) {
+            this.addText((substring src textStart len))
+        }
+        return root
+    }
+
+    ; --- the open elements ----------------------------------------------------
+
+    fn current:HNode () {
+        return (itemAt stack ((array_length stack) - 1))
+    }
+
+    fn addText:void (raw:string) {
+        def t:string (this.decode(raw))
+        if ((strlen t) == 0) {
+            return
+        }
+        def cur:HNode (this.current())
+        ; merge with a text node right before, so `a&amp;b` is one run
+        def n:int (array_length cur.children)
+        if (n > 0) {
+            def prev:HNode (itemAt cur.children (n - 1))
+            if prev.isText {
+                prev.text = (prev.text + t)
+                return
+            }
+        }
+        cur.addChild((HNode.textNode(t)))
+        nodeCount = (nodeCount + 1)
+    }
+
+    fn isOpen:boolean (name:string) {
+        def i:int ((array_length stack) - 1)
+        while (i > 0) {
+            if ((itemAt stack i).tag == name) {
+                return true
+            }
+            i = (i - 1)
+        }
+        return false
+    }
+
+    ; Is `name` open, looking down the stack no further than the first of
+    ; `stops`? That is what "in scope" means for the implied end tags: an
+    ; `<li>` inside a nested `<ul>` does not close the outer list's item.
+    fn openBefore:boolean (name:string stops:[string]) {
+        def i:int ((array_length stack) - 1)
+        while (i > 0) {
+            def t:string (itemAt stack i).tag
+            if (t == name) {
+                return true
+            }
+            for stops s:string k {
+                if (s == t) {
+                    return false
+                }
+            }
+            i = (i - 1)
+        }
+        return false
+    }
+
+    ; Close everything down to and including the innermost `name`.
+    fn closeTo:void (name:string) {
+        if ((this.isOpen(name)) == false) {
+            return
+        }
+        while ((array_length stack) > 1) {
+            def top:HNode (this.current())
+            removeLast stack
+            if (top.tag == name) {
+                return
+            }
+        }
+    }
+
+    fn impliedEnds:void (name:string) {
+        if (HtmlParser.closesP(name)) {
+            if (this.openBefore("p" (HtmlParser.buttonScope()))) {
+                this.closeTo("p")
+            }
+        }
+        if (name == "li") {
+            if (this.openBefore("li" ([] _:string ( "ul" "ol" "menu" "table" "div" )))) {
+                this.closeTo("li")
+            }
+        }
+        if ((name == "dt") || (name == "dd")) {
+            if (this.openBefore("dd" ([] _:string ( "dl" "table" )))) {
+                this.closeTo("dd")
+            }
+            if (this.openBefore("dt" ([] _:string ( "dl" "table" )))) {
+                this.closeTo("dt")
+            }
+        }
+        if ((name == "td") || (name == "th")) {
+            if (this.openBefore("td" ([] _:string ( "tr" "table" )))) {
+                this.closeTo("td")
+            }
+            if (this.openBefore("th" ([] _:string ( "tr" "table" )))) {
+                this.closeTo("th")
+            }
+        }
+        if (name == "tr") {
+            if (this.openBefore("td" ([] _:string ( "table" )))) {
+                this.closeTo("td")
+            }
+            if (this.openBefore("th" ([] _:string ( "table" )))) {
+                this.closeTo("th")
+            }
+            if (this.openBefore("tr" ([] _:string ( "table" )))) {
+                this.closeTo("tr")
+            }
+        }
+        if ((name == "tbody") || ((name == "thead") || (name == "tfoot"))) {
+            def tstops:[string] ([] _:string ( "table" ))
+            if (this.openBefore("tbody" tstops)) {
+                this.closeTo("tbody")
+            }
+            if (this.openBefore("thead" tstops)) {
+                this.closeTo("thead")
+            }
+            if (this.openBefore("tfoot" tstops)) {
+                this.closeTo("tfoot")
+            }
+        }
+        if ((name == "option") || (name == "optgroup")) {
+            if (this.openBefore("option" ([] _:string ( "select" "datalist" )))) {
+                this.closeTo("option")
+            }
+        }
+        if (HtmlParser.isHeading(name)) {
+            ; <h2> directly inside an open <h2> is a parse error that browsers
+            ; answer by closing the first one
+            def top:HNode (this.current())
+            if (HtmlParser.isHeading(top.tag)) {
+                removeLast stack
+            }
+        }
+        if (name == "a") {
+            if (this.openBefore("a" ([] _:string ( "table" "td" "th" "button" )))) {
+                this.closeTo("a")
+            }
+        }
+    }
+
+    ; --- markup ---------------------------------------------------------------
+
+    fn readMarkup:void () {
+        ; pos is at '<'
+        def next:int (charAt src (pos + 1))
+        if (next == 33) {
+            if (HtmlParser.startsAt(src pos "<!--")) {
+                def end:int (indexOfFrom src "-->" (pos + 4))
+                if (end < 0) {
+                    pos = len
+                } {
+                    pos = (end + 3)
+                }
+                return
+            }
+            if (HtmlParser.startsAt(src pos "<![CDATA[")) {
+                def cend:int (indexOfFrom src "]]>" pos)
+                if (cend < 0) {
+                    pos = len
+                } {
+                    this.addText((substring src (pos + 9) cend))
+                    pos = (cend + 3)
+                }
+                return
+            }
+            this.skipTo(62)
+            return
+        }
+        if (next == 63) {
+            this.skipTo(62)
+            return
+        }
+        if (next == 47) {
+            pos = (pos + 2)
+            def nameStart:int pos
+            while (pos < len) {
+                def c:int (charAt src pos)
+                if ((HtmlParser.isSpace(c)) || ((c == 62) || (c == 47))) {
+                    break
+                }
+                pos = (pos + 1)
+            }
+            def endName:string (to_lowercase (substring src nameStart pos))
+            this.skipTo(62)
+            this.endTag(endName)
+            return
+        }
+        pos = (pos + 1)
+        def ns:int pos
+        while (pos < len) {
+            def c2:int (charAt src pos)
+            if ((HtmlParser.isSpace(c2)) || ((c2 == 62) || (c2 == 47))) {
+                break
+            }
+            pos = (pos + 1)
+        }
+        def name:string (to_lowercase (substring src ns pos))
+        def el:HNode (HNode.element(name))
+        def selfClosing:boolean false
+        ; attributes
+        while (pos < len) {
+            this.skipSpace()
+            if (pos >= len) {
+                break
+            }
+            def ch:int (charAt src pos)
+            if (ch == 62) {
+                pos = (pos + 1)
+                break
+            }
+            if (ch == 47) {
+                selfClosing = true
+                pos = (pos + 1)
+                continue
+            }
+            def as:int pos
+            while (pos < len) {
+                def c3:int (charAt src pos)
+                if ((HtmlParser.isSpace(c3)) || ((c3 == 62) || ((c3 == 61) || (c3 == 47)))) {
+                    break
+                }
+                pos = (pos + 1)
+            }
+            if (pos == as) {
+                pos = (pos + 1)
+                continue
+            }
+            def aname:string (to_lowercase (substring src as pos))
+            def avalue:string ""
+            this.skipSpace()
+            if ((pos < len) && ((charAt src pos) == 61)) {
+                pos = (pos + 1)
+                this.skipSpace()
+                if (pos < len) {
+                    def q:int (charAt src pos)
+                    if ((q == 34) || (q == 39)) {
+                        def vend:int (indexOfFrom src (strfromcode q) (pos + 1))
+                        if (vend < 0) {
+                            vend = len
+                        }
+                        avalue = (this.decode((substring src (pos + 1) vend)))
+                        pos = (vend + 1)
+                    } {
+                        def vs:int pos
+                        while (pos < len) {
+                            def c4:int (charAt src pos)
+                            if ((HtmlParser.isSpace(c4)) || (c4 == 62)) {
+                                break
+                            }
+                            pos = (pos + 1)
+                        }
+                        avalue = (this.decode((substring src vs pos)))
+                    }
+                }
+            }
+            if ((el.hasAttr(aname)) == false) {
+                el.setAttr(aname avalue)
+            }
+        }
+        if (pos > len) {
+            pos = len
+        }
+        this.startTag(el selfClosing)
+    }
+
+    fn startTag:void (el:HNode selfClosing:boolean) {
+        def name:string el.tag
+        if ((name == "html") || ((name == "head") || (name == "body"))) {
+            ; one of each, wherever the page wrote them; attributes merge
+            def existing@(optional):HNode (root.find(name))
+            if (!null? existing) {
+                def ex:HNode existing
+                for el.attrNames an:string i {
+                    if ((ex.hasAttr(an)) == false) {
+                        ex.setAttr(an (itemAt el.attrValues i))
+                    }
+                }
+                if (name == "body") {
+                    this.enter(ex)
+                }
+                return
+            }
+        }
+        this.impliedEnds(name)
+        def cur:HNode (this.current())
+        cur.addChild(el)
+        nodeCount = (nodeCount + 1)
+        if (HtmlParser.isVoid(name)) {
+            return
+        }
+        if (selfClosing && (HtmlParser.isForeignSelfClosable(name))) {
+            return
+        }
+        if ((name == "script") || ((name == "style") || ((name == "textarea") || ((name == "title") || ((name == "xmp") || (name == "iframe")))))) {
+            this.readRawText(el)
+            return
+        }
+        if ((array_length stack) >= maxDepth) {
+            truncated = true
+            return
+        }
+        push stack el
+    }
+
+    ; Make `el` the current node when it is already in the tree — a second
+    ; `<body>` after the first was closed by a stray `</body>`.
+    fn enter:void (el:HNode) {
+        if ((this.current()) == el) {
+            return
+        }
+        def i:int ((array_length stack) - 1)
+        while (i > 0) {
+            if ((itemAt stack i) == el) {
+                return
+            }
+            i = (i - 1)
+        }
+        push stack el
+    }
+
+    fn endTag:void (name:string) {
+        if ((name == "body") || (name == "html")) {
+            ; content after </body> still belongs in the body, as browsers do
+            return
+        }
+        if (name == "p") {
+            if ((this.isOpen("p")) == false) {
+                ; `</p>` with nothing open is an empty paragraph
+                this.current().addChild((HNode.element("p")))
+                return
+            }
+        }
+        if (name == "br") {
+            this.current().addChild((HNode.element("br")))
+            return
+        }
+        this.closeTo(name)
+    }
+
+    fn readRawText:void (el:HNode) {
+        def closeTag:string ("</" + el.tag)
+        def lower:string closeTag
+        def end:int (this.indexOfCI(lower pos))
+        if (end < 0) {
+            end = len
+        }
+        def body:string (substring src pos end)
+        if ((el.tag == "textarea") || (el.tag == "title")) {
+            body = (this.decode(body))
+        }
+        if ((strlen body) > 0) {
+            el.addChild((HNode.textNode(body)))
+            nodeCount = (nodeCount + 1)
+        }
+        pos = end
+        if (pos < len) {
+            this.skipTo(62)
+        }
+    }
+
+    ; The next `needle` (lowercase) at or after `from`, in either case.
+    fn indexOfCI:int (needle:string from:int) {
+        def i:int from
+        def n:int (strlen needle)
+        while (i < len) {
+            def at:int (indexOfFrom src "</" i)
+            if (at < 0) {
+                return -1
+            }
+            if ((at + n) <= len) {
+                def cand:string (to_lowercase (substring src at (at + n)))
+                if (cand == needle) {
+                    def after:int 62
+                    if ((at + n) < len) {
+                        after = (charAt src (at + n))
+                    }
+                    if ((after == 62) || ((after == 47) || (HtmlParser.isSpace(after)))) {
+                        return at
+                    }
+                }
+            }
+            i = (at + 2)
+        }
+        return -1
+    }
+
+    fn skipTo:void (ch:int) {
+        while (pos < len) {
+            if ((charAt src pos) == ch) {
+                pos = (pos + 1)
+                return
+            }
+            pos = (pos + 1)
+        }
+    }
+
+    fn skipSpace:void () {
+        while (pos < len) {
+            if ((HtmlParser.isSpace((charAt src pos))) == false) {
+                return
+            }
+            pos = (pos + 1)
+        }
+    }
+
+    ; --- entities -------------------------------------------------------------
+
+    fn decode:string (s:string) {
+        if ((indexOf s "&") < 0) {
+            return s
+        }
+        def out:string ""
+        def i:int 0
+        def n:int (strlen s)
+        def runStart:int 0
+        while (i < n) {
+            if ((charAt s i) != 38) {
+                i = (i + 1)
+                continue
+            }
+            def semi:int (indexOfFrom s ";" i)
+            if ((semi < 0) || ((semi - i) > 12)) {
+                i = (i + 1)
+                continue
+            }
+            def name:string (substring s (i + 1) semi)
+            def rep:string ""
+            def found:boolean false
+            if (startsWith name "#") {
+                def cp:int -1
+                if ((startsWith name "#x") || (startsWith name "#X")) {
+                    cp = (HtmlParser.parseHex((substring name 2 (strlen name))))
+                } {
+                    cp = (HtmlParser.parseDec((substring name 1 (strlen name))))
+                }
+                if (cp > 0) {
+                    if ((cp == 160)) {
+                        rep = (strfromcode 160)
+                    } {
+                        rep = (strfromcode cp)
+                    }
+                    found = true
+                }
+            } {
+                if (has entities name) {
+                    rep = (unwrap (get entities name))
+                    found = true
+                }
+            }
+            if found {
+                out = (out + (substring s runStart i) + rep)
+                i = (semi + 1)
+                runStart = i
+            } {
+                i = (i + 1)
+            }
+        }
+        out = (out + (substring s runStart n))
+        return out
+    }
+
+    fn initEntities:void () {
+        set entities "amp" "&"
+        set entities "lt" "<"
+        set entities "gt" ">"
+        set entities "quot" "\""
+        set entities "apos" "'"
+        set entities "nbsp" (strfromcode 160)
+        set entities "shy" ""
+        set entities "copy" "©"
+        set entities "reg" "®"
+        set entities "trade" "™"
+        set entities "ndash" "–"
+        set entities "mdash" "—"
+        set entities "hellip" "…"
+        set entities "laquo" "«"
+        set entities "raquo" "»"
+        set entities "lsquo" "‘"
+        set entities "rsquo" "’"
+        set entities "sbquo" "‚"
+        set entities "ldquo" "“"
+        set entities "rdquo" "”"
+        set entities "bdquo" "„"
+        set entities "bull" "•"
+        set entities "middot" "·"
+        set entities "deg" "°"
+        set entities "euro" "€"
+        set entities "pound" "£"
+        set entities "cent" "¢"
+        set entities "yen" "¥"
+        set entities "sect" "§"
+        set entities "para" "¶"
+        set entities "times" "×"
+        set entities "divide" "÷"
+        set entities "plusmn" "±"
+        set entities "frac12" "½"
+        set entities "frac14" "¼"
+        set entities "frac34" "¾"
+        set entities "sup2" "²"
+        set entities "sup3" "³"
+        set entities "micro" "µ"
+        set entities "larr" "←"
+        set entities "rarr" "→"
+        set entities "uarr" "↑"
+        set entities "darr" "↓"
+        set entities "hearts" "♥"
+        set entities "star" "☆"
+        set entities "check" "✓"
+        set entities "auml" "ä"
+        set entities "Auml" "Ä"
+        set entities "ouml" "ö"
+        set entities "Ouml" "Ö"
+        set entities "aring" "å"
+        set entities "Aring" "Å"
+        set entities "uuml" "ü"
+        set entities "Uuml" "Ü"
+        set entities "eacute" "é"
+        set entities "Eacute" "É"
+        set entities "egrave" "è"
+        set entities "aacute" "á"
+        set entities "agrave" "à"
+        set entities "acirc" "â"
+        set entities "ecirc" "ê"
+        set entities "iacute" "í"
+        set entities "oacute" "ó"
+        set entities "uacute" "ú"
+        set entities "ntilde" "ñ"
+        set entities "ccedil" "ç"
+        set entities "oslash" "ø"
+        set entities "Oslash" "Ø"
+        set entities "aelig" "æ"
+        set entities "AElig" "Æ"
+        set entities "szlig" "ß"
+        set entities "scaron" "š"
+        set entities "Scaron" "Š"
+        set entities "zcaron" "ž"
+        set entities "Zcaron" "Ž"
+        set entities "iexcl" "¡"
+        set entities "iquest" "¿"
+        set entities "zwj" ""
+        set entities "zwnj" ""
+        set entities "lrm" ""
+        set entities "rlm" ""
+        set entities "thinsp" " "
+        set entities "ensp" " "
+        set entities "emsp" " "
+    }
+
+    ; --- character classes ----------------------------------------------------
+
+    sfn isSpace:boolean (c:int) {
+        return ((c == 32) || ((c == 10) || ((c == 9) || ((c == 13) || (c == 12)))))
+    }
+
+    sfn isAlpha:boolean (c:int) {
+        return (((c >= 97) && (c <= 122)) || ((c >= 65) && (c <= 90)))
+    }
+
+    sfn startsAt:boolean (s:string at:int prefix:string) {
+        def n:int (strlen prefix)
+        if ((at + n) > (strlen s)) {
+            return false
+        }
+        return ((substring s at (at + n)) == prefix)
+    }
+
+    sfn parseDec:int (s:string) {
+        def v:int 0
+        def i:int 0
+        def n:int (strlen s)
+        if (n == 0) {
+            return -1
+        }
+        while (i < n) {
+            def c:int (charAt s i)
+            if ((c < 48) || (c > 57)) {
+                return -1
+            }
+            v = ((v * 10) + (c - 48))
+            if (v > 1114111) {
+                return -1
+            }
+            i = (i + 1)
+        }
+        return v
+    }
+
+    sfn parseHex:int (s:string) {
+        def v:int 0
+        def i:int 0
+        def n:int (strlen s)
+        if (n == 0) {
+            return -1
+        }
+        while (i < n) {
+            def c:int (charAt s i)
+            def d:int -1
+            if ((c >= 48) && (c <= 57)) {
+                d = (c - 48)
+            }
+            if ((c >= 97) && (c <= 102)) {
+                d = (c - 87)
+            }
+            if ((c >= 65) && (c <= 70)) {
+                d = (c - 55)
+            }
+            if (d < 0) {
+                return -1
+            }
+            v = ((v * 16) + d)
+            if (v > 1114111) {
+                return -1
+            }
+            i = (i + 1)
+        }
+        return v
+    }
+
+    ; Runs of whitespace as one space, ends trimmed.
+    sfn collapseSpace:string (s:string) {
+        def out:string ""
+        def i:int 0
+        def n:int (strlen s)
+        def pendingSpace:boolean false
+        def runStart:int -1
+        while (i < n) {
+            def c:int (charAt s i)
+            if (HtmlParser.isSpace(c)) {
+                if (runStart >= 0) {
+                    out = (out + (substring s runStart i))
+                    runStart = -1
+                }
+                pendingSpace = true
+            } {
+                if (runStart < 0) {
+                    if (pendingSpace && ((strlen out) > 0)) {
+                        out = (out + " ")
+                    }
+                    pendingSpace = false
+                    runStart = i
+                }
+            }
+            i = (i + 1)
+        }
+        if (runStart >= 0) {
+            out = (out + (substring s runStart n))
+        }
+        return out
+    }
+
+    sfn isVoid:boolean (name:string) {
+        def list:[string] ([] _:string ( "area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta" "param" "source" "track" "wbr" "keygen" "basefont" "frame" ))
+        for list v:string i {
+            if (v == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; `<svg/>`-style self closing is honoured for the foreign elements only;
+    ; `<div/>` is an open div in HTML.
+    sfn isForeignSelfClosable:boolean (name:string) {
+        def list:[string] ([] _:string ( "svg" "path" "circle" "rect" "line" "polyline" "polygon" "use" "g" "math" "stop" "ellipse" ))
+        for list v:string i {
+            if (v == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    sfn isHeading:boolean (name:string) {
+        return ((name == "h1") || ((name == "h2") || ((name == "h3") || ((name == "h4") || ((name == "h5") || (name == "h6"))))))
+    }
+
+    sfn closesP:boolean (name:string) {
+        def list:[string] ([] _:string ( "address" "article" "aside" "blockquote" "details" "dialog" "div" "dl" "fieldset" "figcaption" "figure" "footer" "form" "h1" "h2" "h3" "h4" "h5" "h6" "header" "hgroup" "hr" "main" "menu" "nav" "ol" "p" "pre" "section" "table" "ul" "li" "dd" "dt" ))
+        for list v:string i {
+            if (v == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    sfn buttonScope:[string] () {
+        return ([] _:string ( "button" "table" "td" "th" "caption" "html" "object" "marquee" "applet" ))
+    }
+}

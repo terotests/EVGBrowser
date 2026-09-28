@@ -1,0 +1,68 @@
+; Headless checks: the parser, the cascade, the converter and the app,
+; driven without a window.
+Import "../src/BrowserApp.rgr"
+
+class BrowserCheck {
+    def fails:int 0
+    def passes:int 0
+
+    fn check:void (name:string ok:boolean) {
+        if ok {
+            passes = (passes + 1)
+        } {
+            fails = (fails + 1)
+            print ("FAIL: " + name)
+        }
+    }
+
+    sfn main:void () {
+        def c (new BrowserCheck())
+        c.run()
+    }
+
+    fn run:void () {
+        def app (new BrowserApp())
+        app.setPageSize(900.0 700.0)
+        app.start("about:home")
+        def json:string (app.frameJson())
+        this.check("home renders" ((strlen json) > 1000))
+        this.check("home has links" ((app.linkCount()) > 5))
+        print ("home: links=" + (to_string (app.linkCount())) + " height=" + (to_string (app.contentHeight())) + " title=" + (app.pageTitle()))
+        app.navigate("about:demo")
+        app.frameJson()
+        this.check("demo renders" ((app.contentHeight()) > 700.0))
+        print ("demo: links=" + (to_string (app.linkCount())) + " height=" + (to_string (app.contentHeight())))
+        ; a blocked site
+        app.navigate("https://evil.example/")
+        this.check("blocked page shown" ((app.currentUrl()) == "about:blocked"))
+        this.check("nothing fetched for a blocked site" ((app.pendingRequests()) == 0))
+        ; an allowed site: a request goes out
+        app.navigate("https://yle.fi/uutiset")
+        def req:string (app.nextRequest())
+        this.check("yle requested" (endsWith req "\tpage\thttps://yle.fi/uutiset"))
+        def id:int (unwrap (str2int (itemAt (strsplit req "\t") 0)))
+        app.deliver(id 200 "https://yle.fi/uutiset" "text/html; charset=utf-8" "<html><head><title>Uutiset</title><link rel=stylesheet href=/a.css><style>.lead{font-size:22px}</style></head><body><h1 class=lead>Otsikko</h1><p>Teksti <a href='/uutiset/3-1'>linkki</a></p><img src='https://images.cdn.yle.fi/x.jpg' alt='Kuva'></body></html>")
+        def cssReq:string (app.nextRequest())
+        this.check("css requested" (endsWith cssReq "\tcss\thttps://yle.fi/a.css"))
+        def cid:int (unwrap (str2int (itemAt (strsplit cssReq "\t") 0)))
+        app.deliver(cid 200 "https://yle.fi/a.css" "text/css" "body { background-color: #fafafa } h1 { color: #003366 } @media (max-width: 600px) { h1 { color: red } }")
+        this.check("title" ((app.pageTitle()) == "Uutiset"))
+        def imgReq:string (app.nextRequest())
+        this.check("image requested" (endsWith imgReq "\timage\thttps://images.cdn.yle.fi/x.jpg"))
+        app.imageLoaded("https://images.cdn.yle.fi/x.jpg" 1200.0 800.0)
+        app.tick(300.0)
+        def j2:string (app.frameJson())
+        this.check("image drawn" ((indexOf j2 "images.cdn.yle.fi/x.jpg") >= 0))
+        def lid:string (app.linkIdFor("https://yle.fi/uutiset/3-1"))
+        this.check("link resolved" ((strlen lid) > 0))
+        app.press(lid)
+        def next:string (app.nextRequest())
+        this.check("link followed" (endsWith next "https://yle.fi/uutiset/3-1"))
+        app.back()
+        this.check("back re-requests" (endsWith (app.nextRequest()) "https://yle.fi/uutiset"))
+        ; address bar search
+        this.check("search" ((BrowserApp.addressFor("kissa koira")) == "https://fi.wikipedia.org/w/index.php?search=kissa+koira"))
+        this.check("bare host" ((BrowserApp.addressFor("yle.fi")) == "https://yle.fi/"))
+        print ("passed " + (to_string passes) + ", failed " + (to_string fails))
+    }
+}

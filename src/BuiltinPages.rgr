@@ -1,0 +1,167 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; BuiltinPages — the browser's own pages, written in HTML.
+; ==============================================================================
+;
+; They go through exactly the same parser, cascade and converter as a page
+; from the web, which makes them the first test of all three: if the start
+; page looks wrong, a web page would too.
+; ==============================================================================
+
+Import "SafetyPolicy.rgr"
+Import "BrUrl.rgr"
+
+class BuiltinPages {
+
+    sfn page:string (u:BrUrl policy:SafetyPolicy message:string samples:string) {
+        def p:string u.path
+        if (p == "home") {
+            return (BuiltinPages.home(samples))
+        }
+        if (p == "blocked") {
+            return (BuiltinPages.blocked(message policy))
+        }
+        if (p == "error") {
+            return (BuiltinPages.error(message))
+        }
+        if (p == "demo") {
+            return (BuiltinPages.demo())
+        }
+        if (p == "help") {
+            return (BuiltinPages.help(policy))
+        }
+        if (p == "blank") {
+            return "<html><body></body></html>"
+        }
+        return (BuiltinPages.error(("Sivua about:" + p + " ei ole.")))
+    }
+
+    sfn escape:string (s:string) {
+        def t:string (replace s "&" "&amp;")
+        t = (replace t "<" "&lt;")
+        t = (replace t ">" "&gt;")
+        t = (replace t "\"" "&quot;")
+        return t
+    }
+
+    sfn shell:string (title:string css:string body:string) {
+        def out:string ("<!doctype html><html><head><title>" + title + "</title><style>")
+        out = (out + "body { background-color: #f4f7fb; padding: 20px 20px; }")
+        out = (out + ".wrap { max-width: 860px; margin-left: auto; margin-right: auto; }")
+        out = (out + "h1 { color: #213a8f; }")
+        out = (out + "p { color: #2d3748; }")
+        out = (out + css)
+        out = (out + "</style></head><body><div class=\"wrap\">" + body + "</div></body></html>")
+        return out
+    }
+
+    sfn tile:string (href:string emoji:string name:string note:string color:string) {
+        def out:string ("<a class=\"tile\" href=\"" + href + "\"><div class=\"tile-in\" style=\"background-color: " + color + "\">")
+        out = (out + "<div class=\"emoji\">" + emoji + "</div>")
+        out = (out + "<div class=\"name\">" + name + "</div>")
+        out = (out + "<div class=\"note\">" + note + "</div>")
+        out = (out + "</div></a>")
+        return out
+    }
+
+    sfn home:string (samples:string) {
+        def css:string ".tiles { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 20px; }"
+        css = (css + ".tile { display: block; width: 190px; }")
+        css = (css + ".tile-in { padding: 14px; border-radius: 16px; min-height: 120px; }")
+        css = (css + ".emoji { font-size: 34px; margin-bottom: 6px; }")
+        css = (css + ".name { font-size: 18px; font-weight: bold; color: #ffffff; }")
+        css = (css + ".note { font-size: 14px; color: #f2f5ff; }")
+        css = (css + ".hello { font-size: 20px; color: #2d3748; }")
+        css = (css + "@media (max-width: 520px) { .tile { width: 47%; } .tile-in { min-height: 110px; padding: 10px; } .emoji { font-size: 26px; } .name { font-size: 16px; } body { padding: 12px; } .tiles { gap: 10px; } }")
+        css = (css + ".small { font-size: 14px; color: #5a6475; }")
+        def b:string "<h1>Tervetuloa!</h1>"
+        b = (b + "<p class=\"hello\">Tämä on turvallinen selain. Valitse sivu, tai kirjoita osoite ylälaidan kenttään.</p>")
+        b = (b + "<h2>Uutiset</h2><div class=\"tiles\">")
+        b = (b + (BuiltinPages.tile("https://yle.fi/uutiset" "📰" "Yle Uutiset" "Päivän uutiset" "#1f6fd1")))
+        b = (b + (BuiltinPages.tile("https://yle.fi/selkouutiset" "🗞️" "Selkouutiset" "Uutiset selkokielellä" "#2d8a5f")))
+        b = (b + (BuiltinPages.tile("https://yle.fi/novosti" "🌍" "Yle muilla kielillä" "Uutiset eri kielillä" "#6b4fc4")))
+        if ((strlen samples) > 0) {
+            b = (b + (BuiltinPages.tile((samples + "uutiset.html") "🧸" "Esimerkkiuutiset" "Testisivu tämän selaimen mukana" "#b5476b")))
+        }
+        b = (b + "</div><h2>Tietoa ja ihmeteltävää</h2><div class=\"tiles\">")
+        b = (b + (BuiltinPages.tile("https://fi.wikipedia.org/wiki/Kissa" "🐱" "Kissa" "Wikipedia-artikkeli" "#d9822b")))
+        b = (b + (BuiltinPages.tile("https://fi.wikipedia.org/wiki/Aurinkokunta" "🪐" "Aurinkokunta" "Planeetat ja tähdet" "#c2455d")))
+        b = (b + (BuiltinPages.tile("https://fi.wikipedia.org/wiki/Dinosaurukset" "🦕" "Dinosaurukset" "Muinaiset eläimet" "#3c8c7a")))
+        b = (b + (BuiltinPages.tile("https://fi.wikipedia.org/wiki/Wikipedia:Etusivu" "📚" "Wikipedia" "Tietosanakirja" "#4a5a7a")))
+        b = (b + "</div><h2>Tästä selaimesta</h2><div class=\"tiles\">")
+        b = (b + (BuiltinPages.tile("about:demo" "🧪" "Esittelysivu" "Mitä selain osaa näyttää" "#8a5a2b")))
+        b = (b + (BuiltinPages.tile("about:help" "❓" "Ohje" "Sallitut sivut ja rajoitukset" "#5a6475")))
+        b = (b + (BuiltinPages.tile("https://info.cern.ch/hypertext/WWW/TheProject.html" "🕸️" "Ensimmäinen verkkosivu" "Vuodelta 1991" "#2f4858")))
+        b = (b + "</div>")
+        b = (b + "<p class=\"small\">EVG Browser näyttää sivut ilman JavaScriptiä, videoita ja mainosikkunoita. Se on kirjoitettu Ranger-kielellä, ja sama koodi toimii verkkosivulla, työpöydällä ja puhelimessa.</p>")
+        return (BuiltinPages.shell("Aloitussivu" css b))
+    }
+
+    sfn blocked:string (target:string policy:SafetyPolicy) {
+        def u:BrUrl (BrUrl.parse(target))
+        def css:string ".box { background-color: #fff4e5; border: 2px solid #f0b35e; border-radius: 16px; padding: 20px; margin-bottom: 20px; }"
+        css = (css + ".big { font-size: 44px; } .addr { font-family: monospace; color: #7a4a00; }")
+        css = (css + ".btn { display: inline-block; background-color: #2b59c3; color: #ffffff; padding: 8px 16px; border-radius: 10px; }")
+        def b:string "<div class=\"box\"><div class=\"big\">🚧</div><h1>Tätä sivua ei voi avata</h1>"
+        b = (b + "<p>" + (BuiltinPages.escape((policy.reasonFor(u)))) + "</p>")
+        b = (b + "<p class=\"addr\">" + (BuiltinPages.escape(target)) + "</p>")
+        b = (b + "<p>Jos haluat käydä tällä sivulla, kysy aikuiselta. Aikuinen voi lisätä sivuston sallittujen listalle selaimen asetuksista.</p></div>")
+        b = (b + "<p><a class=\"btn\" href=\"about:home\">Takaisin aloitussivulle</a></p>")
+        return (BuiltinPages.shell("Sivu estetty" css b))
+    }
+
+    sfn error:string (message:string) {
+        def css:string ".box { background-color: #fdecee; border: 2px solid #e58a96; border-radius: 16px; padding: 20px; margin-bottom: 20px; }"
+        css = (css + ".big { font-size: 44px; } .msg { font-family: monospace; font-size: 14px; color: #7a1f2b; }")
+        def b:string "<div class=\"box\"><div class=\"big\">😕</div><h1>Sivua ei saatu ladattua</h1>"
+        b = (b + "<p class=\"msg\">" + (BuiltinPages.escape(message)) + "</p></div>")
+        b = (b + "<p><a href=\"about:home\">Takaisin aloitussivulle</a></p>")
+        return (BuiltinPages.shell("Virhe" css b))
+    }
+
+    sfn help:string (policy:SafetyPolicy) {
+        def css:string "li { margin-bottom: 4px; } .host { font-family: monospace; color: #213a8f; }"
+        def b:string "<h1>Ohje</h1>"
+        b = (b + "<h2>Mitä tämä selain tekee</h2><ul>")
+        b = (b + "<li>Näyttää tekstit, kuvat, linkit, listat ja taulukot.</li>")
+        b = (b + "<li>Hakukentät toimivat (esimerkiksi Wikipedian haku).</li>")
+        b = (b + "<li>Kirjoita osoiteriville sana, niin se haetaan Wikipediasta.</li></ul>")
+        b = (b + "<h2>Mitä se ei tee</h2><ul>")
+        b = (b + "<li>Ei aja JavaScriptiä, joten mainoksia ja ponnahdusikkunoita ei tule.</li>")
+        b = (b + "<li>Ei näytä videoita, ääntä eikä upotettuja sivuja.</li>")
+        b = (b + "<li>Ei lähetä lomakkeita, joissa on salasanoja tai henkilötietoja.</li>")
+        b = (b + "<li>Avaa vain sallittuja sivustoja.</li></ul>")
+        b = (b + "<h2>Sallitut sivustot</h2><ul>")
+        for policy.allowed h:string i {
+            b = (b + "<li class=\"host\">" + (BuiltinPages.escape(h)) + "</li>")
+        }
+        b = (b + "</ul><p>Myös näiden alasivustot ovat sallittuja (esimerkiksi fi.wikipedia.org kuuluu wikipedia.org:iin).</p>")
+        return (BuiltinPages.shell("Ohje" css b))
+    }
+
+    sfn demo:string () {
+        def css:string ".cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }"
+        css = (css + ".card { background-color: #ffffff; border: 1px solid #d8dee8; border-radius: 12px; padding: 12px; width: 240px; }")
+        css = (css + ".card h3 { color: #213a8f; } #special { background-color: #e7f6ee; padding: 10px; border-radius: 8px; }")
+        css = (css + "nav > a { margin-right: 12px; } .note { color: #6b7280; font-size: 14px; }")
+        css = (css + "table { background-color: #ffffff; } th { background-color: #e8edf6; }")
+        def b:string "<h1>Esittelysivu</h1>"
+        b = (b + "<nav><a href=\"#tekstit\">Tekstit</a> <a href=\"#listat\">Listat</a> <a href=\"#taulukko\">Taulukko</a> <a href=\"about:home\">Aloitus</a></nav>")
+        b = (b + "<h2 id=\"tekstit\">Tekstit</h2>")
+        b = (b + "<p>Tavallinen kappale, jossa on <b>lihavointia</b>, <em>korostusta</em>, <code>koodia</code>, <mark>korostettua tekstiä</mark> ja <a href=\"https://fi.wikipedia.org/wiki/Linkki\">linkki Wikipediaan</a>. Rivit katkeavat sanojen välistä ikkunan leveyden mukaan, ja eri kokoiset <span style=\"font-size: 26px\">sanat</span> asettuvat samalle perusviivalle.</p>")
+        b = (b + "<p id=\"special\">Tällä kappaleella on oma tyyli id-valitsimen kautta (<code>#special</code>).</p>")
+        b = (b + "<blockquote>Lainaus: selain ei aja skriptejä, joten sivu on juuri se mitä palvelin lähetti.</blockquote>")
+        b = (b + "<pre>function hei() {\n    return \"maailma\";\n}</pre>")
+        b = (b + "<h2 id=\"listat\">Listat</h2><ul><li>Omena</li><li>Päärynä<ul><li>Vihreä</li><li>Keltainen</li></ul></li><li>Banaani</li></ul>")
+        b = (b + "<ol><li>Ensimmäinen</li><li>Toinen</li><li>Kolmas</li></ol>")
+        b = (b + "<h2>Kortit (flexbox)</h2><div class=\"cards\">")
+        b = (b + "<div class=\"card\"><h3>Avaruus</h3><p>Aurinkokunnassa on kahdeksan planeettaa.</p></div>")
+        b = (b + "<div class=\"card\"><h3>Meri</h3><p>Valaat ovat nisäkkäitä, eivät kaloja.</p></div>")
+        b = (b + "<div class=\"card\"><h3>Metsä</h3><p>Suomessa on paljon mäntyjä, kuusia ja koivuja.</p></div></div>")
+        b = (b + "<h2 id=\"taulukko\">Taulukko</h2><table><tr><th>Eläin</th><th>Jalkoja</th><th>Ääni</th></tr>")
+        b = (b + "<tr><td>Kissa</td><td>4</td><td>miau</td></tr><tr><td>Kana</td><td>2</td><td>kot kot</td></tr><tr><td>Hämähäkki</td><td>8</td><td>–</td></tr></table>")
+        b = (b + "<h2>Haku</h2><form action=\"https://fi.wikipedia.org/w/index.php\" method=\"get\"><input type=\"search\" name=\"search\" placeholder=\"Hae Wikipediasta\"> <button type=\"submit\">Hae</button></form>")
+        b = (b + "<h2>Video</h2><video src=\"x.mp4\"></video><p class=\"note\">Videot näytetään ilmoituksena, eikä niitä ladata.</p>")
+        return (BuiltinPages.shell("Esittelysivu" css b))
+    }
+}

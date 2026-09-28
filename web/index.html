@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>EVG Browser</title>
+<meta name="description" content="A safe, child-friendly web browser written in Ranger on the EVG layout engine, running inside this page.">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<!-- Everything inside #stage is drawn by EVG: the toolbar, the address bar
+     and the page. The browser hosting this demo lays out nothing in it; it is
+     handed an <svg> of absolute coordinates. -->
+<div id="stage" tabindex="0" aria-label="EVG Browser"></div>
+<!-- The real text field the drawn fields mirror, so the platform keyboard,
+     IME, paste and undo work. It is kept out of sight, not removed. -->
+<input id="ime" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-hidden="true">
+<div id="err" hidden></div>
+<script src="./evg_browser.js"></script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

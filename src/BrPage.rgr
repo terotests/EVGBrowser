@@ -1,0 +1,219 @@
+; SPDX-License-Identifier: MIT
+; ==============================================================================
+; BrPage — one loaded document: its HTML, its stylesheets, its layout tree.
+; ==============================================================================
+;
+; The steps, each of which a host can watch happen:
+;
+;   load(url, html)      parse; list the stylesheets in document order
+;   neededSheets()       the external ones not yet delivered
+;   deliverSheet(…)      a stylesheet's text arrived (or "" when it failed)
+;   render(width, …)     cascade + convert: an EVG tree for that width
+;
+; `render` can run again without refetching or reparsing the HTML — after an
+; image reports its size, or the window changes width — and the stylesheets
+; are parsed again each time because `@media` is decided at parse time.
+; ==============================================================================
+
+Import "BrUrl.rgr"
+Import "HtmlParser.rgr"
+Import "CssParser.rgr"
+Import "CssCascade.rgr"
+Import "HtmlToEvg.rgr"
+Import "UaSheet.rgr"
+Import "SafetyPolicy.rgr"
+
+class BrSheet {
+    def inline:boolean true
+    def text:string ""
+    def url:string ""
+    def arrived:boolean false
+}
+
+class BrPage {
+    def url:BrUrl (BrUrl.parse("about:blank"))
+    def baseUrl:BrUrl (BrUrl.parse("about:blank"))
+    def doc:HNode (HNode.element("#document"))
+    def sheets:[BrSheet]
+    def title:string ""
+    def converter:HtmlToEvg (new HtmlToEvg())
+    def images:[string:BrImage]
+    def imageOrder:[string]
+    def truncated:boolean false
+    def cascadeMs:double 0.0
+    def ruleCount:int 0
+
+    Constructor () {
+        def s:[BrSheet]
+        sheets = s
+        def im:[string:BrImage]
+        images = im
+        def io:[string]
+        imageOrder = io
+    }
+
+    fn load:void (u:BrUrl html:string policy:SafetyPolicy) {
+        url = u
+        baseUrl = u
+        def parser (new HtmlParser())
+        doc = (parser.parse(html))
+        truncated = parser.truncated
+        clear sheets
+        def t@(optional):HNode (doc.find("title"))
+        if (!null? t) {
+            def tn:HNode (unwrap t)
+            title = (HtmlParser.collapseSpace((tn.textContent())))
+        }
+        def b@(optional):HNode (doc.find("base"))
+        if (!null? b) {
+            def bn:HNode (unwrap b)
+            if (bn.hasAttr("href")) {
+                baseUrl = (u.resolve((bn.attr("href"))))
+            }
+        }
+        this.collectSheets(doc policy)
+    }
+
+    fn collectSheets:void (n:HNode policy:SafetyPolicy) {
+        if n.isText {
+            return
+        }
+        if (n.tag == "style") {
+            def media:string (n.attr("media"))
+            if (((strlen media) == 0) || (((indexOf media "screen") >= 0) || ((indexOf media "all") >= 0))) {
+                def s (new BrSheet())
+                s.text = (n.textContent())
+                s.arrived = true
+                push sheets s
+            }
+            return
+        }
+        if (n.tag == "link") {
+            def rel:string (to_lowercase (n.attr("rel")))
+            def media2:string (to_lowercase (n.attr("media")))
+            def forScreen:boolean ((((strlen media2) == 0) || ((indexOf media2 "screen") >= 0)) || ((indexOf media2 "all") >= 0))
+            if ((((indexOf rel "stylesheet") >= 0) && ((indexOf rel "alternate") < 0)) && forScreen) {
+                def href:string (n.attr("href"))
+                if ((strlen href) > 0) {
+                    def su:BrUrl (baseUrl.resolve(href))
+                    if ((su.isWeb()) && ((array_length sheets) < (policy.maxStylesheets + 20))) {
+                        def ext (new BrSheet())
+                        ext.inline = false
+                        ext.url = (su.toString())
+                        push sheets ext
+                    }
+                }
+            }
+            return
+        }
+        for n.children c:HNode i {
+            this.collectSheets(c policy)
+        }
+    }
+
+    ; The external sheets to fetch, at most `limit` of them.
+    fn neededSheets:[string] (limit:int) {
+        def out:[string]
+        def count:int 0
+        for sheets s:BrSheet i {
+            if (s.inline == false) {
+                if (count < limit) {
+                    if (s.arrived == false) {
+                        push out s.url
+                    }
+                } {
+                    ; past the limit: counted as arrived-and-empty
+                    s.arrived = true
+                }
+                count = (count + 1)
+            }
+        }
+        return out
+    }
+
+    fn deliverSheet:void (sheetUrl:string text:string) {
+        for sheets s:BrSheet i {
+            if ((s.inline == false) && (s.url == sheetUrl)) {
+                s.text = text
+                s.arrived = true
+            }
+        }
+    }
+
+    fn sheetsReady:boolean () {
+        for sheets s:BrSheet i {
+            if (s.arrived == false) {
+                return false
+            }
+        }
+        return true
+    }
+
+    ; Give up on the sheets still out (a timeout): the page renders with what
+    ; it has.
+    fn abandonSheets:void () {
+        for sheets s:BrSheet i {
+            s.arrived = true
+        }
+    }
+
+    ; --- rendering ------------------------------------------------------------
+
+    fn restyle:void (width:double height:double) {
+        def all:[CssRule]
+        def ua (new CssParser())
+        ua.origin = 0
+        ua.viewportWidth = width
+        ua.viewportHeight = height
+        ua.parseSheet((UaSheet.css()))
+        def author (new CssParser())
+        author.origin = 1
+        author.viewportWidth = width
+        author.viewportHeight = height
+        for sheets s:BrSheet i {
+            if ((strlen s.text) > 0) {
+                author.parseSheet(s.text)
+            }
+        }
+        def cascade (new CssCascade())
+        cascade.viewportWidth = width
+        cascade.viewportHeight = height
+        cascade.addRules(ua.rules)
+        cascade.addRules(author.rules)
+        ruleCount = cascade.ruleCount
+        cascade.styleDocument(doc)
+    }
+
+    fn render:EVGElement (width:double height:double policy:SafetyPolicy) {
+        def conv (new HtmlToEvg())
+        conv.minHeight = height
+        conv.base = baseUrl
+        conv.policy = policy
+        conv.contentWidth = (width - 32.0)
+        if (conv.contentWidth < 120.0) {
+            conv.contentWidth = 120.0
+        }
+        conv.images = images
+        conv.imageOrder = imageOrder
+        def root:EVGElement (conv.build(doc))
+        converter = conv
+        return root
+    }
+
+    fn setImageSize:void (imageUrl:string w:double h:double) {
+        if (has images imageUrl) {
+            def im:BrImage (unwrap (get images imageUrl))
+            im.width = w
+            im.height = h
+            im.known = true
+        }
+    }
+
+    fn setImageFailed:void (imageUrl:string) {
+        if (has images imageUrl) {
+            def im:BrImage (unwrap (get images imageUrl))
+            im.failed = true
+            im.known = true
+        }
+    }
+}
