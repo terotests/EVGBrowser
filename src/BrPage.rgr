@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: MIT
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; ==============================================================================
 ; BrPage — one loaded document: its HTML, its stylesheets, its layout tree.
 ; ==============================================================================
@@ -22,6 +22,8 @@ Import "CssCascade.rgr"
 Import "HtmlToEvg.rgr"
 Import "UaSheet.rgr"
 Import "SafetyPolicy.rgr"
+Import "DomTree.rgr"
+Import "PageScripts.rgr"
 
 class BrSheet {
     def inline:boolean true
@@ -42,6 +44,15 @@ class BrPage {
     def truncated:boolean false
     def cascadeMs:double 0.0
     def ruleCount:int 0
+    ; the HTML as delivered, the node numbering the script realm shares, and
+    ; the external scripts it needs
+    def html:string ""
+    def tree:DomTree (new DomTree())
+    def hasScripts:boolean false
+    def scriptUrls:[string]
+    def scriptTexts:[string]
+    def scriptArrived:[boolean]
+    def scriptsRan:boolean false
 
     Constructor () {
         def s:[BrSheet]
@@ -50,6 +61,12 @@ class BrPage {
         images = im
         def io:[string]
         imageOrder = io
+        def su:[string]
+        scriptUrls = su
+        def st:[string]
+        scriptTexts = st
+        def sa:[boolean]
+        scriptArrived = sa
     }
 
     fn load:void (u:BrUrl html:string policy:SafetyPolicy) {
@@ -57,6 +74,8 @@ class BrPage {
         baseUrl = u
         def parser (new HtmlParser())
         doc = (parser.parse(html))
+        this.html = html
+        tree.index(doc)
         truncated = parser.truncated
         clear sheets
         def t@(optional):HNode (doc.find("title"))
@@ -72,6 +91,49 @@ class BrPage {
             }
         }
         this.collectSheets(doc policy)
+        if policy.runScripts {
+            hasScripts = (PageScripts.anyToRun(doc))
+            if hasScripts {
+                def ext:[string] (PageScripts.external(doc baseUrl))
+                for ext e:string i {
+                    if ((array_length scriptUrls) < policy.maxScripts) {
+                        push scriptUrls e
+                        push scriptTexts ""
+                        push scriptArrived false
+                    }
+                }
+            }
+        }
+    }
+
+    fn deliverScript:void (scriptUrl:string text:string) {
+        def i:int 0
+        while (i < (array_length scriptUrls)) {
+            if ((itemAt scriptUrls i) == scriptUrl) {
+                set_at scriptTexts i text
+                set_at scriptArrived i true
+            }
+            i = (i + 1)
+        }
+    }
+
+    fn scriptsReady:boolean () {
+        for scriptArrived a:boolean i {
+            if (a == false) {
+                return false
+            }
+        }
+        return true
+    }
+
+    ; What the realm changed, applied to this copy.
+    fn applyScriptOps:int (ops:string) {
+        def n:int (tree.apply(ops))
+        if tree.titleChanged {
+            title = tree.title
+        }
+        scriptsRan = true
+        return n
     }
 
     fn collectSheets:void (n:HNode policy:SafetyPolicy) {
@@ -187,6 +249,7 @@ class BrPage {
     fn render:EVGElement (width:double height:double policy:SafetyPolicy) {
         def conv (new HtmlToEvg())
         conv.minHeight = height
+        conv.hideNoscript = scriptsRan
         conv.base = baseUrl
         conv.policy = policy
         conv.contentWidth = (width - 32.0)

@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: MIT
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; ==============================================================================
 ; BrowserApp — the browser: its toolbar, its history, and the page it shows.
 ; ==============================================================================
@@ -105,6 +105,11 @@ class BrowserApp extends EvgApp {
     def imagesDirty:boolean false
     def imageRebuildMs:double 0.0
     def lastError:string ""
+    ; the script realm: "" nothing to do, "waiting" for scripts or styles,
+    ; "ready" for the host to take, "running" in the host's realm, "done"
+    def realmState:string ""
+    def realmJob:int 0
+    def realmSummary:string ""
     def renderCount:int 0
     def lastRenderMs:double 0.0
 
@@ -374,6 +379,17 @@ class BrowserApp extends EvgApp {
             this.pageArrived(r status finalUrl contentType body)
             return
         }
+        if (r.kind == "script") {
+            def stext:string ""
+            if ((status >= 200) && (status < 300)) {
+                if ((strlen body) <= policy.maxScriptBytes) {
+                    stext = body
+                }
+            }
+            page.deliverScript(r.url stext)
+            this.maybeRealm()
+            return
+        }
         if (r.kind == "css") {
             def text:string ""
             if ((status >= 200) && (status < 300)) {
@@ -459,12 +475,102 @@ class BrowserApp extends EvgApp {
             }
         }
         sheetWaitMs = 0.0
+        realmState = ""
+        realmSummary = ""
+        if page.hasScripts {
+            realmState = "waiting"
+            for page.scriptUrls scu:string k {
+                this.request("script" scu)
+            }
+        }
         if (page.sheetsReady()) {
             this.renderPage(false)
         } {
             loading = true
             statusText = "Ladataan tyylejä…"
         }
+        this.maybeRealm()
+    }
+
+    ; --- the script realm ----------------------------------------------------
+    ;
+    ; The page is shown as the server sent it first; once its scripts are here
+    ; the host runs them in its realm (a Worker, a child process), hands the
+    ; ops back to `realmResult`, and the page is styled and laid out again.
+
+    fn maybeRealm:void () {
+        if (realmState != "waiting") {
+            return
+        }
+        if (loading || ((page.scriptsReady()) == false)) {
+            return
+        }
+        realmState = "ready"
+        realmJob = navId
+    }
+
+    fn realmJobPending:boolean () {
+        return (realmState == "ready")
+    }
+
+    ; The job's number; its inputs are read with the getters below.
+    fn takeRealmJob:int () {
+        realmState = "running"
+        return realmJob
+    }
+
+    fn realmHtml:string () {
+        return page.html
+    }
+
+    fn realmUrl:string () {
+        return (page.url.toString())
+    }
+
+    fn realmWidth:double () {
+        return pageW
+    }
+
+    fn realmHeight:double () {
+        return (this.pageHeight())
+    }
+
+    fn realmScriptCount:int () {
+        return (array_length page.scriptUrls)
+    }
+
+    fn realmScriptUrl:string (i:int) {
+        return (itemAt page.scriptUrls i)
+    }
+
+    fn realmScriptText:string (i:int) {
+        return (itemAt page.scriptTexts i)
+    }
+
+    fn realmResult:void (job:int ops:string summary:string) {
+        if ((job != navId) || (realmState != "running")) {
+            return
+        }
+        realmState = "done"
+        realmSummary = summary
+        def n:int (page.applyScriptOps(ops))
+        if (n > 0) {
+            this.renderPage(true)
+        }
+        statusText = page.title
+        frameDirty = true
+    }
+
+    fn realmFailed:void (job:int message:string) {
+        if (job != navId) {
+            return
+        }
+        realmState = "done"
+        realmSummary = message
+    }
+
+    fn setScriptsEnabled:void (on:boolean) {
+        policy.runScripts = on
     }
 
     fn maybeRender:void () {
@@ -476,6 +582,7 @@ class BrowserApp extends EvgApp {
                 this.renderPage(false)
             }
         }
+        this.maybeRealm()
     }
 
     ; --- images ---------------------------------------------------------------

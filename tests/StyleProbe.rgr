@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; Prints the computed styles of a built-in page, to compare targets.
 Import "../src/BrowserApp.rgr"
 

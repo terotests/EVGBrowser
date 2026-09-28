@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: MIT
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; ==============================================================================
 ; HtmlToEvg — a styled HTML tree as an EVG element tree.
 ; ==============================================================================
@@ -93,6 +93,8 @@ class HtmlToEvg {
     ; the viewport's height: the page is at least this tall, so its
     ; background reaches the bottom of the window
     def minHeight:double 0.0
+    ; scripts ran, so <noscript> is what a browser with scripts does not show
+    def hideNoscript:boolean false
     def links:[BrLink]
     def linkById:[string:string]
     def images:[string:BrImage]
@@ -651,6 +653,9 @@ class HtmlToEvg {
         }
         def t:string c.tag
         if ((t == "script") || ((t == "style") || ((t == "head") || ((t == "template") || ((t == "svg") || (t == "math")))))) {
+            return true
+        }
+        if (hideNoscript && (t == "noscript")) {
             return true
         }
         if ((t == "input") && ((to_lowercase (c.attr("type"))) == "hidden")) {

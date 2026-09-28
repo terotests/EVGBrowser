@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // EVG Browser in a desktop window: SDL2 for the window and the pixels,
 // SDL_ttf for the type, SDL_image for pictures, libcurl for the network.

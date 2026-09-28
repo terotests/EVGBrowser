@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; Lays a page from disk out at a width and prints the boxes: the tool for
 ; finding out why something is where it is.
 ;   node ../Ranger/dist/rgrc.js -es6 tests/DumpPage.rgr -d=build -o=dump_page.cjs -nodecli

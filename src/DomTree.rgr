@@ -1,0 +1,407 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; ==============================================================================
+; DomTree — a document's nodes by number, and the changes made to it as text.
+; ==============================================================================
+;
+; Scripts run in a REALM of their own (src/js/JsRealm.rgr): a Web Worker in a
+; browser tab, a child process on the desktop. The realm parses the same HTML
+; with the same parser, so both sides number the nodes identically — in
+; document order, text nodes included, the document itself 0. A script edits
+; the realm's copy synchronously, which is what lets it read back what it
+; wrote, and every edit is recorded as an OP; the ops travel to the browser
+; as text and are applied to its copy, which is then styled and laid out
+; again.
+;
+; A node a script creates takes the next number on both sides, because both
+; sides create nodes in the order the ops say.
+;
+; The ops, one per line, fields separated by tabs (\t, \n and \\ escaped):
+;
+;   C id tag             create an element
+;   T id text            create a text node
+;   A id name value      set an attribute
+;   R id name            remove an attribute
+;   I parent child before   insert child (moving it if it is placed); before -1 = append
+;   X id                 detach from its parent
+;   D id text            set a text node's text
+;   W title              the document's title changed
+; ==============================================================================
+
+Import "HtmlParser.rgr"
+
+class DomTree {
+    def nodes:[HNode]
+    def parents:[int]
+    def ops:[string]
+    def recording:boolean false
+    def title:string ""
+    def titleChanged:boolean false
+
+    Constructor () {
+        def n:[HNode]
+        nodes = n
+        def p:[int]
+        parents = p
+        def o:[string]
+        ops = o
+    }
+
+    fn index:void (doc:HNode) {
+        clear nodes
+        clear parents
+        this.indexNode(doc -1)
+    }
+
+    fn indexNode:void (n:HNode parent:int) {
+        def id:int (array_length nodes)
+        n.domId = id
+        push nodes n
+        push parents parent
+        for n.children c:HNode i {
+            this.indexNode(c id)
+        }
+    }
+
+    fn count:int () {
+        return (array_length nodes)
+    }
+
+    fn node:HNode (id:int) {
+        return (itemAt nodes id)
+    }
+
+    fn valid:boolean (id:int) {
+        return ((id >= 0) && (id < (array_length nodes)))
+    }
+
+    fn parentOf:int (id:int) {
+        if (this.valid(id)) {
+            return (itemAt parents id)
+        }
+        return -1
+    }
+
+    fn record:void (line:string) {
+        if recording {
+            push ops line
+        }
+    }
+
+    ; --- the edits, each one also an op -------------------------------------
+
+    fn create:int (tag:string) {
+        def n:HNode (HNode.element((to_lowercase tag)))
+        def id:int (array_length nodes)
+        n.domId = id
+        push nodes n
+        push parents -1
+        this.record(("C\t" + (to_string id) + "\t" + (DomTree.esc(n.tag))))
+        return id
+    }
+
+    fn createText:int (text:string) {
+        def n:HNode (HNode.textNode(text))
+        def id:int (array_length nodes)
+        n.domId = id
+        push nodes n
+        push parents -1
+        this.record(("T\t" + (to_string id) + "\t" + (DomTree.esc(text))))
+        return id
+    }
+
+    fn setAttr:void (id:int name:string value:string) {
+        if ((this.valid(id)) == false) {
+            return
+        }
+        def n:HNode (this.node(id))
+        if n.isText {
+            return
+        }
+        n.setAttr((to_lowercase name) value)
+        this.record(("A\t" + (to_string id) + "\t" + (DomTree.esc((to_lowercase name))) + "\t" + (DomTree.esc(value))))
+    }
+
+    fn removeAttr:void (id:int name:string) {
+        if ((this.valid(id)) == false) {
+            return
+        }
+        def n:HNode (this.node(id))
+        n.removeAttr((to_lowercase name))
+        this.record(("R\t" + (to_string id) + "\t" + (DomTree.esc((to_lowercase name)))))
+    }
+
+    fn setData:void (id:int text:string) {
+        if ((this.valid(id)) == false) {
+            return
+        }
+        def n:HNode (this.node(id))
+        if n.isText {
+            n.text = text
+            this.record(("D\t" + (to_string id) + "\t" + (DomTree.esc(text))))
+        }
+    }
+
+    ; Take a node out of its parent's children; it stays numbered, and can be
+    ; inserted again.
+    fn detach:void (id:int) {
+        def p:int (this.parentOf(id))
+        if (p < 0) {
+            return
+        }
+        def pn:HNode (this.node(p))
+        def kept:[HNode]
+        for pn.children c:HNode i {
+            if (c.domId != id) {
+                push kept c
+            }
+        }
+        pn.children = kept
+        set_at parents id -1
+        this.record(("X\t" + (to_string id)))
+    }
+
+    ; `child` into `parent`, before `before` (-1 appends). A node that is
+    ; already placed moves, as in the DOM. Refused when it would put a node
+    ; inside itself.
+    fn insert:boolean (parent:int child:int before:int) {
+        if (((this.valid(parent)) == false) || ((this.valid(child)) == false)) {
+            return false
+        }
+        if (this.contains(child parent)) {
+            return false
+        }
+        def pn:HNode (this.node(parent))
+        if pn.isText {
+            return false
+        }
+        def wasRecording:boolean recording
+        recording = false
+        this.detach(child)
+        recording = wasRecording
+        def cn:HNode (this.node(child))
+        def kids:[HNode]
+        def placed:boolean false
+        for pn.children c:HNode i {
+            if ((placed == false) && (c.domId == before)) {
+                push kids cn
+                placed = true
+            }
+            push kids c
+        }
+        if (placed == false) {
+            push kids cn
+        }
+        pn.children = kids
+        set_at parents child parent
+        this.record(("I\t" + (to_string parent) + "\t" + (to_string child) + "\t" + (to_string before)))
+        return true
+    }
+
+    ; Is `inner` the same as, or below, `outer`?
+    fn contains:boolean (outer:int inner:int) {
+        def cur:int inner
+        def guard:int 0
+        while ((cur >= 0) && (guard < 10000)) {
+            if (cur == outer) {
+                return true
+            }
+            cur = (this.parentOf(cur))
+            guard = (guard + 1)
+        }
+        return false
+    }
+
+    ; A parsed subtree, numbered and placed under `parent`: every node in it
+    ; becomes a create op, so the other side rebuilds exactly this.
+    fn adopt:int (n:HNode) {
+        def id:int -1
+        if n.isText {
+            id = (this.createText(n.text))
+        } {
+            id = (this.create(n.tag))
+            for n.attrNames an:string i {
+                this.setAttr(id an (itemAt n.attrValues i))
+            }
+            for n.children c:HNode k {
+                def cid:int (this.adopt(c))
+                this.insert(id cid -1)
+            }
+        }
+        return id
+    }
+
+    fn setTitle:void (t:string) {
+        title = t
+        titleChanged = true
+        this.record(("W\t" + (DomTree.esc(t))))
+    }
+
+    ; --- applying ops from the other side -----------------------------------
+
+    fn apply:int (text:string) {
+        def lines:[string] (strsplit text "\n")
+        def applied:int 0
+        for lines line:string i {
+            if ((strlen line) == 0) {
+                continue
+            }
+            def f:[string] (strsplit line "\t")
+            def op:string (itemAt f 0)
+            def n:int (array_length f)
+            if ((op == "C") && (n >= 3)) {
+                this.create((DomTree.unesc((itemAt f 2))))
+            }
+            if ((op == "T") && (n >= 3)) {
+                this.createText((DomTree.unesc((itemAt f 2))))
+            }
+            if ((op == "T") && (n == 2)) {
+                this.createText("")
+            }
+            if ((op == "A") && (n >= 4)) {
+                this.setAttr((DomTree.num((itemAt f 1))) (DomTree.unesc((itemAt f 2))) (DomTree.unesc((itemAt f 3))))
+            }
+            if ((op == "A") && (n == 3)) {
+                this.setAttr((DomTree.num((itemAt f 1))) (DomTree.unesc((itemAt f 2))) "")
+            }
+            if ((op == "R") && (n >= 3)) {
+                this.removeAttr((DomTree.num((itemAt f 1))) (DomTree.unesc((itemAt f 2))))
+            }
+            if ((op == "I") && (n >= 4)) {
+                this.insert((DomTree.num((itemAt f 1))) (DomTree.num((itemAt f 2))) (DomTree.num((itemAt f 3))))
+            }
+            if ((op == "X") && (n >= 2)) {
+                this.detach((DomTree.num((itemAt f 1))))
+            }
+            if (op == "D") {
+                def dt:string ""
+                if (n >= 3) {
+                    dt = (DomTree.unesc((itemAt f 2)))
+                }
+                this.setData((DomTree.num((itemAt f 1))) dt)
+            }
+            if (op == "W") {
+                def wt:string ""
+                if (n >= 2) {
+                    wt = (DomTree.unesc((itemAt f 1)))
+                }
+                this.setTitle(wt)
+            }
+            applied = (applied + 1)
+        }
+        return applied
+    }
+
+    fn takeOps:string () {
+        def out:string (join ops "\n")
+        clear ops
+        return out
+    }
+
+    ; --- text ---------------------------------------------------------------
+
+    sfn num:int (s:string) {
+        def t:string (trim s)
+        def neg:boolean (startsWith t "-")
+        if neg {
+            t = (substring t 1 (strlen t))
+        }
+        def v@(optional):int (str2int t)
+        if (null? v) {
+            return -1
+        }
+        if neg {
+            return (0 - (unwrap v))
+        }
+        return (unwrap v)
+    }
+
+    sfn esc:string (s:string) {
+        if ((((indexOf s "\\") < 0) && ((indexOf s "\t") < 0)) && (((indexOf s "\n") < 0) && ((indexOf s "\r") < 0))) {
+            return s
+        }
+        def t:string (replace s "\\" "\\\\")
+        t = (replace t "\t" "\\t")
+        t = (replace t "\n" "\\n")
+        t = (replace t "\r" "\\r")
+        return t
+    }
+
+    sfn unesc:string (s:string) {
+        if ((indexOf s "\\") < 0) {
+            return s
+        }
+        def out:string ""
+        def i:int 0
+        def n:int (strlen s)
+        def start:int 0
+        while (i < n) {
+            if (((charAt s i) == 92) && ((i + 1) < n)) {
+                out = (out + (substring s start i))
+                def c:int (charAt s (i + 1))
+                if (c == 116) {
+                    out = (out + "\t")
+                } {
+                    if (c == 110) {
+                        out = (out + "\n")
+                    } {
+                        if (c == 114) {
+                            out = (out + "\r")
+                        } {
+                            out = (out + (substring s (i + 1) (i + 2)))
+                        }
+                    }
+                }
+                i = (i + 2)
+                start = i
+                continue
+            }
+            i = (i + 1)
+        }
+        out = (out + (substring s start n))
+        return out
+    }
+
+    ; --- HTML out (innerHTML / outerHTML) -----------------------------------
+
+    sfn escText:string (s:string) {
+        def t:string (replace s "&" "&amp;")
+        t = (replace t "<" "&lt;")
+        t = (replace t ">" "&gt;")
+        return t
+    }
+
+    sfn escAttr:string (s:string) {
+        def t:string (replace s "&" "&amp;")
+        t = (replace t "\"" "&quot;")
+        return t
+    }
+
+    sfn outerHtml:string (n:HNode) {
+        if n.isText {
+            return (DomTree.escText(n.text))
+        }
+        def out:string ("<" + n.tag)
+        for n.attrNames an:string i {
+            out = (out + " " + an + "=\"" + (DomTree.escAttr((itemAt n.attrValues i))) + "\"")
+        }
+        out = (out + ">")
+        if (HtmlParser.isVoid(n.tag)) {
+            return out
+        }
+        out = (out + (DomTree.innerHtml(n)) + "</" + n.tag + ">")
+        return out
+    }
+
+    sfn innerHtml:string (n:HNode) {
+        def out:string ""
+        def raw:boolean ((n.tag == "script") || (n.tag == "style"))
+        for n.children c:HNode i {
+            if (raw && c.isText) {
+                out = (out + c.text)
+            } {
+                out = (out + (DomTree.outerHtml(c)))
+            }
+        }
+        return out
+    }
+}

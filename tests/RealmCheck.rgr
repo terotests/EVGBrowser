@@ -1,0 +1,129 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; The script realm, driven in-process: a page's scripts edit the realm's copy,
+; the ops are applied to a second copy parsed from the same HTML, and the two
+; must agree.
+Import "../src/js/JsRealm.rgr"
+Import "../src/BrowserApp.rgr"
+
+class RealmCheck {
+    def fails:int 0
+    def passes:int 0
+
+    fn check:void (name:string ok:boolean) {
+        if ok {
+            passes = (passes + 1)
+        } {
+            fails = (fails + 1)
+            print ("FAIL: " + name)
+        }
+    }
+
+    ; Run `html` in a realm; return the browser's copy after the ops.
+    fn after:HNode (html:string) {
+        def realm (new JsRealm())
+        def ops:string (realm.run(html "https://example.com/a/" 800.0 600.0))
+        def main (new DomTree())
+        def doc:HNode (HtmlParser.parseDocument(html))
+        main.index(doc)
+        main.apply(ops)
+        if ((realm.errorCount()) > 0) {
+            print ("  script errors: " + (realm.errorAt(0)))
+        }
+        return doc
+    }
+
+    fn bodyText:string (doc:HNode) {
+        def b@(optional):HNode (doc.find("body"))
+        if (null? b) {
+            return ""
+        }
+        def bn:HNode (unwrap b)
+        return (HtmlParser.collapseSpace((this.visible(bn))))
+    }
+
+    fn visible:string (n:HNode) {
+        if n.isText {
+            return n.text
+        }
+        if ((n.tag == "script") || (n.tag == "style")) {
+            return ""
+        }
+        def out:string ""
+        for n.children c:HNode i {
+            out = (out + (this.visible(c)))
+        }
+        return out
+    }
+
+    fn checkText:void (name:string doc:HNode want:string) {
+        def got:string (this.bodyText(doc))
+        if (got != want) {
+            print ("  " + name + ": got [" + got + "]")
+        }
+        this.check(name (got == want))
+    }
+
+    sfn main:void () {
+        def c (new RealmCheck())
+        c.run()
+    }
+
+    ; The browser and the realm together, as a host drives them.
+    fn pipeline:void () {
+        def app (new BrowserApp())
+        app.setPageSize(900.0 700.0)
+        app.navigate("https://example.com/")
+        def req:string (app.nextRequest())
+        def id:int (unwrap (str2int (itemAt (strsplit req "\t") 0)))
+        app.deliver(id 200 "https://example.com/" "text/html" "<html><head><title>Alku</title><script src='/app.js'></script></head><body><div id=root><noscript>Ota JavaScript käyttöön</noscript></div></body></html>")
+        def sreq:string (app.nextRequest())
+        this.check("script requested" (endsWith sreq "\tscript\thttps://example.com/app.js"))
+        def sid:int (unwrap (str2int (itemAt (strsplit sreq "\t") 0)))
+        this.check("no realm job before the script arrives" ((app.realmJobPending()) == false))
+        def before:string (app.frameJson())
+        this.check("noscript shown before scripts ran" ((indexOf before "JavaScript") >= 0))
+        app.deliver(sid 200 "https://example.com/app.js" "text/javascript" "document.addEventListener('DOMContentLoaded', function () { var h = document.createElement('h1'); h.textContent = 'Skriptin tekemä otsikko'; document.getElementById('root').appendChild(h); document.title = 'Valmis'; });")
+        this.check("realm job pending" (app.realmJobPending()))
+        def job:int (app.takeRealmJob())
+        def realm (new JsRealm())
+        def i:int 0
+        while (i < (app.realmScriptCount())) {
+            realm.addScript((app.realmScriptUrl(i)) (app.realmScriptText(i)))
+            i = (i + 1)
+        }
+        def ops:string (realm.run((app.realmHtml()) (app.realmUrl()) (app.realmWidth()) (app.realmHeight())))
+        app.realmResult(job ops (realm.summary()))
+        def after:string (app.frameJson())
+        this.check("script output rendered" ((indexOf after "otsikko") >= 0))
+        this.check("noscript hidden after scripts ran" ((indexOf after "JavaScript") < 0))
+        this.check("title from script" ((app.pageTitle()) == "Valmis"))
+    }
+
+    fn run:void () {
+        def d1:HNode (this.after("<p id=a>vanha</p><script>document.getElementById('a').textContent = 'uusi';</script>"))
+        this.checkText("textContent" d1 "uusi")
+        def d2:HNode (this.after("<ul id=l></ul><script>var l = document.getElementById('l'); ['yksi','kaksi'].forEach(function (t) { var li = document.createElement('li'); li.className = 'x'; li.appendChild(document.createTextNode(t)); l.appendChild(li); });</script>"))
+        this.checkText("createElement + appendChild" d2 "yksikaksi")
+        def d3:HNode (this.after("<div id=r></div><script>document.querySelector('#r').innerHTML = '<b>lihava</b> ja <i>vino</i>';</script>"))
+        this.checkText("innerHTML" d3 "lihava ja vino")
+        def d4:HNode (this.after("<div class='a b'>x</div><script>var d = document.querySelector('div.a'); d.classList.remove('a'); d.classList.add('c'); d.style.color = 'red'; d.setAttribute('data-k', '1');</script>"))
+        def div4@(optional):HNode (d4.find("div"))
+        def dv:HNode (unwrap div4)
+        this.check("classList" ((dv.attr("class")) == "b c"))
+        this.check("style" ((dv.attr("style")) == "color: red"))
+        def d5:HNode (this.after("<p>a</p><script>document.addEventListener('DOMContentLoaded', function () { document.body.appendChild(document.createTextNode('valmis')); }); setTimeout(function () { document.body.appendChild(document.createTextNode('!')); }, 100);</script>"))
+        this.checkText("DOMContentLoaded + setTimeout" d5 "avalmis!")
+        def d6:HNode (this.after("<p id=x>a</p><script>throw new Error('boom');</script><script>document.getElementById('x').textContent = 'b';</script>"))
+        this.checkText("an error ends one script only" d6 "b")
+        def d7:HNode (this.after("<p id=x>a</p><script>fetch('https://evil.example/').then(function () { document.getElementById('x').textContent = 'verkko'; }, function () { document.getElementById('x').textContent = 'ei verkkoa'; });</script>"))
+        this.checkText("no network" d7 "ei verkkoa")
+        def d8:HNode (this.after("<p id=x>a</p><p>b</p><script>var p = document.querySelectorAll('p'); p[1].parentNode.removeChild(p[1]); document.title = 'Otsikko ' + p.length;</script>"))
+        this.checkText("removeChild" d8 "a")
+        def d9:HNode (this.after("<img data-src='k.jpg' class=lazy><script>new IntersectionObserver(function (es) { es.forEach(function (e) { e.target.src = e.target.dataset.src; }); }).observe(document.querySelector('img.lazy'));</script>"))
+        def img@(optional):HNode (d9.find("img"))
+        def im:HNode (unwrap img)
+        this.check("lazy image via IntersectionObserver" ((im.attr("src")) == "k.jpg"))
+        this.pipeline()
+        print ("realm: passed " + (to_string passes) + ", failed " + (to_string fails))
+    }
+}

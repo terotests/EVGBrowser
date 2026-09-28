@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; Headless checks: the parser, the cascade, the converter and the app,
 ; driven without a window.
 Import "../src/BrowserApp.rgr"

@@ -1,0 +1,56 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; ==============================================================================
+; PageScripts — which of a page's <script> elements this browser runs.
+; ==============================================================================
+;
+; Shared by the browser, which fetches the external ones, and by the realm
+; (src/js/JsRealm.rgr), which runs them; kept apart from the realm so the
+; browser does not carry the JavaScript interpreter to find out.
+;
+; Classic scripts only. Modules would import from the network, which the realm
+; does not have, and their `nomodule` fallbacks therefore run instead — the
+; same choice an older browser makes.
+; ==============================================================================
+
+Import "HtmlParser.rgr"
+Import "BrUrl.rgr"
+
+class PageScripts {
+    sfn isClassic:boolean (s:HNode) {
+        def t:string (to_lowercase (trim (s.attr("type"))))
+        if ((strlen t) == 0) {
+            return true
+        }
+        return (((indexOf t "javascript") >= 0) || ((indexOf t "ecmascript") >= 0))
+    }
+
+    ; The external scripts, resolved, in document order.
+    sfn external:[string] (doc:HNode base:BrUrl) {
+        def out:[string]
+        def all:[HNode]
+        doc.findAll("script" all)
+        for all s:HNode i {
+            if ((PageScripts.isClassic(s)) && (s.hasAttr("src"))) {
+                def u:BrUrl (base.resolve((s.attr("src"))))
+                if (u.isWeb()) {
+                    push out (u.toString())
+                }
+            }
+        }
+        return out
+    }
+
+    ; Is there anything to run at all?
+    sfn anyToRun:boolean (doc:HNode) {
+        def all:[HNode]
+        doc.findAll("script" all)
+        for all s:HNode i {
+            if (PageScripts.isClassic(s)) {
+                if ((s.hasAttr("src")) || ((strlen (trim (s.textContent()))) > 0)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+}

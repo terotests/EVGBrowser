@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: MIT
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; ==============================================================================
 ; BrUrl — a URL, split into its parts, and resolved against a base.
 ; ==============================================================================

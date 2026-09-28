@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // Compile the headless checks with the Ranger compiler and run them.
 //
-//   node tools/check.mjs          JavaScript (Node)
+//   node tools/check.mjs          JavaScript (Node), including the script realm
+//   node tools/check.mjs --fast   without the realm (it takes ~90 s to compile)
 //   node tools/check.mjs --cpp    the same checks through C++ (g++ or clang++),
 //                                 which is the target the SDL host builds on
 //
@@ -48,4 +49,10 @@ if (cpp) {
   compile(["-es6", "tests/ParseCheck.rgr", "-d=build", "-o=parse_check.js", "-nodecli"]);
   compile(["-es6", "tests/BrowserCheck.rgr", "-d=build", "-o=browser_check.js", "-nodecli"]);
   run(process.execPath, [path.join(ROOT, "build/browser_check.js")]);
+  if (!process.argv.includes("--fast")) {
+    // the script realm: ComponentEngine is large, so this one takes a minute and a half
+    execFileSync(process.execPath, [path.join(ROOT, "tools/gen-prelude.mjs"), "--check"], { stdio: "inherit" });
+    compile(["-es6", "tests/RealmCheck.rgr", "-d=build", "-o=realm_check.cjs", "-nodecli"]);
+    run(process.execPath, [path.join(ROOT, "build/realm_check.cjs")]);
+  }
 }

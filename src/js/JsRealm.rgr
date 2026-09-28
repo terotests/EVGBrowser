@@ -1,0 +1,709 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; ==============================================================================
+; JsRealm — where a page's scripts run: away from the browser, on a copy.
+; ==============================================================================
+;
+; The realm is given the page's HTML, its URL, the window size and the text
+; of its external scripts (the browser fetched those, under the same
+; allowlist as everything else; the realm itself has no network). It parses
+; the HTML with the browser's own parser, numbers the nodes the way the
+; browser numbered its copy (DomTree), and runs the scripts in document
+; order in ComponentEngine, Ranger's JavaScript interpreter.
+;
+; Scripts see the DOM of src/js/prelude.js, which is built on one host call,
+; `__dom(op, …)`, answered here by RealmBridge against the DomTree. Every
+; change a script makes is recorded as an op; `run` returns them as text,
+; and the browser applies them to its copy.
+;
+; Where this runs is the host's decision: a Web Worker in a tab, a child
+; process on the desktop, a thread on a phone. A realm that runs too long is
+; stopped by its host, and the page stays as the server sent it.
+; ==============================================================================
+
+Import "../../../Ranger/gallery/game_engine/v2/interp/migrate/src/ComponentEngine.rgr"
+Import "../../../Ranger/gallery/game_engine/v2/interp/migrate/src/EvHandle.rgr"
+Import "../HtmlParser.rgr"
+Import "../DomTree.rgr"
+Import "../CssParser.rgr"
+Import "../BrUrl.rgr"
+Import "JsPrelude.rgr"
+Import "../PageScripts.rgr"
+
+class RealmBridge extends EvalNativeBridge {
+    def tree:DomTree (new DomTree())
+    def pageUrl:BrUrl (BrUrl.parse("about:blank"))
+    def viewW:double 1024.0
+    def viewH:double 768.0
+    def errors:[string]
+    def calls:int 0
+
+    fn has:boolean (name:string) {
+        return (name == "__dom")
+    }
+
+    fn arg:string (args:[EvHandle] i:int) {
+        if (i < (array_length args)) {
+            def a:EvHandle (itemAt args i)
+            return (a.toString())
+        }
+        return ""
+    }
+
+    fn argId:int (args:[EvHandle] i:int) {
+        return (DomTree.num((RealmBridge.intText((this.arg(args i))))))
+    }
+
+    ; "12" and "12.0" and "12.000000" are all node 12
+    sfn intText:string (s:string) {
+        def dot:int (indexOf s ".")
+        if (dot >= 0) {
+            return (substring s 0 dot)
+        }
+        return s
+    }
+
+    sfn num:EvHandle (v:int) {
+        return (EvHandle.number((to_double v)))
+    }
+
+    fn invoke:EvHandle (name:string args:[EvHandle]) {
+        calls = (calls + 1)
+        def op:string (this.arg(args 0))
+        if (op == "type") {
+            def tid:int (this.argId(args 1))
+            if (tid == 0) {
+                return (RealmBridge.num(9))
+            }
+            if (tree.valid(tid)) {
+                def tn:HNode (tree.node(tid))
+                if tn.isText {
+                    return (RealmBridge.num(3))
+                }
+            }
+            return (RealmBridge.num(1))
+        }
+        if (op == "tag") {
+            def gid:int (this.argId(args 1))
+            if (tree.valid(gid)) {
+                def gn:HNode (tree.node(gid))
+                return (EvHandle.string(gn.tag))
+            }
+            return (EvHandle.string(""))
+        }
+        if (op == "attr") {
+            def aid:int (this.argId(args 1))
+            def an:string (to_lowercase (this.arg(args 2)))
+            if (tree.valid(aid)) {
+                def anode:HNode (tree.node(aid))
+                if (anode.hasAttr(an)) {
+                    return (EvHandle.string((anode.attr(an))))
+                }
+            }
+            return (EvHandle.null())
+        }
+        if (op == "attrs") {
+            def lid:int (this.argId(args 1))
+            if (tree.valid(lid)) {
+                def ln:HNode (tree.node(lid))
+                return (EvHandle.string((join ln.attrNames "\n")))
+            }
+            return (EvHandle.string(""))
+        }
+        if (op == "setAttr") {
+            tree.setAttr((this.argId(args 1)) (this.arg(args 2)) (this.arg(args 3)))
+            return (EvHandle.null())
+        }
+        if (op == "rmAttr") {
+            tree.removeAttr((this.argId(args 1)) (this.arg(args 2)))
+            return (EvHandle.null())
+        }
+        if (op == "kids") {
+            def kid:int (this.argId(args 1))
+            def onlyEl:boolean ((this.arg(args 2)) == "1")
+            return (EvHandle.string((this.kidsCsv(kid onlyEl))))
+        }
+        if (op == "parent") {
+            return (RealmBridge.num((tree.parentOf((this.argId(args 1))))))
+        }
+        if (op == "sibling") {
+            return (RealmBridge.num((this.sibling((this.argId(args 1)) (this.argId(args 2)) ((this.arg(args 3)) == "1")))))
+        }
+        if (op == "contains") {
+            if (tree.contains((this.argId(args 1)) (this.argId(args 2)))) {
+                return (RealmBridge.num(1))
+            }
+            return (RealmBridge.num(0))
+        }
+        if (op == "connected") {
+            if (tree.contains(0 (this.argId(args 1)))) {
+                return (RealmBridge.num(1))
+            }
+            return (RealmBridge.num(0))
+        }
+        if (op == "text") {
+            def xid:int (this.argId(args 1))
+            if (tree.valid(xid)) {
+                def xn:HNode (tree.node(xid))
+                return (EvHandle.string((xn.textContent())))
+            }
+            return (EvHandle.string(""))
+        }
+        if (op == "setText") {
+            this.setText((this.argId(args 1)) (this.arg(args 2)))
+            return (EvHandle.null())
+        }
+        if (op == "create") {
+            return (RealmBridge.num((tree.create((this.arg(args 1))))))
+        }
+        if (op == "createText") {
+            return (RealmBridge.num((tree.createText((this.arg(args 1))))))
+        }
+        if (op == "insert") {
+            tree.insert((this.argId(args 1)) (this.argId(args 2)) (this.argId(args 3)))
+            return (EvHandle.null())
+        }
+        if (op == "remove") {
+            tree.detach((this.argId(args 1)))
+            return (EvHandle.null())
+        }
+        if (op == "inner") {
+            def iid:int (this.argId(args 1))
+            if (tree.valid(iid)) {
+                return (EvHandle.string((DomTree.innerHtml((tree.node(iid))))))
+            }
+            return (EvHandle.string(""))
+        }
+        if (op == "outer") {
+            def oid:int (this.argId(args 1))
+            if (tree.valid(oid)) {
+                return (EvHandle.string((DomTree.outerHtml((tree.node(oid))))))
+            }
+            return (EvHandle.string(""))
+        }
+        if (op == "setInner") {
+            this.setInner((this.argId(args 1)) (this.arg(args 2)))
+            return (EvHandle.null())
+        }
+        if (op == "clone") {
+            return (RealmBridge.num((this.clone((this.argId(args 1)) ((this.arg(args 2)) == "1")))))
+        }
+        if (op == "find") {
+            return (RealmBridge.num((this.findTag((this.arg(args 1))))))
+        }
+        if (op == "byId") {
+            return (RealmBridge.num((this.byId((this.arg(args 1))))))
+        }
+        if (op == "qs") {
+            def found:[int] (this.select((this.argId(args 1)) (this.arg(args 2)) true))
+            if ((array_length found) > 0) {
+                return (RealmBridge.num((itemAt found 0)))
+            }
+            return (RealmBridge.num(-1))
+        }
+        if (op == "qsa") {
+            def all:[int] (this.select((this.argId(args 1)) (this.arg(args 2)) false))
+            def parts:[string]
+            for all v:int i {
+                push parts (to_string v)
+            }
+            return (EvHandle.string((join parts ",")))
+        }
+        if (op == "match") {
+            if (this.matchesText((this.argId(args 1)) (this.arg(args 2)))) {
+                return (RealmBridge.num(1))
+            }
+            return (RealmBridge.num(0))
+        }
+        if (op == "url") {
+            def uid:int (this.argId(args 1))
+            if (tree.valid(uid)) {
+                def un:HNode (tree.node(uid))
+                def raw:string (un.attr((this.arg(args 2))))
+                if ((strlen raw) == 0) {
+                    return (EvHandle.string(""))
+                }
+                return (EvHandle.string(((pageUrl.resolve(raw)).toString())))
+            }
+            return (EvHandle.string(""))
+        }
+        if (op == "title") {
+            if tree.titleChanged {
+                return (EvHandle.string(tree.title))
+            }
+            def docNode:HNode (tree.node(0))
+            def t@(optional):HNode (docNode.find("title"))
+            if (!null? t) {
+                def tn2:HNode (unwrap t)
+                return (EvHandle.string((HtmlParser.collapseSpace((tn2.textContent())))))
+            }
+            return (EvHandle.string(""))
+        }
+        if (op == "setTitle") {
+            tree.setTitle((this.arg(args 1)))
+            return (EvHandle.null())
+        }
+        if (op == "pageUrl") {
+            return (EvHandle.string((pageUrl.toString())))
+        }
+        if (op == "urlPart") {
+            return (EvHandle.string((this.urlPart((this.arg(args 1))))))
+        }
+        if (op == "viewport") {
+            if ((this.arg(args 1)) == "h") {
+                return (EvHandle.number(viewH))
+            }
+            return (EvHandle.number(viewW))
+        }
+        if (op == "media") {
+            def mp (new CssParser())
+            mp.viewportWidth = viewW
+            mp.viewportHeight = viewH
+            def q:string (this.arg(args 1))
+            if (mp.mediaMatches(q)) {
+                return (RealmBridge.num(1))
+            }
+            return (RealmBridge.num(0))
+        }
+        if (op == "error") {
+            if ((array_length errors) < 50) {
+                push errors (this.arg(args 1))
+            }
+            return (EvHandle.null())
+        }
+        return (EvHandle.null())
+    }
+
+    ; --- the tree, as the prelude asks about it -----------------------------
+
+    fn kidsCsv:string (id:int onlyElements:boolean) {
+        if ((tree.valid(id)) == false) {
+            return ""
+        }
+        def n:HNode (tree.node(id))
+        def parts:[string]
+        for n.children c:HNode i {
+            if ((onlyElements == false) || (c.isText == false)) {
+                push parts (to_string c.domId)
+            }
+        }
+        return (join parts ",")
+    }
+
+    fn sibling:int (id:int dir:int onlyElements:boolean) {
+        def p:int (tree.parentOf(id))
+        if (p < 0) {
+            return -1
+        }
+        def pn:HNode (tree.node(p))
+        def kids:[HNode] pn.children
+        def at:int -1
+        for kids c:HNode i {
+            if (c.domId == id) {
+                at = i
+            }
+        }
+        if (at < 0) {
+            return -1
+        }
+        def j:int (at + dir)
+        while ((j >= 0) && (j < (array_length kids))) {
+            def s:HNode (itemAt kids j)
+            if ((onlyElements == false) || (s.isText == false)) {
+                return s.domId
+            }
+            j = (j + dir)
+        }
+        return -1
+    }
+
+    fn setText:void (id:int text:string) {
+        if ((tree.valid(id)) == false) {
+            return
+        }
+        def n:HNode (tree.node(id))
+        if n.isText {
+            tree.setData(id text)
+            return
+        }
+        this.clearChildren(id)
+        if ((strlen text) > 0) {
+            def t:int (tree.createText(text))
+            tree.insert(id t -1)
+        }
+    }
+
+    fn clearChildren:void (id:int) {
+        def n:HNode (tree.node(id))
+        def ids:[int]
+        for n.children c:HNode i {
+            push ids c.domId
+        }
+        for ids k:int j {
+            tree.detach(k)
+        }
+    }
+
+    fn setInner:void (id:int html:string) {
+        if ((tree.valid(id)) == false) {
+            return
+        }
+        this.clearChildren(id)
+        def frag:[HNode] (RealmBridge.parseFragment(html))
+        for frag f:HNode i {
+            def nid:int (tree.adopt(f))
+            tree.insert(id nid -1)
+        }
+    }
+
+    ; The nodes `html` makes, as the body's children of a document around it.
+    sfn parseFragment:[HNode] (html:string) {
+        def out:[HNode]
+        def doc:HNode (HtmlParser.parseDocument(("<body>" + html + "</body>")))
+        def body@(optional):HNode (doc.find("body"))
+        if (!null? body) {
+            def b:HNode (unwrap body)
+            for b.children c:HNode i {
+                push out c
+            }
+        }
+        return out
+    }
+
+    fn clone:int (id:int deep:boolean) {
+        if ((tree.valid(id)) == false) {
+            return -1
+        }
+        def n:HNode (tree.node(id))
+        if n.isText {
+            return (tree.createText(n.text))
+        }
+        def copy:int (tree.create(n.tag))
+        for n.attrNames an:string i {
+            tree.setAttr(copy an (itemAt n.attrValues i))
+        }
+        if deep {
+            for n.children c:HNode k {
+                def cc:int (this.clone(c.domId true))
+                tree.insert(copy cc -1)
+            }
+        }
+        return copy
+    }
+
+    fn findTag:int (tag:string) {
+        def all:[int] (this.select(0 tag true))
+        if ((array_length all) > 0) {
+            return (itemAt all 0)
+        }
+        return -1
+    }
+
+    fn byId:int (want:string) {
+        def i:int 0
+        def n:int (tree.count())
+        while (i < n) {
+            def node:HNode (tree.node(i))
+            if (node.isText == false) {
+                if ((node.attr("id")) == want) {
+                    if (tree.contains(0 i)) {
+                        return i
+                    }
+                }
+            }
+            i = (i + 1)
+        }
+        return -1
+    }
+
+    fn urlPart:string (part:string) {
+        if (part == "protocol") {
+            return (pageUrl.scheme + ":")
+        }
+        if ((part == "host") || (part == "hostname")) {
+            return pageUrl.host
+        }
+        if (part == "pathname") {
+            return pageUrl.path
+        }
+        if (part == "search") {
+            if ((strlen pageUrl.query) > 0) {
+                return ("?" + pageUrl.query)
+            }
+            return ""
+        }
+        if (part == "hash") {
+            if ((strlen pageUrl.fragment) > 0) {
+                return ("#" + pageUrl.fragment)
+            }
+            return ""
+        }
+        if (part == "origin") {
+            return (pageUrl.origin())
+        }
+        return ""
+    }
+
+    ; --- selectors ----------------------------------------------------------
+
+    ; The elements below `root` (document order) that match `text`.
+    fn select:[int] (root:int text:string first:boolean) {
+        def out:[int]
+        def sels:[CssSelector]
+        def items:[string] (CssParser.splitTop(text 44))
+        for items it:string i {
+            def s:CssSelector (CssParser.parseSelector((trim it)))
+            if ((array_length s.parts) > 0) {
+                push sels s
+            }
+        }
+        if ((tree.valid(root)) == false) {
+            return out
+        }
+        this.selectIn((tree.node(root)) sels out first)
+        return out
+    }
+
+    fn selectIn:void (n:HNode sels:[CssSelector] out:[int] first:boolean) {
+        for n.children c:HNode i {
+            if (first && ((array_length out) > 0)) {
+                return
+            }
+            if c.isText {
+                continue
+            }
+            if (this.matchesAny(c.domId sels)) {
+                push out c.domId
+                if first {
+                    return
+                }
+            }
+            this.selectIn(c sels out first)
+        }
+    }
+
+    fn matchesText:boolean (id:int text:string) {
+        def sels:[CssSelector]
+        def items:[string] (CssParser.splitTop(text 44))
+        for items it:string i {
+            push sels (CssParser.parseSelector((trim it)))
+        }
+        return (this.matchesAny(id sels))
+    }
+
+    fn matchesAny:boolean (id:int sels:[CssSelector]) {
+        for sels s:CssSelector i {
+            if (this.matchesSel(id s)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    fn matchesSel:boolean (id:int sel:CssSelector) {
+        if sel.never {
+            return false
+        }
+        if ((array_length sel.parts) == 0) {
+            return false
+        }
+        def subj:CssCompound (itemAt sel.parts 0)
+        if ((this.compound(subj id)) == false) {
+            return false
+        }
+        return (this.matchUp(sel 1 (tree.parentOf(id)) subj.combinator))
+    }
+
+    fn matchUp:boolean (sel:CssSelector pi:int from:int comb:string) {
+        if (pi >= (array_length sel.parts)) {
+            return true
+        }
+        def cp:CssCompound (itemAt sel.parts pi)
+        def cur:int from
+        while (cur > 0) {
+            if (this.compound(cp cur)) {
+                if (this.matchUp(sel (pi + 1) (tree.parentOf(cur)) cp.combinator)) {
+                    return true
+                }
+            }
+            if (comb == ">") {
+                return false
+            }
+            cur = (tree.parentOf(cur))
+        }
+        return false
+    }
+
+    fn compound:boolean (cp:CssCompound id:int) {
+        if cp.never {
+            return false
+        }
+        if ((tree.valid(id)) == false) {
+            return false
+        }
+        def n:HNode (tree.node(id))
+        if n.isText {
+            return false
+        }
+        if ((strlen cp.tag) > 0) {
+            if (cp.tag != n.tag) {
+                return false
+            }
+        }
+        if ((strlen cp.id) > 0) {
+            if ((n.attr("id")) != cp.id) {
+                return false
+            }
+        }
+        for cp.classes want:string i {
+            if ((n.hasClass(want)) == false) {
+                return false
+            }
+        }
+        def ai:int 0
+        while (ai < (array_length cp.attrNames)) {
+            def aname:string (itemAt cp.attrNames ai)
+            if ((n.hasAttr(aname)) == false) {
+                return false
+            }
+            def op:string (itemAt cp.attrOps ai)
+            def want2:string (itemAt cp.attrValues ai)
+            def got:string (n.attr(aname))
+            if ((op == "=") && (got != want2)) {
+                return false
+            }
+            if ((op == "^=") && ((startsWith got want2) == false)) {
+                return false
+            }
+            if ((op == "$=") && ((endsWith got want2) == false)) {
+                return false
+            }
+            if ((op == "*=") && ((indexOf got want2) < 0)) {
+                return false
+            }
+            ai = (ai + 1)
+        }
+        for cp.pseudos ps:string p {
+            if ((ps == "first-child") && ((this.sibling(id -1 true)) >= 0)) {
+                return false
+            }
+            if ((ps == "last-child") && ((this.sibling(id 1 true)) >= 0)) {
+                return false
+            }
+        }
+        for cp.nots nt:CssCompound q {
+            if (this.compound(nt id)) {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+class JsRealm {
+    def bridge:RealmBridge (new RealmBridge())
+    def scriptUrls:[string]
+    def scriptTexts:[string]
+    def ran:int 0
+    def skipped:int 0
+    def timerCalls:int 0
+    def maxScriptBytes:int 2000000
+
+    Constructor () {
+        def u:[string]
+        scriptUrls = u
+        def t:[string]
+        scriptTexts = t
+    }
+
+    ; An external script's text, as the browser fetched it.
+    fn addScript:void (url:string text:string) {
+        push scriptUrls url
+        push scriptTexts text
+    }
+
+    fn scriptFor:string (url:string) {
+        for scriptUrls u:string i {
+            if (u == url) {
+                return (itemAt scriptTexts i)
+            }
+        }
+        return ""
+    }
+
+    ; Run the page's scripts; the changes they made, as ops.
+    fn run:string (html:string url:string w:double h:double) {
+        bridge.pageUrl = (BrUrl.parse(url))
+        bridge.viewW = w
+        bridge.viewH = h
+        def doc:HNode (HtmlParser.parseDocument(html))
+        bridge.tree.index(doc)
+        def base:BrUrl bridge.pageUrl
+        def b@(optional):HNode (doc.find("base"))
+        if (!null? b) {
+            def bn:HNode (unwrap b)
+            if (bn.hasAttr("href")) {
+                base = (bridge.pageUrl.resolve((bn.attr("href"))))
+            }
+        }
+        def scripts:[HNode]
+        doc.findAll("script" scripts)
+        def engine:ComponentEngine (new ComponentEngine)
+        engine.quiet = true
+        engine.setNativeBridge(bridge)
+        engine.loadScript((JsPrelude.source()))
+        bridge.tree.recording = true
+        for scripts s:HNode i {
+            if ((PageScripts.isClassic(s)) == false) {
+                skipped = (skipped + 1)
+                continue
+            }
+            def src:string ""
+            if (s.hasAttr("src")) {
+                src = (this.scriptFor(((base.resolve((s.attr("src")))).toString())))
+            } {
+                src = (s.textContent())
+            }
+            if (((strlen src) == 0) || ((strlen src) > maxScriptBytes)) {
+                skipped = (skipped + 1)
+                continue
+            }
+            engine.callFunction("__beforeScript" (EvHandle.number((to_double s.domId))))
+            engine.callFunction("__runScript" (EvHandle.string(src)))
+            engine.drainJobs()
+            ran = (ran + 1)
+        }
+        engine.callFunction("__domReady" (EvHandle.null()))
+        engine.drainJobs()
+        engine.callFunction("__loaded" (EvHandle.null()))
+        engine.drainJobs()
+        ; timers: two seconds of virtual time, at most 500 callbacks
+        def budget:int 500
+        def round:int 0
+        while (round < 50) {
+            def did:EvHandle (engine.callFunction("__timerStep" (EvHandle.number(2000.0))))
+            engine.drainJobs()
+            def n:double (did.numberOf())
+            if (n <= 0.0) {
+                break
+            }
+            timerCalls = (timerCalls + (to_int n))
+            if (timerCalls >= budget) {
+                break
+            }
+            round = (round + 1)
+        }
+        return (bridge.tree.takeOps())
+    }
+
+    fn errorCount:int () {
+        return (array_length bridge.errors)
+    }
+
+    fn errorAt:string (i:int) {
+        return (itemAt bridge.errors i)
+    }
+
+    fn summary:string () {
+        return ("scripts=" + (to_string ran) + " skipped=" + (to_string skipped) + " timers=" + (to_string timerCalls) + " errors=" + (to_string (array_length bridge.errors)) + " calls=" + (to_string bridge.calls))
+    }
+}

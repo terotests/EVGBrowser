@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "A safe, child-friendly web browser written in Ranger on the EVG layout engine",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "check": "node tools/check.mjs",

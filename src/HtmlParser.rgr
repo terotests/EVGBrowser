@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: MIT
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; ==============================================================================
 ; HtmlParser — real-world HTML into a tree, forgivingly.
 ; ==============================================================================
@@ -41,6 +41,9 @@ class HNode {
     def hasVars:boolean false
     def cachedClasses:[string]
     def classesCached:boolean false
+    ; this node's number in a DomTree (document order, text nodes included),
+    ; the name both sides of the script realm use for it
+    def domId:int -1
 
     Constructor () {
         def st:[string:string]
@@ -89,7 +92,24 @@ class HNode {
         return ""
     }
 
+    fn removeAttr:void (name:string) {
+        def ns:[string]
+        def vs:[string]
+        for attrNames a:string i {
+            if (a != name) {
+                push ns a
+                push vs (itemAt attrValues i)
+            }
+        }
+        attrNames = ns
+        attrValues = vs
+        classesCached = false
+    }
+
     fn setAttr:void (name:string value:string) {
+        if (name == "class") {
+            classesCached = false
+        }
         for attrNames a:string i {
             if (a == name) {
                 set attrValues i value

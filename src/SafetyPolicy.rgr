@@ -1,4 +1,4 @@
-; SPDX-License-Identifier: MIT
+; SPDX-License-Identifier: AGPL-3.0-or-later
 ; ==============================================================================
 ; SafetyPolicy — where this browser may go, and what it will show there.
 ; ==============================================================================
@@ -30,6 +30,11 @@ class SafetyPolicy {
     def maxCssBytes:int 1500000
     def maxStylesheets:int 8
     def showImages:boolean true
+    ; Page scripts run in a realm of their own, with no network and no way
+    ; to open anything; what they can do is change the page's DOM.
+    def runScripts:boolean true
+    def maxScripts:int 30
+    def maxScriptBytes:int 2000000
 
     Constructor () {
         def a:[string]

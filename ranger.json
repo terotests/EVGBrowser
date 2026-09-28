@@ -2,8 +2,10 @@
   "name": "evgbrowser",
   "version": "0.1.0",
   "entry": "src/BrowserApp.rgr",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "dependencies": {
-    "evg": { "path": "../Ranger/lib/evg" }
+    "evg": {
+      "path": "../Ranger/lib/evg"
+    }
   }
 }
