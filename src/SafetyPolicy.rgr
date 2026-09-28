@@ -28,7 +28,7 @@ class SafetyPolicy {
     def enforce:boolean true
     def maxPageBytes:int 4000000
     def maxCssBytes:int 1500000
-    def maxStylesheets:int 8
+    def maxStylesheets:int 32
     def showImages:boolean true
     ; Page scripts run in a realm of their own, with no network and no way
     ; to open anything; what they can do is change the page's DOM.

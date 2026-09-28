@@ -43,11 +43,11 @@ as triangle geometry, text runs, `object-fit: cover`, a clip stack).
 **Two libraries: SDL2 and libcurl** (which comes with macOS and every Linux).
 Everything else is compiled in from single-file libraries in
 `native/sdl/third_party/`: stb_truetype for type (the same faces measure the
-text for the layout and draw it), stb_image for JPEG/PNG/GIF, nanosvg for SVG,
-stb_image_write for screenshots. Colour emoji are read straight out of the
+text for the layout and draw it), stb_image for JPEG/PNG/GIF, simplewebp for
+WebP, nanosvg for SVG, stb_image_write for screenshots. Colour emoji are read straight out of the
 system's emoji font (the PNGs in Noto Color Emoji's CBDT table, or Apple
-Color Emoji's sbix table). WebP and AVIF are not decoded; image requests
-ask for PNG, JPEG, GIF and SVG only.
+Color Emoji's sbix table). AVIF is not decoded, and image requests do not
+ask for it.
 
 ```sh
 # Debian/Ubuntu
@@ -116,7 +116,7 @@ To publish: merge to `main`, then set *Settings → Pages → Source* to
   pop-ups) are not drawn; other positioned boxes are laid out in flow.
 - **Forms**: only GET forms are submitted (search boxes work). Forms with
   password, e-mail or file fields, and POST forms, are disabled.
-- Size limits on pages (4 MB), stylesheets (1.5 MB, at most 8 per page) and on the
+- Size limits on pages (4 MB), stylesheets (1.5 MB each, at most 32 per page; WordPress sites use 15–30) and on the
   parser (element count and depth), since input is whatever a server sends.
 
 ## How it works

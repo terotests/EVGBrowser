@@ -40,6 +40,9 @@
 #include "third_party/nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
 #include "third_party/nanosvgrast.h"
+#define SIMPLEWEBP_IMPLEMENTATION
+#define SIMPLEWEBP_DISABLE_STDIO
+#include "third_party/simplewebp.h"
 
 #ifndef _WIN32
 #include <signal.h>
@@ -578,7 +581,7 @@ class Net {
     Sink sink{&r.body};
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Accept-Language: fi,en;q=0.7");
-    headers = curl_slist_append(headers, job.kind == "image" ? "Accept: image/png,image/jpeg,image/gif,image/svg+xml"
+    headers = curl_slist_append(headers, job.kind == "image" ? "Accept: image/webp,image/png,image/jpeg,image/gif,image/svg+xml"
                                                            : "Accept: text/html,text/css,*/*;q=0.5");
     curl_easy_setopt(c, CURLOPT_URL, job.url.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
@@ -645,8 +648,8 @@ struct Image {
 };
 
 // A picture's bytes as a texture: JPEG, PNG, GIF (first frame), BMP through
-// stb_image; SVG through nanosvg, rasterised at its own size (at most 2048
-// on a side). WebP and AVIF are not decoded; the request asks for neither.
+// stb_image; WebP through simplewebp; SVG through nanosvg, rasterised at its
+// own size (at most 2048 on a side). AVIF is not decoded or asked for.
 static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
   Image im;
   int w = 0, h = 0;
@@ -666,6 +669,22 @@ static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
     nsvgRasterize(rast, svg, 0, 0, k, rgba.data(), w, h, w * 4);
     nsvgDeleteRasterizer(rast);
     nsvgDelete(svg);
+  } else if (bytes.size() > 12 && bytes.compare(0, 4, "RIFF") == 0 && bytes.compare(8, 4, "WEBP") == 0) {
+    std::string copy = bytes;  // the decoder reads it in place until unloaded
+    simplewebp* wp = nullptr;
+    if (simplewebp_load_from_memory(&copy[0], copy.size(), nullptr, &wp) != SIMPLEWEBP_NO_ERROR || !wp) return im;
+    size_t ww = 0, wh = 0;
+    simplewebp_get_dimensions(wp, &ww, &wh);
+    if (ww == 0 || wh == 0 || ww > 8192 || wh > 8192) {
+      simplewebp_unload(wp);
+      return im;
+    }
+    w = (int)ww;
+    h = (int)wh;
+    rgba.assign((size_t)w * h * 4, 0);
+    simplewebp_error err = simplewebp_decode(wp, rgba.data(), nullptr);
+    simplewebp_unload(wp);
+    if (err != SIMPLEWEBP_NO_ERROR) return im;
   } else {
     int n = 0;
     unsigned char* px = stbi_load_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &n, 4);
