@@ -50,6 +50,8 @@ class CssBucket {
 }
 
 class CssCascade {
+    ; computeFor declares custom properties in a pass of their own, first
+    def varsPass:boolean false
     def byId:[string:CssBucket]
     def byClass:[string:CssBucket]
     def byTag:[string:CssBucket]
@@ -229,6 +231,21 @@ class CssCascade {
         node.style = st
         node.vars = vs
         node.hasVars = false
+        def inlineDecls:[CssDecl]
+        if (node.hasAttr("style")) {
+            inlineDecls = (CssParser.parseDeclarations((node.attr("style"))))
+        }
+        ; custom properties first, all of them: a rule may use a variable
+        ; that a later rule on the same element defines
+        varsPass = true
+        this.declareAll(node matched inlineDecls)
+        varsPass = false
+        this.declareAll(node matched inlineDecls)
+        this.presentationalHints(node)
+        this.finish(node parent)
+    }
+
+    fn declareAll:void (node:HNode matched:[CssHit] inlineDecls:[CssDecl]) {
         ; normal declarations
         for matched m:CssHit a {
             for m.rule.decls d:CssDecl b {
@@ -237,13 +254,9 @@ class CssCascade {
                 }
             }
         }
-        def inlineDecls:[CssDecl]
-        if (node.hasAttr("style")) {
-            inlineDecls = (CssParser.parseDeclarations((node.attr("style"))))
-            for inlineDecls idl:CssDecl c {
-                if (idl.important == false) {
-                    this.declare(node idl.name idl.value)
-                }
+        for inlineDecls idl:CssDecl c {
+            if (idl.important == false) {
+                this.declare(node idl.name idl.value)
             }
         }
         for matched m2:CssHit a2 {
@@ -258,8 +271,6 @@ class CssCascade {
                 this.declare(node idl2.name idl2.value)
             }
         }
-        this.presentationalHints(node)
-        this.finish(node parent)
     }
 
     fn collect:void (m:[string:CssBucket] key:string out:[CssHit]) {
@@ -450,6 +461,9 @@ class CssCascade {
     ; --- declaring ------------------------------------------------------------
 
     fn declare:void (node:HNode name:string value:string) {
+        if ((startsWith name "--") != varsPass) {
+            return
+        }
         if (startsWith name "--") {
             set node.vars name value
             node.hasVars = true

@@ -69,6 +69,7 @@ class BrowserCheck {
         } {
             this.check("carousel stays one row" false)
         }
+        this.check("var defined by a later rule" ((this.colorOf("<style>.b { color: var(--c) } .a.b { --c: green }</style><p class='a b'>x</p>" 900.0)) == "green"))
         this.check("later wins" ((this.colorOf("<style>p { color: red } p { color: blue }</style><p>x</p>" 900.0)) == "blue"))
         this.check("class beats type" ((this.colorOf("<style>.k { color: green } p { color: blue }</style><p class=k>x</p>" 900.0)) == "green"))
         this.check("important" ((this.colorOf("<style>p { color: red !important } .k { color: blue }</style><p class=k>x</p>" 900.0)) == "red"))

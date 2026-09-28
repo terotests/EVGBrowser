@@ -26,6 +26,9 @@ class DumpPage {
         if ((strlen el.id) > 0) {
             label = (label + " #" + el.id)
         }
+        if el.backgroundColor.isSet {
+            label = (label + " bg=" + (to_string (to_int (el.backgroundColor.r))) + "," + (to_string (to_int (el.backgroundColor.g))) + "," + (to_string (to_int (el.backgroundColor.b))))
+        }
         print (pad + el.tagName + " " + el.display + "/" + el.flexDirection + " x=" + (to_string (to_int el.calculatedX)) + " y=" + (to_string (to_int el.calculatedY)) + " w=" + (to_string (to_int el.calculatedWidth)) + " h=" + (to_string (to_int el.calculatedHeight)) + label)
         for el.children c:EVGElement k {
             DumpPage.dump(c (depth + 1) maxDepth)

@@ -827,9 +827,26 @@ class HtmlToEvg {
         elementCount = (elementCount + 1)
         span.textContent = (HtmlToEvg.nbspToSpace((HtmlToEvg.transform((HtmlParser.collapseSpace((c.textContent()))) (HtmlToEvg.prop(inner.style "text-transform" "none"))))))
         this.textStyle(span inner.style)
+        ; the boxes on the way down (<div><a class=button><span>) all
+        ; show: the button's colour and rounding are often on the middle one
         this.applyBox(span c.style)
         if (inner != c) {
-            this.applyBox(span inner.style)
+            def cur:HNode c
+            def guard:int 0
+            while ((cur != inner) && (guard < 8)) {
+                def next:HNode cur
+                for cur.children k:HNode i {
+                    if ((k.isText == false) && ((this.skipped(k)) == false)) {
+                        next = k
+                    }
+                }
+                if (next == cur) {
+                    break
+                }
+                this.applyBox(span next.style)
+                cur = next
+                guard = (guard + 1)
+            }
         }
         span.setAttribute("max-width" "100%")
         span.setAttribute("flex-shrink" "1")
