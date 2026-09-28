@@ -41,6 +41,16 @@ else
 fi
 CXX="${CXX:-$(command -v clang++ || command -v g++)}"
 
+# The script realm's C++ build needs two small ComponentEngine fixes that are
+# on Ranger's claude/lucid-darwin-mu2j41 branch until they reach master.
+ENGINE="$RANGER/gallery/game_engine/v2/interp/migrate/src/ComponentEngine.rgr"
+if grep -q "if ((false == hasBase) && leftNode.left) {" "$ENGINE" 2>/dev/null; then
+  echo "error: this Ranger checkout lacks the ComponentEngine fix the desktop build needs." >&2
+  echo "  git -C \"$RANGER\" fetch origin claude/lucid-darwin-mu2j41" >&2
+  echo "  git -C \"$RANGER\" checkout claude/lucid-darwin-mu2j41" >&2
+  exit 1
+fi
+
 mkdir -p "$OUT/cpp"
 echo "==> 1/2 Ranger -> C++"
 cd "$ROOT"
