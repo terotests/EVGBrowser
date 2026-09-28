@@ -61,6 +61,14 @@ class BrowserCheck {
         } {
             this.check("float right beside the text" false)
         }
+        def rc:EVGElement (this.laidOut("<div style='overflow:hidden'><ol style='display:flex;padding:0'><li style='flex-shrink:0;width:400px;list-style:none'>eka</li><li style='flex-shrink:0;width:400px;list-style:none'>toka</li><li style='flex-shrink:0;width:400px;list-style:none'>kolmas</li></ol></div>"))
+        def c1@(optional):EVGElement (this.findText(rc "eka"))
+        def c3@(optional):EVGElement (this.findText(rc "kolmas"))
+        if ((!null? c1) && (!null? c3)) {
+            this.check("carousel stays one row" (((unwrap c1).calculatedY) == ((unwrap c3).calculatedY)))
+        } {
+            this.check("carousel stays one row" false)
+        }
         this.check("later wins" ((this.colorOf("<style>p { color: red } p { color: blue }</style><p>x</p>" 900.0)) == "blue"))
         this.check("class beats type" ((this.colorOf("<style>.k { color: green } p { color: blue }</style><p class=k>x</p>" 900.0)) == "green"))
         this.check("important" ((this.colorOf("<style>p { color: red !important } .k { color: blue }</style><p class=k>x</p>" 900.0)) == "red"))

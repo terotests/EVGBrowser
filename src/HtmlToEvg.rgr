@@ -92,6 +92,11 @@ class HtmlToEvg {
     def base:BrUrl (BrUrl.parse("about:blank"))
     def policy:SafetyPolicy (new SafetyPolicy())
     def contentWidth:double 800.0
+    ; whether the box whose children are being built clips what overflows
+    ; it (a carousel's frame), and whether one of them was made a single
+    ; row because of that
+    def parentClips:boolean false
+    def rowClipped:boolean false
     ; the viewport's height: the page is at least this tall, so its
     ; background reaches the bottom of the window
     def minHeight:double 0.0
@@ -212,10 +217,21 @@ class HtmlToEvg {
             }
             push olCounters start
         }
+        def ov:string (HtmlToEvg.prop(st "overflow-x" (HtmlToEvg.prop(st "overflow" "visible"))))
+        def clips:boolean ((ov == "hidden") || ((ov == "clip") || ((ov == "auto") || (ov == "scroll"))))
+        def outerClips:boolean parentClips
+        def outerRow:boolean rowClipped
+        def meCarousel:boolean false
         if ((disp == "flex") || (disp == "inline-flex")) {
+            rowClipped = false
             this.applyFlexContainer(el st)
+            meCarousel = rowClipped
+            parentClips = clips
+            rowClipped = false
             this.fillFlexItems(el node linkId)
         } {
+            parentClips = clips
+            rowClipped = false
             if ((disp == "grid") || (disp == "inline-grid")) {
                 if (this.applyGridContainer(el st)) {
                     this.fillFlexItems(el node linkId)
@@ -238,6 +254,8 @@ class HtmlToEvg {
                 }
             }
         }
+        parentClips = outerClips
+        rowClipped = (outerRow || meCarousel)
         if isOl {
             removeLast olCounters
         }
@@ -1786,9 +1804,21 @@ class HtmlToEvg {
             if (startsWith dir "column") {
                 el.setAttribute("flex-wrap" "nowrap")
             } {
-                ; a row that does not fit a phone screen wraps rather than
-                ; running off the side, which is kinder than CSS's answer
-                el.setAttribute("flex-wrap" "wrap")
+                def ownOv:string (HtmlToEvg.prop(st "overflow-x" (HtmlToEvg.prop(st "overflow" "visible"))))
+                def ownClips:boolean ((ownOv == "hidden") || ((ownOv == "clip") || ((ownOv == "auto") || (ownOv == "scroll"))))
+                if (parentClips || (ownClips || (contentWidth >= 600.0))) {
+                    ; on a wide page, or in a carousel (swiper and the
+                    ; like): one row, as the page means it; its items
+                    ; shrink to fit
+                    el.setAttribute("flex-wrap" "nowrap")
+                    ; (EVG's clip on a box of auto height cuts it short, so
+                    ; what runs past the page's edge is simply not seen)
+                    rowClipped = true
+                } {
+                    ; on a phone, a row that does not fit wraps rather
+                    ; than running off the side, which is kinder than CSS's
+                    el.setAttribute("flex-wrap" "wrap")
+                }
             }
         }
         def jc:string (HtmlToEvg.alignValue((HtmlToEvg.prop(st "justify-content" "flex-start")) true))
