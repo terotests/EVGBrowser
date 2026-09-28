@@ -59,6 +59,7 @@ npm run sdl                         # -> build/evg-browser
 build/evg-browser                   # about:home
 build/evg-browser https://yle.fi/uutiset
 build/evg-browser --allow example.org,kids.example   # a parent adds sites
+build/evg-browser --open https://www.hs.fi           # no allowlist at all
 build/evg-browser about:demo --screenshot demo.png    # render headless, then exit
 ```
 
@@ -97,7 +98,10 @@ To publish: merge to `main`, then set *Settings → Pages → Source* to
 - **Allowlist.** Pages load only from listed hosts and their subdomains (yle.fi,
   wikipedia.org, a few science and library sites). A redirect off the list is
   refused too. Anything else shows a "this page is not allowed" page naming the
-  site, so a parent can decide to add it (`setAllowedSites`).
+  site, so a parent can decide to add it (`setAllowedSites`). For grown-ups
+  it can be switched off: `--open` or `EVG_OPEN=1` on the desktop,
+  `?open=1` on the web page (with `EVG_OPEN=1 npm run serve` locally, so
+  the proxy fetches any site too). The other rules stay on.
 - **Scripts in a realm of their own.** A page's scripts run in Ranger's
   JavaScript interpreter (ComponentEngine) on a *copy* of the page, in a Web
   Worker on the web and in a child process on the desktop. They see a DOM

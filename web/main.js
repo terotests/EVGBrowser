@@ -32,6 +32,9 @@ const host = new mod.BrowserHost();
 const app = host.browser;
 if (params.get("images") === "0") app.setImagesEnabled(false);
 if (params.get("js") === "0") app.setScriptsEnabled(false);
+// ?open=1: no allowlist (locally with `EVG_OPEN=1 npm run serve`, whose
+// proxy then fetches any site too; on Pages CORS still decides)
+if (params.get("open") === "1") app.setAllowlistEnabled(false);
 // the sample pages that ship with the demo, on this page's own origin
 app.setSamplesBase(new URL("samples/", location.href).href);
 

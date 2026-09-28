@@ -1319,6 +1319,7 @@ struct Options {
   int width = 1100, height = 800;
   std::string screenshot;
   std::string allow;
+  bool open = false;
   bool scripts = true;
   std::string samples = "https://terotests.github.io/EVGBrowser/samples/";
   int frames = 0;
@@ -1335,6 +1336,7 @@ static Options parseArgs(int argc, char** argv) {
     else if (a == "--screenshot") o.screenshot = next();
     else if (a == "--allow") o.allow = next();
     else if (a == "--no-js") o.scripts = false;
+    else if (a == "--open") o.open = true;
     else if (a == "--samples") o.samples = next();
     else if (a == "--frames") o.frames = std::atoi(next().c_str());
     else if (a == "--settle") o.settleMs = std::atoi(next().c_str());
@@ -1343,6 +1345,7 @@ static Options parseArgs(int argc, char** argv) {
           "evg-browser [url] [options]\n"
           "  --width W --height H     window size\n"
           "  --allow a.fi,b.org       also allow these sites (and their subdomains)\n"
+          "  --open                   any site: switch the allowlist off (EVG_OPEN=1 too)\n"
           "  --no-js                  do not run page scripts\n"
           "  --samples URL            where the sample pages are (default: the Pages demo)\n"
           "  --screenshot out.png     render headless once the page has loaded, then exit\n"
@@ -1418,6 +1421,7 @@ static int run(int argc, char** argv) {
   RealmProcess realm;
   realm.exe = selfPath(argv[0]);
   app->setScriptsEnabled(opt.scripts && realm.available());
+  if (opt.open || std::getenv("EVG_OPEN")) app->setAllowlistEnabled(false);
   if (!opt.allow.empty()) app->setAllowedSites(app->allowedSitesText() + "," + opt.allow);
   host->startAt(winW, winH, false, opt.url);
 

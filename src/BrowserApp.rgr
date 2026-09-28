@@ -1426,6 +1426,12 @@ class BrowserApp extends EvgApp {
         return (policy.allowedText())
     }
 
+    ; false opens every http(s) site; the rest of the safety rules (no
+    ; video, overlays, POST forms; scripts in their realm) stay on.
+    fn setAllowlistEnabled:void (on:boolean) {
+        policy.enforce = on
+    }
+
     fn setAllowedSites:void (text:string) {
         policy.setAllowedText(text)
     }

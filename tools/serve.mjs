@@ -30,8 +30,12 @@ const MAX_BYTES = 5_000_000;
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml" };
 
+const OPEN = process.env.EVG_OPEN === "1";
+
 function allowed(host) {
   host = host.toLowerCase();
+  // open, but not onto this machine or the local network
+  if (OPEN) return !/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|\[|0\.)/.test(host) && !host.endsWith(".local");
   return ALLOW.some((a) => host === a || host.endsWith("." + a));
 }
 
