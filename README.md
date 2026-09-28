@@ -59,7 +59,7 @@ npm run sdl                         # -> build/evg-browser
 build/evg-browser                   # about:home
 build/evg-browser https://yle.fi/uutiset
 build/evg-browser --allow example.org,kids.example   # a parent adds sites
-build/evg-browser --open https://www.hs.fi           # no allowlist at all
+build/evg-browser --open https://www.hs.fi           # no allowlist at all (or --unsafe)
 build/evg-browser about:demo --screenshot demo.png    # render headless, then exit
 ```
 

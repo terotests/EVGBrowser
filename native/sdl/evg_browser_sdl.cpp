@@ -1355,7 +1355,7 @@ static Options parseArgs(int argc, char** argv) {
     else if (a == "--screenshot") o.screenshot = next();
     else if (a == "--allow") o.allow = next();
     else if (a == "--no-js") o.scripts = false;
-    else if (a == "--open") o.open = true;
+    else if (a == "--open" || a == "--unsafe") o.open = true;
     else if (a == "--samples") o.samples = next();
     else if (a == "--frames") o.frames = std::atoi(next().c_str());
     else if (a == "--settle") o.settleMs = std::atoi(next().c_str());
@@ -1364,7 +1364,7 @@ static Options parseArgs(int argc, char** argv) {
           "evg-browser [url] [options]\n"
           "  --width W --height H     window size\n"
           "  --allow a.fi,b.org       also allow these sites (and their subdomains)\n"
-          "  --open                   any site: switch the allowlist off (EVG_OPEN=1 too)\n"
+          "  --open, --unsafe         any site: switch the allowlist off (EVG_OPEN=1 too)\n"
           "  --no-js                  do not run page scripts\n"
           "  --samples URL            where the sample pages are (default: the Pages demo)\n"
           "  --screenshot out.png     render headless once the page has loaded, then exit\n"

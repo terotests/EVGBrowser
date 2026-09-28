@@ -26,6 +26,9 @@ class DumpPage {
         if ((strlen el.id) > 0) {
             label = (label + " #" + el.id)
         }
+        if el.width.isSet {
+            label = (label + " W=" + (to_string (to_int el.width.value)) + "/" + (to_string el.width.unitType))
+        }
         if el.backgroundColor.isSet {
             label = (label + " bg=" + (to_string (to_int (el.backgroundColor.r))) + "," + (to_string (to_int (el.backgroundColor.g))) + "," + (to_string (to_int (el.backgroundColor.b))))
         }

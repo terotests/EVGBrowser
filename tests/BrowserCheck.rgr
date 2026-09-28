@@ -38,6 +38,7 @@ class BrowserCheck {
     fn cascadeChecks:void () {
         this.check("id beats type" ((this.colorOf("<style>#a p { color: red } p { color: blue }</style><div id=a><p>x</p></div>" 900.0)) == "red"))
         this.check("calc of a token" ((CssCalc.resolveAll("calc(16px*1.5) calc( (2rem - 4px) / 2 )")) == "24px 14px"))
+        this.check("calc with vw" ((CssCalc.resolveIn("calc(calc(100vw - 0px) * 0.625 - 10px)" 1000.0 800.0)) == "615px"))
         this.check("calc left alone" ((CssCalc.resolveAll("calc(100% - 8px)")) == "calc(100% - 8px)"))
         def svgUrl:string "data:image/svg+xml,%3Csvg%20viewBox=%220%200%2010%2010%22%3E%3C/svg%3E"
         this.check("data url round trip" (((BrUrl.parse(svgUrl)).toString()) == svgUrl))
@@ -69,6 +70,7 @@ class BrowserCheck {
         } {
             this.check("carousel stays one row" false)
         }
+        this.check("var with capitals" ((this.colorOf("<style>body { --myColor: green } p { color: var(--myColor) }</style><p>x</p>" 900.0)) == "green"))
         this.check("var defined by a later rule" ((this.colorOf("<style>.b { color: var(--c) } .a.b { --c: green }</style><p class='a b'>x</p>" 900.0)) == "green"))
         this.check("later wins" ((this.colorOf("<style>p { color: red } p { color: blue }</style><p>x</p>" 900.0)) == "blue"))
         this.check("class beats type" ((this.colorOf("<style>.k { color: green } p { color: blue }</style><p class=k>x</p>" 900.0)) == "green"))

@@ -300,6 +300,18 @@ class HtmlToEvg {
             }
             def item:EVGElement (this.boxFor(c linkId))
             this.applyFlexItem(item c.style)
+            this.sizeCell(item c)
+            if ((item.width.isSet == false) && (this.stretchesItems(node.style c.style))) {
+                ; a column stretches its items across (a card's title bar);
+                ; EVG leaves a text box at the text's width
+                item.setAttribute("width" "100%")
+            }
+            if ((el.flexWrap != "wrap") && ((item.width.isSet == false) && (item.maxWidth.isSet == false))) {
+                ; CSS shrinks an item to the row and wraps its text; EVG keeps
+                ; the content's width, so a long headline would run out of
+                ; its card
+                item.setAttribute("max-width" "100%")
+            }
             this.fitInRow(el item c.style)
             el.addChild(item)
             push orders (HtmlToEvg.orderOf(c.style))
@@ -850,6 +862,15 @@ class HtmlToEvg {
         }
         span.setAttribute("max-width" "100%")
         span.setAttribute("flex-shrink" "1")
+        ; a flex box that centres its one line of text (a numbered badge, a
+        ; button): the text is centred in the box
+        def cd:string (HtmlToEvg.prop(inner.style "display" (HtmlToEvg.prop(c.style "display" ""))))
+        if ((cd == "flex") || (cd == "inline-flex")) {
+            def jc:string (HtmlToEvg.prop(inner.style "justify-content" (HtmlToEvg.prop(c.style "justify-content" ""))))
+            if (jc == "center") {
+                span.setAttribute("text-align" "center")
+            }
+        }
         if ((strlen lid) > 0) {
             span.id = lid
             span.setAttribute("cursor" "pointer")
@@ -1993,6 +2014,75 @@ class HtmlToEvg {
             item.setAttribute("flex-basis" "0px")
             item.setAttribute("min-width" "0px")
         }
+    }
+
+    fn stretchesItems:boolean (parent:[string:string] item:[string:string]) {
+        def disp:string (HtmlToEvg.prop(parent "display" "block"))
+        if ((disp != "flex") && (disp != "inline-flex")) {
+            return false
+        }
+        if ((startsWith (HtmlToEvg.prop(parent "flex-direction" "row")) "column") == false) {
+            return false
+        }
+        def ai:string (HtmlToEvg.prop(parent "align-items" "stretch"))
+        def aself:string (HtmlToEvg.prop(item "align-self" "auto"))
+        if ((aself != "auto") && ((aself != "stretch") && (aself != "normal"))) {
+            return false
+        }
+        if (aself == "auto") {
+            return ((ai == "stretch") || (ai == "normal"))
+        }
+        return true
+    }
+
+    ; Table cells share a row as an automatic table layout would: a narrow
+    ; cell (a time, a number, a fixed-width column) keeps its content's
+    ; width, the others share what is left.
+    fn sizeCell:void (item:EVGElement c:HNode) {
+        if ((HtmlToEvg.prop(c.style "display" "")) != "table-cell") {
+            return
+        }
+        def narrow:boolean false
+        def fixed:double (this.fixedWidth(c 0))
+        if (fixed > 0.0) {
+            narrow = true
+            item.setAttribute("min-width" ((CssParser.fmt(fixed)) + "px"))
+        }
+        if ((HtmlToEvg.prop(c.style "white-space" "")) == "nowrap") {
+            narrow = true
+        }
+        def t:string (trim (HtmlParser.collapseSpace((this.visibleText(c)))))
+        if (((strlen t) > 0) && ((strlen t) <= 20)) {
+            if ((this.elementChildren(c)) <= 1) {
+                narrow = true
+            }
+        }
+        if narrow {
+            item.setAttribute("flex-grow" "0")
+            item.setAttribute("flex-shrink" "0")
+            item.setAttribute("flex-basis" "auto")
+        }
+    }
+
+    ; A width in px set on the element or, down a chain of single children,
+    ; on what it holds; -1 if none.
+    fn fixedWidth:double (c:HNode depth:int) {
+        if (depth > 4) {
+            return -1.0
+        }
+        def w:string (trim (HtmlToEvg.prop(c.style "width" "")))
+        if (endsWith w "px") {
+            return (CssParser.num(w))
+        }
+        if ((this.elementChildren(c)) != 1) {
+            return -1.0
+        }
+        for c.children k:HNode i {
+            if ((k.isText == false) && ((this.skipped(k)) == false)) {
+                return (this.fixedWidth(k (depth + 1)))
+            }
+        }
+        return -1.0
     }
 
     ; A block with no width in a flex ROW is as wide as its content in CSS.

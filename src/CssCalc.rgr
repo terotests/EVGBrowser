@@ -8,7 +8,7 @@
 ; substituted this is plain arithmetic, `calc(16px*1.5)`, and it is worked
 ; out here to `24px`, so the rest of the browser sees an ordinary length.
 ;
-; Lengths in px, rem (16px) and pt, and bare numbers, with + - * / and
+; Lengths in px, rem (16px), pt and vw/vh/vmin/vmax, and bare numbers, with + - * / and
 ; parentheses. A term whose size depends on where the box is laid out (%,
 ; em, vw, …) leaves the `calc()` as it was written.
 ; ==============================================================================
@@ -19,9 +19,17 @@ class CssCalc {
     def ok:boolean true
     ; whether the value just parsed is a length (true) or a bare number
     def isLen:boolean false
+    ; the viewport, for vw and vh
+    def vw:double 1024.0
+    def vh:double 768.0
 
     ; Every `calc(…)` in a value that can be worked out, replaced by its result.
     sfn resolveAll:string (v:string) {
+        return (CssCalc.resolveIn(v 1024.0 768.0))
+    }
+
+    ; The same, with the viewport's size for vw, vh, vmin and vmax.
+    sfn resolveIn:string (v:string vw:double vh:double) {
         def out:string v
         def from:int 0
         def guard:int 0
@@ -52,7 +60,7 @@ class CssCalc {
             if (i >= n) {
                 return out
             }
-            def res:string (CssCalc.evalInner((substring out (at + 5) i)))
+            def res:string (CssCalc.evalWith((substring out (at + 5) i) vw vh))
             if ((strlen res) > 0) {
                 out = ((substring out 0 at) + res + (substring out (i + 1) n))
                 from = (at + (strlen res))
@@ -66,7 +74,13 @@ class CssCalc {
     ; The inside of one `calc()`: "16px*1.5" -> "24px", or "" when it
     ; cannot be worked out here.
     sfn evalInner:string (inner:string) {
+        return (CssCalc.evalWith(inner 1024.0 768.0))
+    }
+
+    sfn evalWith:string (inner:string vw:double vh:double) {
         def c:CssCalc (new CssCalc())
+        c.vw = vw
+        c.vh = vh
         c.src = (to_lowercase inner)
         c.pos = 0
         def v:double (c.sum())
@@ -241,6 +255,24 @@ class CssCalc {
         }
         if (unit == "pt") {
             return ((value * 96.0) / 72.0)
+        }
+        if (unit == "vw") {
+            return ((value * vw) / 100.0)
+        }
+        if (unit == "vh") {
+            return ((value * vh) / 100.0)
+        }
+        def small:double vw
+        def large:double vh
+        if (vh < vw) {
+            small = vh
+            large = vw
+        }
+        if (unit == "vmin") {
+            return ((value * small) / 100.0)
+        }
+        if (unit == "vmax") {
+            return ((value * large) / 100.0)
         }
         ok = false
         return 0.0

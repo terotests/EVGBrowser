@@ -465,7 +465,7 @@ class CssCascade {
             return
         }
         if (startsWith name "--") {
-            set node.vars name value
+            set node.vars (to_lowercase name) value
             node.hasVars = true
             return
         }
@@ -480,7 +480,7 @@ class CssCascade {
             }
         }
         if ((indexOf v "calc(") >= 0) {
-            v = (CssCalc.resolveAll(v))
+            v = (CssCalc.resolveIn(v viewportWidth viewportHeight))
         }
         this.setExpanded(node.style name v)
     }
@@ -536,7 +536,10 @@ class CssCascade {
         return (this.substituteVars(next node (depth + 1)))
     }
 
-    fn lookupVar:string (name:string node:HNode) {
+    fn lookupVar:string (name0:string node:HNode) {
+        ; declarations' names reach here lower-cased by the parser, and
+        ; `var(--fooBar)` must still find `--fooBar`
+        def name:string (to_lowercase name0)
         if node.hasVars {
             if (has node.vars name) {
                 return (unwrap (get node.vars name))
