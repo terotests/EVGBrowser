@@ -165,9 +165,9 @@ browser                                   realm (Worker / child process)
 | `web/realm-worker.js` | the Worker; `evg_realm.js` is loaded only when a page has scripts |
 | `native/sdl/evg_browser_sdl.cpp` | `RealmProcess`: `evg-browser --realm` over pipes, killed on timeout |
 
-The realm needs one small fix in ComponentEngine for its C++ build (on
-Ranger's `claude/lucid-darwin-mu2j41` branch until it is merged); the web
-build does not.
+The realm's C++ build needs Ranger's master from 28 September 2026 or later
+(terotests/Ranger#1082, two ComponentEngine lines the C++ writer could not
+compile).
 
 ## I/O is the host's job
 

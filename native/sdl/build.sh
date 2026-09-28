@@ -41,13 +41,12 @@ else
 fi
 CXX="${CXX:-$(command -v clang++ || command -v g++)}"
 
-# The script realm's C++ build needs two small ComponentEngine fixes that are
-# on Ranger's claude/lucid-darwin-mu2j41 branch until they reach master.
+# The script realm's C++ build needs ComponentEngine as of Ranger PR #1082
+# (master from 28 September 2026 on).
 ENGINE="$RANGER/gallery/game_engine/v2/interp/migrate/src/ComponentEngine.rgr"
 if grep -q "if ((false == hasBase) && leftNode.left) {" "$ENGINE" 2>/dev/null; then
-  echo "error: this Ranger checkout lacks the ComponentEngine fix the desktop build needs." >&2
-  echo "  git -C \"$RANGER\" fetch origin claude/lucid-darwin-mu2j41" >&2
-  echo "  git -C \"$RANGER\" checkout claude/lucid-darwin-mu2j41" >&2
+  echo "error: this Ranger checkout is too old for the desktop build; update it:" >&2
+  echo "  git -C \"$RANGER\" checkout master && git -C \"$RANGER\" pull" >&2
   exit 1
 fi
 
