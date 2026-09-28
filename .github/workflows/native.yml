@@ -15,9 +15,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: EVGBrowser
+      # The realm's C++ build needs a ComponentEngine fix that is on this
+      # Ranger branch; back to the default branch once it is merged.
       - uses: actions/checkout@v4
         with:
           repository: terotests/Ranger
+          ref: claude/lucid-darwin-mu2j41
           path: Ranger
       - uses: actions/setup-node@v4
         with:

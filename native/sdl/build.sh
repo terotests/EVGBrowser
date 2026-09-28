@@ -44,7 +44,7 @@ CXX="${CXX:-$(command -v clang++ || command -v g++)}"
 mkdir -p "$OUT/cpp"
 echo "==> 1/2 Ranger -> C++"
 cd "$ROOT"
-LOG="$(node "$RANGER/dist/rgrc.js" -l=cpp src/BrowserApp.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
+LOG="$(node --stack-size=8000 "$RANGER/dist/rgrc.js" -l=cpp native/sdl/SdlEntry.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
 if grep -q "FAIL" <<<"$LOG"; then
   echo "$LOG" >&2
   exit 1

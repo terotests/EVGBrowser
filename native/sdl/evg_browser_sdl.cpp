@@ -41,6 +41,17 @@
 #define NANOSVGRAST_IMPLEMENTATION
 #include "third_party/nanosvgrast.h"
 
+#ifndef _WIN32
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+extern char** environ;
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -990,6 +1001,254 @@ class Painter {
 };
 
 // ---------------------------------------------------------------------------
+// The script realm, as a child process of this same binary
+// ---------------------------------------------------------------------------
+//
+// A page's scripts run in `evg-browser --realm`: the job (URL, HTML, window
+// size, external scripts) goes in on its stdin, the DOM ops come out on its
+// stdout, each field as "<length>\n<bytes>". A child that runs past its time
+// is killed, and a script that overflows the stack takes down only the
+// child; the page stays as the server sent it. The child has no window and
+// makes no requests.
+
+static void putField(std::string& out, const std::string& v) {
+  out += std::to_string(v.size());
+  out += '\n';
+  out += v;
+}
+
+static bool getField(const std::string& in, size_t& at, std::string& v) {
+  size_t nl = in.find('\n', at);
+  if (nl == std::string::npos) return false;
+  size_t n = (size_t)std::strtoull(in.substr(at, nl - at).c_str(), nullptr, 10);
+  if (nl + 1 + n > in.size()) return false;
+  v.assign(in, nl + 1, n);
+  at = nl + 1 + n;
+  return true;
+}
+
+static std::string readAll(int fd) {
+  std::string out;
+  char buf[65536];
+  for (;;) {
+#ifndef _WIN32
+    ssize_t n = ::read(fd, buf, sizeof buf);
+#else
+    long n = -1;
+#endif
+    if (n <= 0) break;
+    out.append(buf, (size_t)n);
+  }
+  return out;
+}
+
+// The child's side: one job, then exit.
+static int realmMain() {
+#ifndef _WIN32
+  std::string in = readAll(0);
+  size_t at = 0;
+  std::string magic, url, html, w, h, count;
+  if (!getField(in, at, magic) || magic != "evg-realm-1" || !getField(in, at, url) || !getField(in, at, html) ||
+      !getField(in, at, w) || !getField(in, at, h) || !getField(in, at, count)) {
+    std::fputs("bad job\n", stderr);
+    return 2;
+  }
+  auto realm = std::make_shared<JsRealm>();
+  int n = std::atoi(count.c_str());
+  for (int i = 0; i < n; i++) {
+    std::string su, st;
+    if (!getField(in, at, su) || !getField(in, at, st)) return 2;
+    realm->addScript(su, st);
+  }
+  std::string ops = realm->run(html, url, std::atof(w.c_str()), std::atof(h.c_str()));
+  std::string out;
+  putField(out, "ok");
+  putField(out, ops);
+  putField(out, realm->summary());
+  size_t done = 0;
+  while (done < out.size()) {
+    ssize_t k = ::write(1, out.data() + done, out.size() - done);
+    if (k <= 0) break;
+    done += (size_t)k;
+  }
+#endif
+  return 0;
+}
+
+static std::string selfPath(const char* argv0) {
+#if defined(__APPLE__)
+  char buf[4096];
+  uint32_t size = sizeof buf;
+  if (_NSGetExecutablePath(buf, &size) == 0) return buf;
+#elif defined(__linux__)
+  char buf[4096];
+  ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+  if (n > 0) {
+    buf[n] = 0;
+    return buf;
+  }
+#endif
+  return argv0 ? argv0 : "";
+}
+
+class RealmProcess {
+ public:
+  std::string exe;
+  double limitMs = 8000;
+
+  bool available() const {
+#ifdef _WIN32
+    return false;
+#else
+    return !exe.empty();
+#endif
+  }
+
+  bool busy() const { return pid > 0; }
+
+  void start(int jobId, const std::string& payload) {
+#ifndef _WIN32
+    stop();
+    int in[2], out[2];
+    if (::pipe(in) != 0) return;
+    if (::pipe(out) != 0) {
+      ::close(in[0]);
+      ::close(in[1]);
+      return;
+    }
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, in[0], 0);
+    posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+    posix_spawn_file_actions_addclose(&fa, in[1]);
+    posix_spawn_file_actions_addclose(&fa, out[0]);
+    char* args[] = {(char*)exe.c_str(), (char*)"--realm", nullptr};
+    pid_t p = -1;
+    int rc = posix_spawn(&p, exe.c_str(), &fa, nullptr, args, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    ::close(in[0]);
+    ::close(out[1]);
+    if (rc != 0) {
+      ::close(in[1]);
+      ::close(out[0]);
+      return;
+    }
+    pid = p;
+    job = jobId;
+    started = SDL_GetTicks64();
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      finished = false;
+      reply.clear();
+    }
+    int toChild = in[1], fromChild = out[0];
+    // one thread writes the job and one reads the answer, so a large page
+    // cannot fill a pipe with nobody draining the other end
+    writer = std::thread([toChild, payload] {
+      size_t done = 0;
+      while (done < payload.size()) {
+        ssize_t k = ::write(toChild, payload.data() + done, payload.size() - done);
+        if (k <= 0) break;
+        done += (size_t)k;
+      }
+      ::close(toChild);
+    });
+    reader = std::thread([this, fromChild] {
+      std::string got = readAll(fromChild);
+      ::close(fromChild);
+      std::lock_guard<std::mutex> lk(mu);
+      reply = std::move(got);
+      finished = true;
+    });
+#endif
+  }
+
+  // Called every frame: hands a finished (or timed-out) job to the app.
+  void poll(const std::shared_ptr<BrowserApp>& app, bool& dirty) {
+#ifndef _WIN32
+    if (pid <= 0) return;
+    bool fin = false;
+    std::string got;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      fin = finished;
+      if (fin) got = reply;
+    }
+    if (!fin) {
+      if ((double)(SDL_GetTicks64() - started) > limitMs) {
+        int j = job;
+        stop();
+        app->realmFailed(j, "aikaraja");
+        dirty = true;
+      }
+      return;
+    }
+    int j = job;
+    joinAll();
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    pid = -1;
+    size_t at = 0;
+    std::string okField, ops, summary;
+    if (getField(got, at, okField) && okField == "ok" && getField(got, at, ops) && getField(got, at, summary)) {
+      app->realmResult(j, ops, summary);
+    } else {
+      app->realmFailed(j, "realm ended without an answer");
+    }
+    dirty = true;
+#endif
+  }
+
+  void stop() {
+#ifndef _WIN32
+    if (pid > 0) {
+      ::kill(pid, SIGKILL);
+      int status = 0;
+      ::waitpid(pid, &status, 0);
+      pid = -1;
+    }
+    joinAll();
+#endif
+  }
+
+  ~RealmProcess() { stop(); }
+
+ private:
+#ifndef _WIN32
+  pid_t pid = -1;
+#else
+  int pid = -1;
+#endif
+  int job = -1;
+  Uint64 started = 0;
+  std::thread writer, reader;
+  std::mutex mu;
+  bool finished = false;
+  std::string reply;
+
+  void joinAll() {
+    if (writer.joinable()) writer.join();
+    if (reader.joinable()) reader.join();
+  }
+};
+
+static std::string realmPayload(const std::shared_ptr<BrowserApp>& app) {
+  std::string p;
+  putField(p, "evg-realm-1");
+  putField(p, app->realmUrl());
+  putField(p, app->realmHtml());
+  putField(p, std::to_string(app->realmWidth()));
+  putField(p, std::to_string(app->realmHeight()));
+  int n = app->realmScriptCount();
+  putField(p, std::to_string(n));
+  for (int i = 0; i < n; i++) {
+    putField(p, app->realmScriptUrl(i));
+    putField(p, app->realmScriptText(i));
+  }
+  return p;
+}
+
+// ---------------------------------------------------------------------------
 // Keys, as the app names them
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +1281,7 @@ struct Options {
   int width = 1100, height = 800;
   std::string screenshot;
   std::string allow;
+  bool scripts = true;
   std::string samples = "https://terotests.github.io/EVGBrowser/samples/";
   int frames = 0;
   int settleMs = 0;
@@ -1036,6 +1296,7 @@ static Options parseArgs(int argc, char** argv) {
     else if (a == "--height") o.height = std::atoi(next().c_str());
     else if (a == "--screenshot") o.screenshot = next();
     else if (a == "--allow") o.allow = next();
+    else if (a == "--no-js") o.scripts = false;
     else if (a == "--samples") o.samples = next();
     else if (a == "--frames") o.frames = std::atoi(next().c_str());
     else if (a == "--settle") o.settleMs = std::atoi(next().c_str());
@@ -1044,6 +1305,7 @@ static Options parseArgs(int argc, char** argv) {
           "evg-browser [url] [options]\n"
           "  --width W --height H     window size\n"
           "  --allow a.fi,b.org       also allow these sites (and their subdomains)\n"
+          "  --no-js                  do not run page scripts\n"
           "  --samples URL            where the sample pages are (default: the Pages demo)\n"
           "  --screenshot out.png     render headless once the page has loaded, then exit\n"
           "  --settle MS              how long to wait for quiet before the screenshot\n");
@@ -1114,8 +1376,10 @@ static int run(int argc, char** argv) {
   std::shared_ptr<BrowserApp> app = host->browser;
   // the sample pages that ship with the web demo, where Pages publishes them
   app->setSamplesBase(opt.samples);
-  // page scripts need the realm process, which this host does not start yet
-  app->setScriptsEnabled(false);
+  // page scripts run in a child process of this binary (--realm)
+  RealmProcess realm;
+  realm.exe = selfPath(argv[0]);
+  app->setScriptsEnabled(opt.scripts && realm.available());
   if (!opt.allow.empty()) app->setAllowedSites(app->allowedSitesText() + "," + opt.allow);
   host->startAt(winW, winH, false, opt.url);
 
@@ -1288,6 +1552,11 @@ static int run(int argc, char** argv) {
     if (host->tick(dt)) dirty = true;
     deliver();
     pump();
+    realm.poll(app, dirty);
+    if (app->realmJobPending()) {
+      int job = app->takeRealmJob();
+      realm.start(job, realmPayload(app));
+    }
 
     if (dirty) {
       std::shared_ptr<EVGDisplayList> dl = app->display();
@@ -1315,7 +1584,7 @@ static int run(int argc, char** argv) {
     if (headless) {
       // a screenshot once nothing is loading and nothing has moved for a
       // while — or after --frames frames, whichever comes first
-      bool quiet = net.busy() == 0 && !app->isLoading() && app->pendingRequests() == 0;
+      bool quiet = net.busy() == 0 && !app->isLoading() && app->pendingRequests() == 0 && !realm.busy() && !app->realmJobPending();
       if (quiet) {
         if (idleSince == 0) idleSince = now;
       } else {
@@ -1354,8 +1623,12 @@ static int run(int argc, char** argv) {
 }  // namespace evgsdl
 
 int main(int argc, char** argv) {
-  SDL_SetMainReady();
   __g_argc = argc;
   __g_argv = argv;
+  if (argc > 1 && std::string(argv[1]) == "--realm") return evgsdl::realmMain();
+#ifndef _WIN32
+  signal(SIGPIPE, SIG_IGN);  // a killed realm must not take the browser with it
+#endif
+  SDL_SetMainReady();
   return evgsdl::run(argc, argv);
 }

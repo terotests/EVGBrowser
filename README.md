@@ -94,8 +94,14 @@ To publish: merge to `main`, then set *Settings → Pages → Source* to
   wikipedia.org, a few science and library sites). A redirect off the list is
   refused too. Anything else shows a "this page is not allowed" page naming the
   site, so a parent can decide to add it (`setAllowedSites`).
-- **No scripts.** `<script>` is never run. Pages that build their content with
-  JavaScript show what the server sent, including `<noscript>` content.
+- **Scripts in a realm of their own.** A page's scripts run in Ranger's
+  JavaScript interpreter (ComponentEngine) on a *copy* of the page, in a Web
+  Worker on the web and in a child process on the desktop. They see a DOM
+  (`src/js/prelude.js`) and nothing else: no network (`fetch` and
+  `XMLHttpRequest` fail), no storage that outlives the page, no dialogs or
+  windows, timers on a virtual clock. What they change comes back to the
+  browser as DOM operations; a realm that runs longer than 8 s is stopped and
+  the page stays as the server sent it. `?js=0` / `--no-js` turn scripts off.
 - **No video, audio, iframes, plugins or canvas.** They are replaced by a short
   notice.
 - **No overlays.** `position: fixed` boxes (cookie banners, chat bubbles,
@@ -139,6 +145,30 @@ Things EVG does not have, and how they are handled:
 - **Borders on one side only** are drawn as thin blocks (EVG borders are
   all-round).
 
+## Scripts: the realm
+
+```
+browser                                   realm (Worker / child process)
+  parse HTML, number nodes (DomTree)  ──►   parse the same HTML, same numbers
+  fetch external scripts              ──►   run scripts in ComponentEngine
+                                             against prelude.js's DOM
+  apply ops, restyle, lay out         ◄──   every DOM change as an op:
+                                             C/T create, A/R attributes,
+                                             I insert, X remove, D text, W title
+```
+
+| File | Role |
+| --- | --- |
+| `src/DomTree.rgr` | node numbering, the ops as text, applying them |
+| `src/js/JsRealm.rgr` | the realm: ComponentEngine plus the `__dom` bridge and selector matching |
+| `src/js/prelude.js` | the DOM scripts see (generated into `JsPrelude.rgr` by `tools/gen-prelude.mjs`) |
+| `web/realm-worker.js` | the Worker; `evg_realm.js` is loaded only when a page has scripts |
+| `native/sdl/evg_browser_sdl.cpp` | `RealmProcess`: `evg-browser --realm` over pipes, killed on timeout |
+
+The realm needs one small fix in ComponentEngine for its C++ build (on
+Ranger's `claude/lucid-darwin-mu2j41` branch until it is merged); the web
+build does not.
+
 ## I/O is the host's job
 
 `BrowserApp` never fetches anything. It queues requests; the host takes them
@@ -163,7 +193,8 @@ Not done yet:
 - Text is not selectable; there is no italic or underline (EVG draws neither
   from its element tree); `float`, `calc()`, most pseudo-classes, `::before` /
   `::after` content, CSS background images and inline SVG are ignored.
-- Pages that render all their content with JavaScript appear mostly empty.
+- Scripts run once, at load: a click does not reach a page's own handlers
+  yet, and modules (`<script type="module">`) do not run.
 
 ## License
 

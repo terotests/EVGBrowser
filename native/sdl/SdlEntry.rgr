@@ -1,0 +1,8 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; What the desktop binary is built from: the browser, and the script realm it
+; starts as a child process of itself (evg-browser --realm).
+Import "../../src/BrowserApp.rgr"
+Import "../../src/js/JsRealm.rgr"
+
+class SdlEntry {
+}
