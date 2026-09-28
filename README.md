@@ -19,7 +19,8 @@ HTML ──► HtmlParser ──► CssCascade ──► HtmlToEvg ──► EVG
 ## Running it
 
 It needs a Ranger checkout next to this repository (`../Ranger`), or `RANGER_DIR`
-pointing at one. Node 20+.
+pointing at one, and Node 20+. The desktop build needs a recent Ranger (master
+of late September 2026 or later); older compilers write C++ that does not build.
 
 ```sh
 npm run check          # headless checks, compiled to JavaScript
@@ -45,8 +46,8 @@ stack). It does not use Ranger's AGPL `gallery/`; everything is MIT.
 ```sh
 # Debian/Ubuntu
 sudo apt-get install libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libcurl4-openssl-dev fonts-dejavu-core
-# macOS (not yet tried)
-brew install sdl2 sdl2_ttf sdl2_image curl pkg-config
+# macOS (libcurl comes with the system)
+brew install sdl2 sdl2_ttf sdl2_image pkg-config
 
 npm run sdl                         # -> build/evg-browser
 build/evg-browser                   # about:home

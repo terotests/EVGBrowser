@@ -603,7 +603,7 @@ class HtmlParser {
             ; one of each, wherever the page wrote them; attributes merge
             def existing@(optional):HNode (root.find(name))
             if (!null? existing) {
-                def ex:HNode existing
+                def ex:HNode (unwrap existing)
                 for el.attrNames an:string i {
                     if ((ex.hasAttr(an)) == false) {
                         ex.setAttr(an (itemAt el.attrValues i))
