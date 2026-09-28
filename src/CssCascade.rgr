@@ -766,7 +766,7 @@ class CssCascade {
                         if (endsWith w "%") {
                             set st "width" w
                         } {
-                            set st "width" ((to_string (CssParser.num(w))) + "px")
+                            set st "width" ((CssParser.fmt((CssParser.num(w)))) + "px")
                         }
                     }
                 }
@@ -776,7 +776,7 @@ class CssCascade {
                     def h:string (trim (node.attr("height")))
                     if ((CssParser.num(h)) > 0.0) {
                         if ((endsWith h "%") == false) {
-                            set st "height" ((to_string (CssParser.num(h))) + "px")
+                            set st "height" ((CssParser.fmt((CssParser.num(h)))) + "px")
                         }
                     }
                 }
@@ -862,7 +862,7 @@ class CssCascade {
         if (size > 96.0) {
             size = 96.0
         }
-        set st "font-size" ((to_string size) + "px")
+        set st "font-size" ((CssParser.fmt(size)) + "px")
         if isRoot {
             rootFontSize = size
         }

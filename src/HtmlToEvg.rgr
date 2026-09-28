@@ -151,7 +151,7 @@ class HtmlToEvg {
         def page (EVGElement.createDiv())
         page.setAttribute("width" "100%")
         if (minHeight > 0.0) {
-            page.setAttribute("min-height" ((to_string minHeight) + "px"))
+            page.setAttribute("min-height" ((CssParser.fmt(minHeight)) + "px"))
         }
         ; the canvas colour: the html's background, else the body's
         def canvas:string ""
@@ -923,8 +923,8 @@ class HtmlToEvg {
                 }
             }
             if ((w >= 2.0) && (h >= 2.0)) {
-                box.setAttribute("width" ((to_string w) + "px"))
-                box.setAttribute("height" ((to_string h) + "px"))
+                box.setAttribute("width" ((CssParser.fmt(w)) + "px"))
+                box.setAttribute("height" ((CssParser.fmt(h)) + "px"))
                 box.setAttribute("background-color" "#eceff3")
             }
             return box
@@ -939,8 +939,8 @@ class HtmlToEvg {
             im.setAttribute("width" cssW)
             im.setAttribute("max-width" "100%")
         } {
-            im.setAttribute("width" ((to_string w) + "px"))
-            im.setAttribute("height" ((to_string h) + "px"))
+            im.setAttribute("width" ((CssParser.fmt(w)) + "px"))
+            im.setAttribute("height" ((CssParser.fmt(h)) + "px"))
             im.setAttribute("max-width" "100%")
         }
         im.setAttribute("object-fit" "cover")
@@ -969,8 +969,8 @@ class HtmlToEvg {
             def w:double im.calculatedWidth
             def a:double (itemAt fluidAspect i)
             if ((w > 1.0) && (a > 0.0)) {
-                im.setAttribute("width" ((to_string w) + "px"))
-                im.setAttribute("height" ((to_string (w / a)) + "px"))
+                im.setAttribute("width" ((CssParser.fmt(w)) + "px"))
+                im.setAttribute("height" ((CssParser.fmt((w / a))) + "px"))
                 changed = true
             }
         }
@@ -1089,7 +1089,7 @@ class HtmlToEvg {
                     if (width > contentWidth) {
                         width = contentWidth
                     }
-                    box.setAttribute("width" ((to_string width) + "px"))
+                    box.setAttribute("width" ((CssParser.fmt(width)) + "px"))
                     f.box = box
                 }
                 box.setAttribute("padding" "6px 10px")
@@ -1136,7 +1136,7 @@ class HtmlToEvg {
             def pv:string (HtmlToEvg.prop(st ("padding-" + s) ""))
             def pp:double (CssCascade.pxOf(pv em contentWidth))
             if (pp > 0.0) {
-                el.setAttribute(("padding-" + s) ((to_string pp) + "px"))
+                el.setAttribute(("padding-" + s) ((CssParser.fmt(pp)) + "px"))
             }
         }
         this.applyBackground(el st)
@@ -1155,7 +1155,7 @@ class HtmlToEvg {
             }
             if same {
                 if (HtmlToEvg.isPaintableColor(c0)) {
-                    el.setAttribute("border" ((to_string bw) + "px solid " + c0))
+                    el.setAttribute("border" ((CssParser.fmt(bw)) + "px solid " + c0))
                 }
             }
         }
@@ -1163,7 +1163,7 @@ class HtmlToEvg {
         if ((strlen radius) > 0) {
             def rv:double (CssCascade.pxOf((itemAt (CssCascade.splitValues(radius)) 0) em 0.0))
             if (rv > 0.0) {
-                el.setAttribute("border-radius" ((to_string rv) + "px"))
+                el.setAttribute("border-radius" ((CssParser.fmt(rv)) + "px"))
             }
             if (endsWith radius "%") {
                 def rp:double (CssParser.num(radius))
@@ -1180,7 +1180,7 @@ class HtmlToEvg {
                     ; nearly invisible content is usually waiting for a script
                     ov = 1.0
                 }
-                el.setAttribute("opacity" (to_string ov))
+                el.setAttribute("opacity" (CssParser.fmt(ov)))
             }
         }
     }
@@ -1231,7 +1231,7 @@ class HtmlToEvg {
             def c:string (HtmlToEvg.prop(st "border-bottom-color" "#000000"))
             if (HtmlToEvg.isPaintableColor(c)) {
                 def rule (EVGElement.createDiv())
-                rule.setAttribute("height" ((to_string bottom) + "px"))
+                rule.setAttribute("height" ((CssParser.fmt(bottom)) + "px"))
                 rule.setAttribute("width" "100%")
                 rule.setAttribute("background-color" c)
                 rule.setAttribute("margin-top" "4px")
@@ -1242,7 +1242,7 @@ class HtmlToEvg {
             def c2:string (HtmlToEvg.prop(st "border-top-color" "#000000"))
             if (HtmlToEvg.isPaintableColor(c2)) {
                 def rule2 (EVGElement.createDiv())
-                rule2.setAttribute("height" ((to_string top) + "px"))
+                rule2.setAttribute("height" ((CssParser.fmt(top)) + "px"))
                 rule2.setAttribute("width" "100%")
                 rule2.setAttribute("background-color" c2)
                 rule2.setAttribute("margin-bottom" "4px")
@@ -1266,7 +1266,7 @@ class HtmlToEvg {
                 if (mp > 200.0) {
                     mp = 200.0
                 }
-                el.setAttribute(("margin-" + s) ((to_string mp) + "px"))
+                el.setAttribute(("margin-" + s) ((CssParser.fmt(mp)) + "px"))
             }
         }
     }
@@ -1321,7 +1321,7 @@ class HtmlToEvg {
             }
             def pc:double (CssParser.num(t))
             if ((pc > 0.0) && (pc <= 100.0)) {
-                el.setAttribute(name ((to_string pc) + "%"))
+                el.setAttribute(name ((CssParser.fmt(pc)) + "%"))
             }
             return
         }
@@ -1342,7 +1342,7 @@ class HtmlToEvg {
                 px = contentWidth
             }
         }
-        el.setAttribute(name ((to_string px) + "px"))
+        el.setAttribute(name ((CssParser.fmt(px)) + "px"))
     }
 
     fn applyFlexContainer:void (el:EVGElement st:[string:string]) {
@@ -1381,10 +1381,10 @@ class HtmlToEvg {
         def rg:double (CssCascade.pxOf((HtmlToEvg.prop(st "row-gap" "")) em contentWidth))
         def cg:double (CssCascade.pxOf((HtmlToEvg.prop(st "column-gap" "")) em contentWidth))
         if (rg > 0.0) {
-            el.setAttribute("row-gap" ((to_string rg) + "px"))
+            el.setAttribute("row-gap" ((CssParser.fmt(rg)) + "px"))
         }
         if (cg > 0.0) {
-            el.setAttribute("column-gap" ((to_string cg) + "px"))
+            el.setAttribute("column-gap" ((CssParser.fmt(cg)) + "px"))
         }
     }
 
@@ -1477,14 +1477,14 @@ class HtmlToEvg {
         if ((strlen grow) > 0) {
             def g:double (CssParser.num(grow))
             if (g > 0.0) {
-                item.setAttribute("flex-grow" (to_string g))
+                item.setAttribute("flex-grow" (CssParser.fmt(g)))
             }
         }
         def shrink:string (HtmlToEvg.prop(st "flex-shrink" ""))
         if ((strlen shrink) > 0) {
             def sv:double (CssParser.num(shrink))
             if (sv >= 0.0) {
-                item.setAttribute("flex-shrink" (to_string sv))
+                item.setAttribute("flex-shrink" (CssParser.fmt(sv)))
             }
         }
         def basis:string (HtmlToEvg.prop(st "flex-basis" ""))
@@ -1494,7 +1494,7 @@ class HtmlToEvg {
                 if (endsWith basis "%") {
                     item.setAttribute("flex-basis" basis)
                 } {
-                    item.setAttribute("flex-basis" ((to_string bp) + "px"))
+                    item.setAttribute("flex-basis" ((CssParser.fmt(bp)) + "px"))
                 }
             }
         }
@@ -1566,7 +1566,7 @@ class HtmlToEvg {
 
     fn textStyle:void (s:EVGElement st:[string:string]) {
         def size:double (HtmlToEvg.fontPx(st))
-        s.setAttribute("font-size" ((to_string size) + "px"))
+        s.setAttribute("font-size" ((CssParser.fmt(size)) + "px"))
         def weight:string (HtmlToEvg.prop(st "font-weight" "normal"))
         if ((weight == "bold") || ((weight == "bolder") || ((CssParser.num(weight)) >= 600.0))) {
             s.setAttribute("font-weight" "bold")
@@ -1579,7 +1579,7 @@ class HtmlToEvg {
         if ((strlen lh) > 0) {
             def lhv:double (HtmlToEvg.lineHeight(lh size))
             if (lhv > 0.0) {
-                s.setAttribute("line-height" (to_string lhv))
+                s.setAttribute("line-height" (CssParser.fmt(lhv)))
             }
         }
         def fam:string (to_lowercase (HtmlToEvg.prop(st "font-family" "")))

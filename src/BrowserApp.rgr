@@ -534,8 +534,8 @@ class BrowserApp extends EvgApp {
         def content:EVGElement (page.render(w ph policy))
         def vp (EVGElement.createDiv())
         vp.id = "page"
-        vp.setAttribute("width" ((to_string w) + "px"))
-        vp.setAttribute("height" ((to_string ph) + "px"))
+        vp.setAttribute("width" ((CssParser.fmt(w)) + "px"))
+        vp.setAttribute("height" ((CssParser.fmt(ph)) + "px"))
         vp.setAttribute("overflow" "auto")
         vp.setAttribute("background-color" "#ffffff")
         vp.addChild(content)
@@ -572,8 +572,8 @@ class BrowserApp extends EvgApp {
         def content:EVGElement (page.render(pageW ph policy))
         def vp (EVGElement.createDiv())
         vp.id = "page"
-        vp.setAttribute("width" ((to_string pageW) + "px"))
-        vp.setAttribute("height" ((to_string ph) + "px"))
+        vp.setAttribute("width" ((CssParser.fmt(pageW)) + "px"))
+        vp.setAttribute("height" ((CssParser.fmt(ph)) + "px"))
         vp.setAttribute("overflow" "auto")
         vp.setAttribute("background-color" "#ffffff")
         vp.addChild(content)
@@ -1100,11 +1100,11 @@ class BrowserApp extends EvgApp {
     fn buildFrame:void () {
         def root (EVGElement.createDiv())
         root.className = "frame"
-        root.setAttribute("width" ((to_string pageW) + "px"))
-        root.setAttribute("height" ((to_string pageH) + "px"))
+        root.setAttribute("width" ((CssParser.fmt(pageW)) + "px"))
+        root.setAttribute("height" ((CssParser.fmt(pageH)) + "px"))
         def bar (EVGElement.createDiv())
         bar.className = "bar"
-        bar.setAttribute("height" ((to_string barH) + "px"))
+        bar.setAttribute("height" ((CssParser.fmt(barH)) + "px"))
         bar.addChild((this.button("btn-back" "←" (this.canGoBack()))))
         ; a phone keeps the address field wide: forward and reload go
         if (pageW >= 520.0) {
@@ -1149,7 +1149,7 @@ class BrowserApp extends EvgApp {
         root.addChild(gap)
         def status (EVGElement.createDiv())
         status.className = "status"
-        status.setAttribute("height" ((to_string statusH) + "px"))
+        status.setAttribute("height" ((CssParser.fmt(statusH)) + "px"))
         def stt (EVGElement.createSpan())
         stt.className = "status-t"
         if loading {
@@ -1268,7 +1268,7 @@ class BrowserApp extends EvgApp {
     ; The frame as the JSON the web painters read.
     fn frameJson:string () {
         def dl:EVGDisplayList (this.display())
-        return ("{\"width\":" + (to_string pageW) + ",\"height\":" + (to_string pageH) + ",\"list\":" + (dl.toJson()) + "}")
+        return ("{\"width\":" + (CssParser.fmt(pageW)) + ",\"height\":" + (CssParser.fmt(pageH)) + ",\"list\":" + (dl.toJson()) + "}")
     }
 
     fn rebuild:void () {

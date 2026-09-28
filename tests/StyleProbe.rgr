@@ -1,0 +1,34 @@
+; Prints the computed styles of a built-in page, to compare targets.
+Import "../src/BrowserApp.rgr"
+
+class StyleProbe {
+    sfn walk:void (n:HNode depth:int) {
+        if n.isText {
+            return
+        }
+        if (depth < 6) {
+            def ks:[string] (keys n.style)
+            def line:string (n.tag + "." + (n.attr("class")) + ":")
+            for ks k:string i {
+                if ((k == "font-size") || ((k == "padding-left") || ((k == "max-width") || ((k == "margin-left") || ((k == "border-top-left-radius") || (k == "display")))))) {
+                    line = (line + " " + k + "=" + (unwrap (get n.style k)))
+                }
+            }
+            print line
+        }
+        for n.children c:HNode j {
+            StyleProbe.walk(c (depth + 1))
+        }
+    }
+
+    sfn main:void () {
+        def pol (new SafetyPolicy())
+        def pg (new BrPage())
+        def u:BrUrl (BrUrl.parse("about:home"))
+        pg.load(u (BuiltinPages.page(u pol "" "")) pol)
+        print ("sheets=" + (to_string (array_length pg.sheets)))
+        pg.restyle(1100.0 700.0)
+        print ("rules=" + (to_string pg.ruleCount))
+        StyleProbe.walk(pg.doc 0)
+    }
+}

@@ -96,6 +96,12 @@ class BrowserCheck {
         app.navigate("about:demo")
         app.frameJson()
         this.check("demo renders" ((app.contentHeight()) > 700.0))
+        ; an in-page link scrolls and does not leave the page
+        def anchor:string (app.linkIdFor("about:demo#taulukko"))
+        this.check("anchor link resolved" ((strlen anchor) > 0))
+        app.press(anchor)
+        this.check("anchor scrolls" (((app.scrollPosition()) > 200.0) && ((app.currentUrl()) == "about:demo")))
+        this.check("anchor fetches nothing" ((app.pendingRequests()) == 0))
         print ("demo: links=" + (to_string (app.linkCount())) + " height=" + (to_string (app.contentHeight())))
         ; a blocked site
         app.navigate("https://evil.example/")

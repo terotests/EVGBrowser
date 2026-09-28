@@ -757,6 +757,36 @@ class CssParser {
         return ((c == 32) || ((c == 10) || ((c == 9) || ((c == 13) || (c == 12)))))
     }
 
+    ; A number as CSS text: at most two decimals, never an exponent. The
+    ; targets' own `to_string` of a double differ (C++ writes 20 as "2e+01"),
+    ; and a length EVG cannot read is a length that silently goes wrong.
+    sfn fmt:string (v:double) {
+        def neg:boolean (v < 0.0)
+        def a:double v
+        if neg {
+            a = (0.0 - v)
+        }
+        def cents:int (to_int ((a * 100.0) + 0.5))
+        def whole:int (idiv cents 100)
+        def frac:int (cents % 100)
+        def out:string (to_string whole)
+        if (frac != 0) {
+            if (frac < 10) {
+                out = (out + ".0" + (to_string frac))
+            } {
+                if ((frac % 10) == 0) {
+                    out = (out + "." + (to_string (idiv frac 10)))
+                } {
+                    out = (out + "." + (to_string frac))
+                }
+            }
+        }
+        if (neg && (cents != 0)) {
+            out = ("-" + out)
+        }
+        return out
+    }
+
     ; A leading number, or -1 when there is none.
     sfn num:double (s:string) {
         def t:string (trim s)

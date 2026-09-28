@@ -1,0 +1,47 @@
+# Builds the SDL2 desktop browser on Linux and renders two pages headless
+# (Xvfb), so a change that breaks the C++ build or the native painter fails
+# here. The screenshots are kept as an artifact.
+name: Native (SDL2)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: EVGBrowser
+      - uses: actions/checkout@v4
+        with:
+          repository: terotests/Ranger
+          path: Ranger
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev \
+            libcurl4-openssl-dev fonts-dejavu-core fonts-noto-color-emoji xvfb
+      - name: Headless checks (C++)
+        working-directory: EVGBrowser
+        run: node tools/check.mjs --cpp
+      - name: Build
+        working-directory: EVGBrowser
+        run: native/sdl/build.sh
+      - name: Render
+        working-directory: EVGBrowser
+        run: |
+          mkdir -p shots
+          xvfb-run -a build/evg-browser about:home --screenshot shots/home.png
+          xvfb-run -a build/evg-browser about:demo --screenshot shots/demo.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evg-browser-linux
+          path: |
+            EVGBrowser/build/evg-browser
+            EVGBrowser/shots/

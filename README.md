@@ -24,11 +24,46 @@ pointing at one. Node 20+.
 ```sh
 npm run check          # headless checks, compiled to JavaScript
 npm run check:cpp      # the same checks compiled to C++ (g++ or clang++)
+npm run sdl            # the desktop browser, see below
 npm run serve          # build web/dist and open http://localhost:8040/
 ```
 
 `npm run serve` also starts a small fetch proxy on localhost, so every allowed site
 works locally. It only fetches from the allowlist, GET only, text only, no cookies.
+
+## Desktop (SDL2)
+
+`native/sdl/evg_browser_sdl.cpp` puts the same program in a desktop window.
+The Ranger source is compiled to C++ and included; the file adds only what a
+desktop has: an SDL2 window and input, libcurl on worker threads for the
+request queue, SDL_ttf fonts that both measure the text for the layout and
+draw it (with colour emoji from Noto Color Emoji when installed), SDL_image for
+JPEG/PNG/WebP/SVG pictures, and a painter for the display list (rounded boxes
+and borders as triangle geometry, text runs, `object-fit: cover`, a clip
+stack). It does not use Ranger's AGPL `gallery/`; everything is MIT.
+
+```sh
+# Debian/Ubuntu
+sudo apt-get install libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libcurl4-openssl-dev fonts-dejavu-core
+# macOS (not yet tried)
+brew install sdl2 sdl2_ttf sdl2_image curl pkg-config
+
+npm run sdl                         # -> build/evg-browser
+build/evg-browser                   # about:home
+build/evg-browser https://yle.fi/uutiset
+build/evg-browser --allow example.org,kids.example   # a parent adds sites
+build/evg-browser about:demo --screenshot demo.png    # render headless, then exit
+```
+
+Mouse, wheel, drag-to-scroll, the mouse's back/forward buttons, Alt+←/→,
+Ctrl+L (address field), Ctrl+R, Ctrl+V in fields, Ctrl+Q. Only `http` and
+`https` are fetched, also after redirects; responses are capped at 8 MB;
+pages in Latin-1 are converted to UTF-8. Fonts are looked for in the usual
+Linux, macOS and Windows places, or in `EVG_FONT_DIR` (`sans.ttf`,
+`sans-bold.ttf`, `mono.ttf`, `mono-bold.ttf`, `emoji.ttf`).
+
+`.github/workflows/native.yml` builds it on Linux and renders two pages under
+Xvfb on every push.
 
 ## The web demo and CORS
 
@@ -39,7 +74,7 @@ most do not — **yle.fi does not**. So on Pages:
 - the built-in pages and the bundled sample news page (`web/samples/`) work;
 - Wikipedia works, through its CORS-enabled API (`web/fetchers.js`);
 - other sites show an error page explaining this. They work when run locally
-  with `npm run serve`, and in a native build, where there is no CORS.
+  with `npm run serve`, and in the desktop build, where there is no CORS.
 
 To publish: merge to `main`, then set *Settings → Pages → Source* to
 *GitHub Actions*. `?url=` opens a page directly, e.g. `…/?url=about:demo`.
@@ -110,13 +145,14 @@ OkHttp, libcurl).
 
 Done:
 - the engine and the browser in Ranger; checks pass on JavaScript and C++;
-- the web host and the Pages workflow.
+- the web host and the Pages workflow;
+- the SDL2 desktop host with libcurl, built and driven on Linux (Xvfb).
 
 Not done yet:
-- **Native windows.** The C++ build compiles and runs the checks, but there is no
-  SDL2 window host or iOS/Android project for the browser yet. EVG's SDL2 GL
-  painter lives in Ranger's AGPL `gallery/`, and a native build needs an HTTP
-  client (e.g. libcurl) behind the request queue.
+- iOS and Android projects: `BrowserHost` is the class they would wrap (as
+  EVG's other apps do), but the Swift/Kotlin glue and a fetcher are not written.
+- The desktop build has been run on Linux only; macOS and Windows builds are
+  untested.
 - Text is not selectable; there is no italic or underline (EVG draws neither
   from its element tree); `float`, `calc()`, most pseudo-classes, `::before` /
   `::after` content, CSS background images and inline SVG are ignored.

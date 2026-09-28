@@ -162,6 +162,12 @@ class BrUrl {
             def same:BrUrl (BrUrl.parse((this.withoutFragment())))
             return same
         }
+        if (startsWith r "#") {
+            ; the same document, whatever its scheme (about:demo#listat)
+            def here:BrUrl (BrUrl.parse((this.withoutFragment())))
+            here.fragment = (substring r 1 (strlen r))
+            return here
+        }
         def abs:BrUrl (BrUrl.parse(r))
         if abs.valid {
             return abs

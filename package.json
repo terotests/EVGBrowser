@@ -9,6 +9,8 @@
     "check": "node tools/check.mjs",
     "check:cpp": "node tools/check.mjs --cpp",
     "build": "node web/build.mjs",
-    "serve": "node web/build.mjs && node tools/serve.mjs"
+    "serve": "node web/build.mjs && node tools/serve.mjs",
+    "sdl": "native/sdl/build.sh",
+    "sdl:run": "native/sdl/build.sh && build/evg-browser"
   }
 }
