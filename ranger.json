@@ -6,6 +6,9 @@
   "dependencies": {
     "evg": {
       "path": "../Ranger/lib/evg"
+    },
+    "image": {
+      "path": "../Ranger/lib/image"
     }
   }
 }

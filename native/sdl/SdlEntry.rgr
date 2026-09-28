@@ -3,6 +3,8 @@
 ; starts as a child process of itself (evg-browser --realm).
 Import "../../src/BrowserApp.rgr"
 Import "../../src/js/JsRealm.rgr"
+; WebP pictures: Ranger's decoder (the image package comes with evg)
+Import "pkg:image/WebPDecoder.rgr"
 
 class SdlEntry {
 }

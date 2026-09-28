@@ -40,9 +40,6 @@
 #include "third_party/nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
 #include "third_party/nanosvgrast.h"
-#define SIMPLEWEBP_IMPLEMENTATION
-#define SIMPLEWEBP_DISABLE_STDIO
-#include "third_party/simplewebp.h"
 
 #ifndef _WIN32
 #include <signal.h>
@@ -648,7 +645,7 @@ struct Image {
 };
 
 // A picture's bytes as a texture: JPEG, PNG, GIF (first frame), BMP through
-// stb_image; WebP through simplewebp; SVG through nanosvg, rasterised at its
+// stb_image; WebP through Ranger's WebPDecoder; SVG through nanosvg, rasterised at its
 // own size (at most 2048 on a side). AVIF is not decoded or asked for.
 static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
   Image im;
@@ -670,21 +667,16 @@ static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
     nsvgDeleteRasterizer(rast);
     nsvgDelete(svg);
   } else if (bytes.size() > 12 && bytes.compare(0, 4, "RIFF") == 0 && bytes.compare(8, 4, "WEBP") == 0) {
-    std::string copy = bytes;  // the decoder reads it in place until unloaded
-    simplewebp* wp = nullptr;
-    if (simplewebp_load_from_memory(&copy[0], copy.size(), nullptr, &wp) != SIMPLEWEBP_NO_ERROR || !wp) return im;
-    size_t ww = 0, wh = 0;
-    simplewebp_get_dimensions(wp, &ww, &wh);
-    if (ww == 0 || wh == 0 || ww > 8192 || wh > 8192) {
-      simplewebp_unload(wp);
-      return im;
-    }
-    w = (int)ww;
-    h = (int)wh;
-    rgba.assign((size_t)w * h * 4, 0);
-    simplewebp_error err = simplewebp_decode(wp, rgba.data(), nullptr);
-    simplewebp_unload(wp);
-    if (err != SIMPLEWEBP_NO_ERROR) return im;
+    // Ranger's own decoder (lib/image/WebPDecoder.rgr), compiled in above
+    std::vector<uint8_t> in(bytes.begin(), bytes.end());
+    auto dec = std::make_shared<WebPDecoder>();
+    dec->maxDimension = 8192;
+    std::shared_ptr<ImageBuffer> img = dec->decodeBytes(in);
+    if (!dec->ok || !img) return im;
+    w = img->width;
+    h = img->height;
+    rgba = std::move(img->pixels);
+    if ((size_t)w * h * 4 != rgba.size()) return im;
   } else {
     int n = 0;
     unsigned char* px = stbi_load_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &n, 4);

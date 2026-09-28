@@ -43,8 +43,8 @@ as triangle geometry, text runs, `object-fit: cover`, a clip stack).
 **Two libraries: SDL2 and libcurl** (which comes with macOS and every Linux).
 Everything else is compiled in from single-file libraries in
 `native/sdl/third_party/`: stb_truetype for type (the same faces measure the
-text for the layout and draw it), stb_image for JPEG/PNG/GIF, simplewebp for
-WebP, nanosvg for SVG, stb_image_write for screenshots. Colour emoji are read straight out of the
+text for the layout and draw it), stb_image for JPEG/PNG/GIF, Ranger's own WebP decoder
+(`lib/image`), nanosvg for SVG, stb_image_write for screenshots. Colour emoji are read straight out of the
 system's emoji font (the PNGs in Noto Color Emoji's CBDT table, or Apple
 Color Emoji's sbix table). AVIF is not decoded, and image requests do not
 ask for it.
