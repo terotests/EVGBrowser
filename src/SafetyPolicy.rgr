@@ -50,6 +50,10 @@ class SafetyPolicy {
         push allowed "wikipedia.org"
         push allowed "wikimedia.org"
         push allowed "vikidia.org"
+        ; made for children
+        push allowed "sieppo.fi"
+        push allowed "luontolive.fi"
+        push allowed "oppijailo.fi"
         ; libraries, museums, science for children
         push allowed "kirjastot.fi"
         push allowed "luontoportti.com"

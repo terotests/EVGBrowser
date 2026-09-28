@@ -84,6 +84,10 @@ class BuiltinPages {
             b = (b + (BuiltinPages.tile((samples + "uutiset.html") "🧸" "Esimerkkiuutiset" "Testisivu tämän selaimen mukana" "#b5476b")))
             b = (b + (BuiltinPages.tile((samples + "skriptit.html") "⚙️" "Skriptitesti" "JavaScript omassa eristyksessään" "#3d6b8c")))
         }
+        b = (b + "</div><h2>Lapsille</h2><div class=\"tiles\">")
+        b = (b + (BuiltinPages.tile("https://sieppo.fi/lasten-galleria/" "🎨" "Sieppo" "Lasten galleria" "#e0613a")))
+        b = (b + (BuiltinPages.tile("https://www.luontolive.fi/luontojuniorit/" "🦉" "Luontojuniorit" "LuontoLiven lapsille" "#4f8a3a")))
+        b = (b + (BuiltinPages.tile("https://www.oppijailo.fi/lapsille-nuorille" "📖" "Oppimisen ilo" "Lapsille ja nuorille" "#8a4fb5")))
         b = (b + "</div><h2>Tietoa ja ihmeteltävää</h2><div class=\"tiles\">")
         b = (b + (BuiltinPages.tile("https://fi.wikipedia.org/wiki/Kissa" "🐱" "Kissa" "Wikipedia-artikkeli" "#d9822b")))
         b = (b + (BuiltinPages.tile("https://fi.wikipedia.org/wiki/Aurinkokunta" "🪐" "Aurinkokunta" "Planeetat ja tähdet" "#c2455d")))

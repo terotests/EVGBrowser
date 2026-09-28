@@ -23,7 +23,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(process.argv[2] || path.join(HERE, "..", "web", "dist"));
 const PORT = Number(process.env.PORT || 8040);
 const ALLOW = (process.env.EVG_ALLOW ||
-  "yle.fi,wikipedia.org,wikimedia.org,vikidia.org,kirjastot.fi,luontoportti.com,tiedekeskus.fi,heureka.fi,korkeasaari.fi,nasa.gov,esa.int,bbc.co.uk,natgeokids.com,example.com,info.cern.ch,terotests.github.io")
+  "yle.fi,sieppo.fi,luontolive.fi,oppijailo.fi,wikipedia.org,wikimedia.org,vikidia.org,kirjastot.fi,luontoportti.com,tiedekeskus.fi,heureka.fi,korkeasaari.fi,nasa.gov,esa.int,bbc.co.uk,natgeokids.com,example.com,info.cern.ch,terotests.github.io")
   .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 const MAX_BYTES = 5_000_000;
 
