@@ -1538,7 +1538,9 @@ static int run(int argc, char** argv) {
   };
 
   pump();
+  int failures = 0;
   while (!quit) {
+   try {
     SDL_Event e;
     bool got = SDL_WaitEventTimeout(&e, dirty ? 1 : 16) != 0;
     while (got) {
@@ -1701,6 +1703,22 @@ static int run(int argc, char** argv) {
         quit = true;
       }
     }
+   } catch (const std::exception& ex) {
+    // A page the engine could not handle (for example a missing value in
+    // the generated code: std::bad_optional_access). Show the error page
+    // instead of aborting; give up only if even that keeps failing.
+    std::string where = app->currentUrl();
+    std::fprintf(stderr, "evg-browser: error while showing %s: %s\n", where.c_str(), ex.what());
+    if (++failures > 5) {
+      std::fprintf(stderr, "evg-browser: too many errors, stopping\n");
+      break;
+    }
+    try {
+      app->showFailure(std::string("Sivua ei voitu näyttää (") + ex.what() + ").\n" + where);
+    } catch (const std::exception&) {
+    }
+    dirty = true;
+   }
   }
 
   std::fflush(stdout);

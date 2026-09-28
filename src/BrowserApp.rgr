@@ -307,6 +307,12 @@ class BrowserApp extends EvgApp {
         this.request("page" (u.withoutFragment()))
     }
 
+    ; For a host that caught something going wrong while showing a page:
+    ; the error page, with the message, instead of a crash.
+    fn showFailure:void (message:string) {
+        this.showAbout((BrUrl.parse("about:error")) message)
+    }
+
     fn showAbout:void (u:BrUrl message:string) {
         def html:string (BuiltinPages.page(u policy message samplesBase))
         loading = false
