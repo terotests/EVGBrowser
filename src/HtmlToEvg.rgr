@@ -248,6 +248,9 @@ class HtmlToEvg {
     ; an item. Runs of text between element children become anonymous items.
     fn fillFlexItems:void (el:EVGElement node:HNode linkId:string) {
         def pendingText:[HNode]
+        ; each item's `order`, kept here rather than in a field because the
+        ; items' own contents fill flex containers of their own meanwhile
+        def orders:[int]
         for node.children c:HNode i {
             if (elementCount > maxElements) {
                 return
@@ -263,16 +266,89 @@ class HtmlToEvg {
             }
             if ((array_length pendingText) > 0) {
                 el.addChild((this.anonymousItem(pendingText node.style linkId)))
+                push orders 0
                 clear pendingText
             }
             def item:EVGElement (this.boxFor(c linkId))
             this.applyFlexItem(item c.style)
             this.fitInRow(el item c.style)
             el.addChild(item)
+            push orders (HtmlToEvg.orderOf(c.style))
         }
         if ((array_length pendingText) > 0) {
             el.addChild((this.anonymousItem(pendingText node.style linkId)))
+            push orders 0
         }
+        this.reorderItems(el orders (HtmlToEvg.prop(node.style "flex-direction" "row")))
+    }
+
+    ; `order`, and the reversed directions EVG does not lay out: the items
+    ; are put in the order they are to be SEEN. Anonymous text items keep
+    ; order 0, as in CSS.
+    sfn orderOf:int (st:[string:string]) {
+        def t:string (trim (HtmlToEvg.prop(st "order" "0")))
+        def neg:boolean (startsWith t "-")
+        if neg {
+            t = (substring t 1 (strlen t))
+        }
+        def v:double (CssParser.num(t))
+        if (v < 0.0) {
+            return 0
+        }
+        if neg {
+            return (0 - (to_int v))
+        }
+        return (to_int v)
+    }
+
+    fn reorderItems:void (el:EVGElement orders:[int] dir:string) {
+        def kids:[EVGElement] el.children
+        def n:int (array_length kids)
+        if (n != (array_length orders)) {
+            return
+        }
+        def any:boolean false
+        for orders o:int i {
+            if (o != 0) {
+                any = true
+            }
+        }
+        def out:[EVGElement]
+        if any {
+            ; a stable insertion sort on the order values
+            def idx:[int]
+            def j:int 0
+            while (j < n) {
+                def cur:int j
+                def pos:int (array_length idx)
+                while (pos > 0) {
+                    if ((itemAt orders (itemAt idx (pos - 1))) <= (itemAt orders cur)) {
+                        break
+                    }
+                    pos = (pos - 1)
+                }
+                insert idx pos cur
+                j = (j + 1)
+            }
+            for idx ix:int q {
+                push out (itemAt kids ix)
+            }
+        } {
+            for kids kd:EVGElement q2 {
+                push out kd
+            }
+        }
+        if (endsWith dir "-reverse") {
+            def rev:[EVGElement]
+            def r:int ((array_length out) - 1)
+            while (r >= 0) {
+                push rev (itemAt out r)
+                r = (r - 1)
+            }
+            el.children = rev
+            return
+        }
+        el.children = out
     }
 
     fn anonymousItem:EVGElement (texts:[HNode] st:[string:string] linkId:string) {
@@ -999,6 +1075,16 @@ class HtmlToEvg {
         if ((strlen kind) == 0) {
             kind = "text"
         }
+        if ((kind == "submit") || ((kind == "button") || (kind == "reset"))) {
+            ; a button whose face is an icon (SVG, which is not drawn) and
+            ; that names itself nowhere has nothing to show
+            if ((strlen (this.buttonLabel(c))) == 0) {
+                if ((t == "button") || (kind != "submit")) {
+                    def nothing (EVGElement.createDiv())
+                    return nothing
+                }
+            }
+        }
         def f (new BrField())
         f.id = ("F" + (to_string (array_length fields)))
         f.kind = kind
@@ -1036,13 +1122,7 @@ class HtmlToEvg {
         box.setAttribute("cursor" "pointer")
         box.setAttribute("margin" "2px 4px 2px 0px")
         if ((kind == "submit") || ((kind == "button") || ((kind == "reset") || (kind == "image")))) {
-            def text:string f.value
-            if (t == "button") {
-                text = (HtmlParser.collapseSpace((c.textContent())))
-            }
-            if ((strlen text) == 0) {
-                text = (c.attr("aria-label"))
-            }
+            def text:string (this.buttonLabel(c))
             if ((strlen text) == 0) {
                 text = "Lähetä"
                 if (kind == "button") {
@@ -1107,6 +1187,38 @@ class HtmlToEvg {
         return box
     }
 
+    fn buttonLabel:string (c:HNode) {
+        def text:string ""
+        if (c.tag == "button") {
+            text = (HtmlParser.collapseSpace((this.visibleText(c))))
+        } {
+            text = (c.attr("value"))
+        }
+        if ((strlen text) == 0) {
+            text = (c.attr("aria-label"))
+        }
+        if ((strlen text) == 0) {
+            text = (c.attr("title"))
+        }
+        return (trim text)
+    }
+
+    ; The text of a subtree without what is not shown (an <svg>'s <title>,
+    ; screen-reader-only spans).
+    fn visibleText:string (n:HNode) {
+        if n.isText {
+            return n.text
+        }
+        if (this.skipped(n)) {
+            return ""
+        }
+        def out:string ""
+        for n.children k:HNode i {
+            out = (out + (this.visibleText(k)))
+        }
+        return out
+    }
+
     fn showFieldText:void (label:EVGElement f:BrField) {
         if ((strlen f.value) > 0) {
             label.textContent = f.value
@@ -1140,6 +1252,7 @@ class HtmlToEvg {
             }
         }
         this.applyBackground(el st)
+        this.applyOverflow(el st)
         ; a border all round, when the four sides agree
         def bw:double (this.borderWidth(st "top"))
         if (bw > 0.0) {
@@ -1189,6 +1302,45 @@ class HtmlToEvg {
         def bg:string (HtmlToEvg.prop(st "background-color" ""))
         if (HtmlToEvg.isPaintableColor(bg)) {
             el.setAttribute("background-color" bg)
+            return
+        }
+        def gc:string (HtmlToEvg.prop(st "evg-gradient-color" ""))
+        if (HtmlToEvg.isPaintableColor(gc)) {
+            el.setAttribute("background-color" gc)
+        }
+    }
+
+    ; `overflow` other than visible clips; `line-clamp: N` is N lines, then
+    ; clipped. Without the clip a title the page cut to two lines runs on
+    ; over whatever is under it.
+    fn applyOverflow:void (el:EVGElement st:[string:string]) {
+        def ov:string (HtmlToEvg.prop(st "overflow" (HtmlToEvg.prop(st "overflow-y" "visible"))))
+        def clamp:double (CssParser.num((HtmlToEvg.prop(st "line-clamp" "none"))))
+        if (clamp >= 1.0) {
+            def size:double (HtmlToEvg.fontPx(st))
+            def lh:double (HtmlToEvg.lineHeight((HtmlToEvg.prop(st "line-height" "normal")) size))
+            if (lh <= 0.0) {
+                lh = 1.25
+            }
+            def pad:double 0.0
+            def pt:double (CssCascade.pxOf((HtmlToEvg.prop(st "padding-top" "0")) size contentWidth))
+            def pb:double (CssCascade.pxOf((HtmlToEvg.prop(st "padding-bottom" "0")) size contentWidth))
+            if (pt > 0.0) {
+                pad = (pad + pt)
+            }
+            if (pb > 0.0) {
+                pad = (pad + pb)
+            }
+            el.setAttribute("max-height" ((CssParser.fmt((((clamp * lh) * size) + pad) + 1.0)) + "px"))
+            el.setAttribute("overflow" "hidden")
+            return
+        }
+        if ((ov == "hidden") || ((ov == "clip") || ((ov == "auto") || (ov == "scroll")))) {
+            def mh:double (CssCascade.pxOf((HtmlToEvg.prop(st "max-height" "")) 16.0 0.0))
+            def hh:double (CssCascade.pxOf((HtmlToEvg.prop(st "height" "")) 16.0 0.0))
+            if ((mh > 0.0) || (hh > 0.0)) {
+                el.setAttribute("overflow" "hidden")
+            }
         }
     }
 

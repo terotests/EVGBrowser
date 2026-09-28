@@ -1,6 +1,7 @@
 ; Lays a page from disk out at a width and prints the boxes: the tool for
 ; finding out why something is where it is.
-;   node build/dump_page.js <file.html> [width] [depth] [css files...]
+;   node ../Ranger/dist/rgrc.js -es6 tests/DumpPage.rgr -d=build -o=dump_page.cjs -nodecli
+;   node build/dump_page.cjs <relative/file.html> [width] [depth] [css files...]
 Import "../src/BrowserApp.rgr"
 
 class DumpPage {

@@ -53,6 +53,58 @@ class BrowserCheck {
         this.check("em font size" ((HtmlToEvg.prop(p1.style "font-size" "")) == "34px"))
     }
 
+    ; A page laid out at 800px, for asking where things went.
+    fn laidOut:EVGElement (html:string) {
+        def pol (new SafetyPolicy())
+        def pg (new BrPage())
+        pg.load((BrUrl.parse("https://example.com/")) html pol)
+        pg.restyle(800.0 600.0)
+        def root:EVGElement (pg.render(800.0 600.0 pol))
+        def lay (new EVGLayout())
+        lay.setPageSize(800.0 600.0)
+        lay.layout(root)
+        return root
+    }
+
+    fn findText@(optional):EVGElement (el:EVGElement text:string) {
+        if ((trim el.textContent) == text) {
+            def hit@(optional):EVGElement el
+            return hit
+        }
+        for el.children c:EVGElement i {
+            def f@(optional):EVGElement (this.findText(c text))
+            if (!null? f) {
+                return f
+            }
+        }
+        def none@(optional):EVGElement
+        return none
+    }
+
+    fn yOf:double (root:EVGElement text:string) {
+        def f@(optional):EVGElement (this.findText(root text))
+        if (null? f) {
+            return -1.0
+        }
+        def e:EVGElement (unwrap f)
+        return e.calculatedY
+    }
+
+    fn layoutChecks:void () {
+        def r1:EVGElement (this.laidOut("<div style='display:flex;flex-direction:column-reverse'><p>Alku</p><p>Loppu</p></div>"))
+        this.check("column-reverse" ((this.yOf(r1 "Loppu")) < (this.yOf(r1 "Alku"))))
+        def r2:EVGElement (this.laidOut("<div style='display:flex;flex-direction:column'><p style='order:2'>Alku</p><p style='order:1'>Loppu</p></div>"))
+        this.check("order" ((this.yOf(r2 "Loppu")) < (this.yOf(r2 "Alku"))))
+        def r3:EVGElement (this.laidOut("<h3 style='line-clamp:2;-webkit-line-clamp:2;overflow:hidden;font-size:20px;line-height:1.2;width:120px'>yksi kaksi kolme neljä viisi kuusi seitsemän kahdeksan</h3><p>Seuraava</p>"))
+        this.check("line clamp keeps the next block clear" (((this.yOf(r3 "Seuraava")) > 40.0) && ((this.yOf(r3 "Seuraava")) < 90.0)))
+        def p1:HNode (this.styledP("<style>p { margin-inline-start: 7px; padding-block-end: 3px }</style><p>x</p>" 900.0))
+        this.check("logical properties" (((HtmlToEvg.prop(p1.style "margin-left" "")) == "7px") && ((HtmlToEvg.prop(p1.style "padding-bottom" "")) == "3px")))
+        def p2:HNode (this.styledP("<style>p { background: linear-gradient(to right, #ff0000, #00ff00) }</style><p>x</p>" 900.0))
+        this.check("gradient colour" ((HtmlToEvg.prop(p2.style "evg-gradient-color" "")) == "#ff0000"))
+        def r4:EVGElement (this.laidOut("<form action=/s><button type=submit><svg><title>Lähetä</title></svg></button><button aria-label='Hae'></button></form>"))
+        this.check("icon-only button hidden" ((null? (this.findText(r4 "Lähetä"))) && (!null? (this.findText(r4 "Hae")))))
+    }
+
     fn formCheck:void () {
         def app (new BrowserApp())
         app.setPageSize(900.0 700.0)
@@ -139,6 +191,7 @@ class BrowserCheck {
         this.check("bare host" ((BrowserApp.addressFor("yle.fi")) == "https://yle.fi/"))
         this.cascadeChecks()
         this.formCheck()
+        this.layoutChecks()
         print ("passed " + (to_string passes) + ", failed " + (to_string fails))
     }
 }

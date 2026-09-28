@@ -592,6 +592,10 @@ class CssCascade {
                     colorSet = true
                 }
             }
+            def gc2:string (CssCascade.gradientColor(value))
+            if ((strlen gc2) > 0) {
+                set st "evg-gradient-color" gc2
+            }
             if (colorSet == false) {
                 if ((value == "none") || ((value == "transparent") || (startsWith value "url("))) {
                     set st "background-color" "transparent"
@@ -671,7 +675,24 @@ class CssCascade {
             }
             return
         }
-        if (name == "inset") {
+        if (startsWith name "inset") {
+            return
+        }
+        ; logical properties, for a left-to-right page
+        def logical:string (CssCascade.physicalName(name))
+        if (logical != name) {
+            this.setExpanded(st logical value)
+            return
+        }
+        if (name == "background-image") {
+            def gc:string (CssCascade.gradientColor(value))
+            if ((strlen gc) > 0) {
+                set st "evg-gradient-color" gc
+            }
+            return
+        }
+        if ((name == "-webkit-line-clamp") || (name == "line-clamp")) {
+            set st "line-clamp" value
             return
         }
         set st name value
@@ -886,6 +907,44 @@ class CssCascade {
         node.style = st
     }
 
+    ; `margin-inline-start` and its family, as the physical side they are
+    ; on a left-to-right page; any other name as it is.
+    sfn physicalName:string (name:string) {
+        def pairs:[string] ([] _:string ( "-inline-start" "-left" "-inline-end" "-right" "-block-start" "-top" "-block-end" "-bottom" ))
+        def i:int 0
+        while (i < (array_length pairs)) {
+            def from:string (itemAt pairs i)
+            def at:int (indexOf name from)
+            if (at > 0) {
+                def rest:string (substring name (at + (strlen from)) (strlen name))
+                return ((substring name 0 at) + (itemAt pairs (i + 1)) + rest)
+            }
+            i = (i + 2)
+        }
+        return name
+    }
+
+    ; The first colour of a `linear-gradient(…)`: what a painter with no
+    ; gradients shows, so white text on a gradient button stays readable.
+    sfn gradientColor:string (value:string) {
+        def lower:string (to_lowercase value)
+        def at:int (indexOf lower "gradient(")
+        if (at < 0) {
+            return ""
+        }
+        def open:int (indexOfFrom value "(" at)
+        def args:[string] (CssParser.splitTop((substring value (open + 1) (strlen value)) 44))
+        for args a:string i {
+            def parts:[string] (CssCascade.splitValues(a))
+            for parts p:string j {
+                if (CssCascade.looksLikeColor(p)) {
+                    return p
+                }
+            }
+        }
+        return ""
+    }
+
     sfn inheritedProps:[string] () {
         return ([] _:string ( "color" "font-family" "font-style" "font-weight" "line-height" "text-align" "text-transform" "white-space" "visibility" "list-style-type" "text-decoration-line" "word-break" "overflow-wrap" ))
     }
@@ -897,7 +956,7 @@ class CssCascade {
         if ((startsWith name "min-") || ((startsWith name "max-") || (startsWith name "list-style"))) {
             return true
         }
-        def list:[string] ([] _:string ( "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "word-break" "overflow-wrap" "order" ))
+        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "word-break" "overflow-wrap" "order" ))
         for list k:string i {
             if (k == name) {
                 return true
