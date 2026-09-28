@@ -202,4 +202,4 @@ Not done yet:
 
 ## License
 
-MIT, see `LICENSE`.
+AGPL-3.0-or-later, see `LICENSE`.
