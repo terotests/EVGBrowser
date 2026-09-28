@@ -355,6 +355,9 @@ class CssParser {
     fn featureMatches:boolean (paren:string) {
         def inner:string (trim (substring paren 1 ((strlen paren) - 1)))
         def colon:int (indexOf inner ":")
+        if ((colon < 0) && (((indexOf inner "<") >= 0) || ((indexOf inner ">") >= 0))) {
+            return (this.rangeMatches(inner))
+        }
         if (colon < 0) {
             ; `(color)`, `(hover)` …: true on a screen
             if ((inner == "color") || (inner == "hover")) {
@@ -402,6 +405,93 @@ class CssParser {
             return (viewportWidth == px)
         }
         return false
+    }
+
+    ; Level 4 ranges: `(width >= 650px)`, `(400px < width <= 700px)`.
+    fn rangeMatches:boolean (inner:string) {
+        ; split into operands and operators
+        def items:[string]
+        def ops:[string]
+        def cur:string ""
+        def i:int 0
+        def n:int (strlen inner)
+        while (i < n) {
+            def c:int (charAt inner i)
+            if ((c == 60) || ((c == 62) || (c == 61))) {
+                def op:string (strfromcode c)
+                if ((i + 1) < n) {
+                    if ((charAt inner (i + 1)) == 61) {
+                        op = (op + "=")
+                        i = (i + 1)
+                    }
+                }
+                push items (trim cur)
+                push ops op
+                cur = ""
+            } {
+                cur = (cur + (strfromcode c))
+            }
+            i = (i + 1)
+        }
+        push items (trim cur)
+        def k:int 0
+        while (k < (array_length ops)) {
+            def a:string (itemAt items k)
+            def b:string (itemAt items (k + 1))
+            def op2:string (itemAt ops k)
+            def av:double (this.rangeValue(a))
+            def bv:double (this.rangeValue(b))
+            if ((av < -0.5) || (bv < -0.5)) {
+                return false
+            }
+            def ok:boolean false
+            if (op2 == "<") {
+                ok = (av < bv)
+            }
+            if (op2 == "<=") {
+                ok = (av <= bv)
+            }
+            if (op2 == ">") {
+                ok = (av > bv)
+            }
+            if (op2 == ">=") {
+                ok = (av >= bv)
+            }
+            if ((op2 == "=") || (op2 == "==")) {
+                ok = (av == bv)
+            }
+            if (ok == false) {
+                return false
+            }
+            k = (k + 1)
+        }
+        return true
+    }
+
+    ; A range operand: a feature's value now, or a length; -1 if unknown.
+    fn rangeValue:double (t:string) {
+        if (t == "width") {
+            return viewportWidth
+        }
+        if (t == "height") {
+            return viewportHeight
+        }
+        if (t == "aspect-ratio") {
+            if (viewportHeight <= 0.0) {
+                return -1.0
+            }
+            return (viewportWidth / viewportHeight)
+        }
+        def slash:int (indexOf t "/")
+        if (slash > 0) {
+            def num:double (CssParser.num((substring t 0 slash)))
+            def den:double (CssParser.num((substring t (slash + 1) (strlen t))))
+            if ((num < 0.0) || (den <= 0.0)) {
+                return -1.0
+            }
+            return (num / den)
+        }
+        return (CssParser.mediaLength(t))
     }
 
     sfn mediaLength:double (v:string) {

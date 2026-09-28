@@ -26,6 +26,7 @@
 
 Import "HtmlParser.rgr"
 Import "CssParser.rgr"
+Import "CssCalc.rgr"
 
 class CssHit {
     def rule:CssRule (new CssRule())
@@ -132,6 +133,15 @@ class CssCascade {
         }
         styledCount = (styledCount + 1)
         this.computeFor(node parent index count)
+        if (node.tag == "svg") {
+            ; drawn as a picture: what it takes from the page is baked in
+            def svgColor:string "#000000"
+            if (has node.style "color") {
+                svgColor = (unwrap (get node.style "color"))
+            }
+            this.bakeSvg(node node svgColor)
+            return
+        }
         push chain node
         push chainIndex index
         push chainCount count
@@ -154,6 +164,34 @@ class CssCascade {
         removeLast chain
         removeLast chainIndex
         removeLast chainCount
+    }
+
+    ; An inline <svg> becomes a picture, which knows nothing of the page's
+    ; CSS: `var()` in its paint attributes is looked up now, from the
+    ; <svg> element up, and `currentColor` becomes the <svg>'s colour.
+    fn bakeSvg:void (n:HNode svg:HNode color:string) {
+        def names:[string] ([] _:string ( "style" "fill" "stroke" "stop-color" "color" ))
+        for names an:string i {
+            if (n.hasAttr(an)) {
+                def v:string (n.attr(an))
+                def was:string v
+                if ((indexOf v "var(") >= 0) {
+                    v = (this.substituteVars(v svg 0))
+                }
+                if ((indexOf (to_lowercase v) "currentcolor") >= 0) {
+                    v = (replace v "currentColor" color)
+                    v = (replace v "currentcolor" color)
+                }
+                if (v != was) {
+                    n.setAttr(an v)
+                }
+            }
+        }
+        for n.children c:HNode j {
+            if (c.isText == false) {
+                this.bakeSvg(c svg color)
+            }
+        }
     }
 
     fn displayOf:string (n:HNode) {
@@ -426,6 +464,9 @@ class CssCascade {
             if ((strlen v) == 0) {
                 return
             }
+        }
+        if ((indexOf v "calc(") >= 0) {
+            v = (CssCalc.resolveAll(v))
         }
         this.setExpanded(node.style name v)
     }
@@ -779,7 +820,7 @@ class CssCascade {
     fn presentationalHints:void (node:HNode) {
         def st:[string:string] node.style
         def tag:string node.tag
-        if ((tag == "img") || ((tag == "td") || ((tag == "th") || ((tag == "table") || (tag == "video"))))) {
+        if ((tag == "img") || ((tag == "svg") || ((tag == "td") || ((tag == "th") || ((tag == "table") || (tag == "video")))))) {
             if (node.hasAttr("width")) {
                 if ((has st "width") == false) {
                     def w:string (trim (node.attr("width")))
@@ -956,7 +997,7 @@ class CssCascade {
         if ((startsWith name "min-") || ((startsWith name "max-") || (startsWith name "list-style"))) {
             return true
         }
-        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "word-break" "overflow-wrap" "order" ))
+        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "grid-template-rows" "grid-template-areas" "word-break" "overflow-wrap" "order" ))
         for list k:string i {
             if (k == name) {
                 return true

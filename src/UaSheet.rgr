@@ -22,8 +22,8 @@ tr { display: table-row; }
 td, th { display: table-cell; }
 thead, tbody, tfoot { display: table-row-group; }
 caption { display: table-caption; }
-head, script, style, template, title, meta, link, base, datalist, param, source, track, area, map, dialog, svg, math, noembed, noframes { display: none; }
-img, input, button, select, textarea, video, audio, iframe, object, embed, canvas { display: inline-block; }
+head, script, style, template, title, meta, link, base, datalist, param, source, track, area, map, dialog, math, noembed, noframes { display: none; }
+img, svg, input, button, select, textarea, video, audio, iframe, object, embed, canvas { display: inline-block; }
 html { color: #1a1a1a; font-size: 17px; line-height: 1.5; }
 body { padding: 12px 16px; }
 p, dl, blockquote, pre, figure, table, fieldset, form, hr { margin-bottom: 1em; }

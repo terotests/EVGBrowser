@@ -1,0 +1,248 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; ==============================================================================
+; CssCalc — `calc()` with the units that are known when a value is declared.
+; ==============================================================================
+;
+; Sites built with design tokens write nearly every length as a product of a
+; custom property: `gap: calc(var(--unit) * 1.5)`. After `var()` has been
+; substituted this is plain arithmetic, `calc(16px*1.5)`, and it is worked
+; out here to `24px`, so the rest of the browser sees an ordinary length.
+;
+; Lengths in px, rem (16px) and pt, and bare numbers, with + - * / and
+; parentheses. A term whose size depends on where the box is laid out (%,
+; em, vw, …) leaves the `calc()` as it was written.
+; ==============================================================================
+
+class CssCalc {
+    def src:string ""
+    def pos:int 0
+    def ok:boolean true
+    ; whether the value just parsed is a length (true) or a bare number
+    def isLen:boolean false
+
+    ; Every `calc(…)` in a value that can be worked out, replaced by its result.
+    sfn resolveAll:string (v:string) {
+        def out:string v
+        def from:int 0
+        def guard:int 0
+        while (guard < 64) {
+            guard = (guard + 1)
+            def rest:string (substring out from (strlen out))
+            def rel:int (indexOf rest "calc(")
+            if (rel < 0) {
+                return out
+            }
+            def at:int (from + rel)
+            def i:int (at + 5)
+            def n:int (strlen out)
+            def d:int 1
+            while (i < n) {
+                def c:int (charAt out i)
+                if (c == 40) {
+                    d = (d + 1)
+                }
+                if (c == 41) {
+                    d = (d - 1)
+                    if (d == 0) {
+                        break
+                    }
+                }
+                i = (i + 1)
+            }
+            if (i >= n) {
+                return out
+            }
+            def res:string (CssCalc.evalInner((substring out (at + 5) i)))
+            if ((strlen res) > 0) {
+                out = ((substring out 0 at) + res + (substring out (i + 1) n))
+                from = (at + (strlen res))
+            } {
+                from = (i + 1)
+            }
+        }
+        return out
+    }
+
+    ; The inside of one `calc()`: "16px*1.5" -> "24px", or "" when it
+    ; cannot be worked out here.
+    sfn evalInner:string (inner:string) {
+        def c:CssCalc (new CssCalc())
+        c.src = (to_lowercase inner)
+        c.pos = 0
+        def v:double (c.sum())
+        c.skip()
+        if (c.ok == false) {
+            return ""
+        }
+        if (c.pos < (strlen c.src)) {
+            return ""
+        }
+        if (c.isLen) {
+            return ((CssParser.fmt(v)) + "px")
+        }
+        return (CssParser.fmt(v))
+    }
+
+    fn skip:void () {
+        def n:int (strlen src)
+        while (pos < n) {
+            def c:int (charAt src pos)
+            if ((c == 32) || ((c == 9) || ((c == 10) || (c == 13)))) {
+                pos = (pos + 1)
+            } {
+                return
+            }
+        }
+    }
+
+    fn peek:int () {
+        this.skip()
+        if (pos >= (strlen src)) {
+            return 0
+        }
+        return (charAt src pos)
+    }
+
+    fn sum:double () {
+        def acc:double (this.term())
+        def accLen:boolean isLen
+        def guard:int 0
+        while (ok && (guard < 256)) {
+            guard = (guard + 1)
+            def c:int (this.peek())
+            if ((c != 43) && (c != 45)) {
+                isLen = accLen
+                return acc
+            }
+            pos = (pos + 1)
+            def rhs:double (this.term())
+            if (isLen != accLen) {
+                ; `10px + 2` is not a length; a bare 0 is let through
+                if ((rhs == 0.0) || (acc == 0.0)) {
+                    accLen = (accLen || isLen)
+                } {
+                    ok = false
+                    return 0.0
+                }
+            }
+            if (c == 43) {
+                acc = (acc + rhs)
+            } {
+                acc = (acc - rhs)
+            }
+        }
+        isLen = accLen
+        return acc
+    }
+
+    fn term:double () {
+        def acc:double (this.factor())
+        def accLen:boolean isLen
+        def guard:int 0
+        while (ok && (guard < 256)) {
+            guard = (guard + 1)
+            def c:int (this.peek())
+            if ((c != 42) && (c != 47)) {
+                isLen = accLen
+                return acc
+            }
+            pos = (pos + 1)
+            def rhs:double (this.factor())
+            if (c == 42) {
+                if (accLen && isLen) {
+                    ok = false
+                    return 0.0
+                }
+                acc = (acc * rhs)
+                accLen = (accLen || isLen)
+            } {
+                if (isLen || (rhs == 0.0)) {
+                    ok = false
+                    return 0.0
+                }
+                acc = (acc / rhs)
+            }
+        }
+        isLen = accLen
+        return acc
+    }
+
+    fn factor:double () {
+        def c:int (this.peek())
+        def n:int (strlen src)
+        if (c == 0) {
+            ok = false
+            return 0.0
+        }
+        if (c == 40) {
+            pos = (pos + 1)
+            def v:double (this.sum())
+            if ((this.peek()) != 41) {
+                ok = false
+                return 0.0
+            }
+            pos = (pos + 1)
+            return v
+        }
+        if (c == 45) {
+            pos = (pos + 1)
+            def nv:double (this.factor())
+            return (0.0 - nv)
+        }
+        if (c == 43) {
+            pos = (pos + 1)
+            return (this.factor())
+        }
+        def rest:string (substring src pos n)
+        if (startsWith rest "calc(") {
+            pos = (pos + 4)
+            return (this.factor())
+        }
+        ; a number, then its unit
+        def start:int pos
+        while (pos < n) {
+            def d:int (charAt src pos)
+            if (((d >= 48) && (d <= 57)) || (d == 46)) {
+                pos = (pos + 1)
+            } {
+                break
+            }
+        }
+        if (pos == start) {
+            ok = false
+            return 0.0
+        }
+        def num@(optional):double (str2double (substring src start pos))
+        if (null? num) {
+            ok = false
+            return 0.0
+        }
+        def value:double (unwrap num)
+        def ustart:int pos
+        while (pos < n) {
+            def d:int (charAt src pos)
+            if (((d >= 97) && (d <= 122)) || (d == 37)) {
+                pos = (pos + 1)
+            } {
+                break
+            }
+        }
+        def unit:string (substring src ustart pos)
+        if (unit == "") {
+            isLen = false
+            return value
+        }
+        isLen = true
+        if (unit == "px") {
+            return value
+        }
+        if (unit == "rem") {
+            return (value * 16.0)
+        }
+        if (unit == "pt") {
+            return ((value * 96.0) / 72.0)
+        }
+        ok = false
+        return 0.0
+    }
+}

@@ -55,6 +55,7 @@ extern char** environ;
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -681,6 +682,42 @@ static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
   im.w = w;
   im.h = h;
   return im;
+}
+
+// The bytes of a data: URL (percent-encoded or base64), as inline <svg>
+// pictures and small embedded images arrive.
+static bool decodeDataUrl(const std::string& url, std::string& out) {
+  size_t comma = url.find(',');
+  if (url.compare(0, 5, "data:") != 0 || comma == std::string::npos) return false;
+  std::string head = lower(url.substr(5, comma - 5));
+  std::string body = url.substr(comma + 1);
+  out.clear();
+  if (head.find(";base64") != std::string::npos) {
+    static const std::string abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    unsigned acc = 0;
+    int bits = 0;
+    for (char ch : body) {
+      size_t v = abc.find(ch);
+      if (v == std::string::npos) continue;
+      acc = (acc << 6) | (unsigned)v;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        out.push_back((char)((acc >> bits) & 0xff));
+      }
+    }
+    return true;
+  }
+  for (size_t i = 0; i < body.size(); i++) {
+    if (body[i] == '%' && i + 2 < body.size() && std::isxdigit((unsigned char)body[i + 1]) &&
+        std::isxdigit((unsigned char)body[i + 2])) {
+      out.push_back((char)std::strtol(body.substr(i + 1, 2).c_str(), nullptr, 16));
+      i += 2;
+    } else {
+      out.push_back(body[i]);
+    }
+  }
+  return true;
 }
 
 class Painter {
@@ -1410,6 +1447,14 @@ static int run(int argc, char** argv) {
       if (j.kind == "image" && images.count(j.url)) {
         const Image& im = images[j.url];
         if (im.tex) app->imageLoaded(j.url, im.w, im.h); else app->imageFailed(j.url);
+        continue;
+      }
+      std::string inlineBytes;
+      if (j.kind == "image" && decodeDataUrl(j.url, inlineBytes)) {
+        Image im = decodeImage(ren, inlineBytes);
+        images[j.url] = im;
+        if (im.tex) app->imageLoaded(j.url, im.w, im.h); else app->imageFailed(j.url);
+        dirty = true;
         continue;
       }
       net.submit(j);

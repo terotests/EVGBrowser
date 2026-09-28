@@ -146,6 +146,9 @@ Things EVG does not have, and how they are handled:
   (`settleFluidImages`), from the picture's natural size.
 - **`repeat(auto-fill, minmax(…))` grids** get a column count computed from the
   width.
+- **Inline `<svg>`** is drawn as a picture: its markup goes into a
+  `data:` URL, with `var()` and `currentColor` in its paint worked out
+  from the page first (`CssCascade.bakeSvg`).
 - **Borders on one side only** are drawn as thin blocks (EVG borders are
   all-round).
 
@@ -195,8 +198,10 @@ Not done yet:
 - The desktop build has been run on Linux only; macOS and Windows builds are
   untested.
 - Text is not selectable; there is no italic or underline (EVG draws neither
-  from its element tree); `float`, `calc()`, most pseudo-classes, `::before` /
-  `::after` content, CSS background images and inline SVG are ignored.
+  from its element tree); `float`, most pseudo-classes, `::before` /
+  `::after` content and CSS background images are ignored. `calc()` is
+  worked out when its terms are px, rem, pt or numbers (after `var()`),
+  and left alone when they depend on the layout (%, em, vw).
 - Scripts run once, at load: a click does not reach a page's own handlers
   yet, and modules (`<script type="module">`) do not run.
 

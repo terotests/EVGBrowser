@@ -652,7 +652,7 @@ class HtmlToEvg {
             }
         }
         def t:string c.tag
-        if ((t == "script") || ((t == "style") || ((t == "head") || ((t == "template") || ((t == "svg") || (t == "math")))))) {
+        if ((t == "script") || ((t == "style") || ((t == "head") || ((t == "template") || (t == "math"))))) {
             return true
         }
         if (hideNoscript && (t == "noscript")) {
@@ -871,12 +871,12 @@ class HtmlToEvg {
 
     fn isReplaced:boolean (c:HNode) {
         def t:string c.tag
-        return ((t == "img") || ((t == "input") || ((t == "button") || ((t == "select") || ((t == "textarea") || ((t == "video") || ((t == "audio") || ((t == "iframe") || ((t == "object") || ((t == "embed") || (t == "canvas")))))))))))
+        return ((t == "img") || ((t == "svg") || ((t == "input") || ((t == "button") || ((t == "select") || ((t == "textarea") || ((t == "video") || ((t == "audio") || ((t == "iframe") || ((t == "object") || ((t == "embed") || (t == "canvas"))))))))))))
     }
 
     fn replaced:EVGElement (c:HNode linkId:string) {
         def t:string c.tag
-        if (t == "img") {
+        if ((t == "img") || (t == "svg")) {
             return (this.image(c linkId))
         }
         if ((t == "input") || ((t == "button") || ((t == "select") || (t == "textarea")))) {
@@ -905,6 +905,9 @@ class HtmlToEvg {
     }
 
     fn imageSource:string (c:HNode) {
+        if (c.tag == "svg") {
+            return (HtmlToEvg.svgDataUrl(c))
+        }
         def candidates:[string] ([] _:string ( "src" "data-src" "data-lazy-src" "data-original" ))
         for candidates a:string i {
             def v:string (trim (c.attr(a)))
@@ -926,6 +929,63 @@ class HtmlToEvg {
             return first
         }
         return (trim (c.attr("src")))
+    }
+
+    ; An inline <svg> as a picture of its own: its markup in a data: URL
+    ; (paint already resolved by the cascade, see CssCascade.bakeSvg).
+    sfn svgDataUrl:string (c:HNode) {
+        def markup:string (HtmlToEvg.svgMarkup(c true))
+        if ((strlen markup) > 200000) {
+            return ""
+        }
+        ; the few characters a URL cannot carry as they are
+        def e:string (replace markup "%" "%25")
+        e = (replace e "#" "%23")
+        e = (replace e " " "%20")
+        e = (replace e "\n" "%0A")
+        e = (replace e "\r" "")
+        e = (replace e "\t" "%20")
+        e = (replace e "<" "%3C")
+        e = (replace e ">" "%3E")
+        e = (replace e "\"" "%22")
+        return ("data:image/svg+xml," + e)
+    }
+
+    sfn svgMarkup:string (n:HNode top:boolean) {
+        if n.isText {
+            def t:string (replace n.text "&" "&amp;")
+            return (replace t "<" "&lt;")
+        }
+        def out:string ("<" + (HtmlToEvg.svgName(n.tag)))
+        def hasNs:boolean false
+        for n.attrNames an0:string i {
+            def an:string (HtmlToEvg.svgName(an0))
+            if (an == "xmlns") {
+                hasNs = true
+            }
+            def av:string (replace (itemAt n.attrValues i) "&" "&amp;")
+            av = (replace av "\"" "&quot;")
+            out = (out + " " + an + "=\"" + av + "\"")
+        }
+        if (top && (hasNs == false)) {
+            out = (out + " xmlns=\"http://www.w3.org/2000/svg\"")
+        }
+        out = (out + ">")
+        for n.children c:HNode j {
+            out = (out + (HtmlToEvg.svgMarkup(c false)))
+        }
+        return (out + "</" + (HtmlToEvg.svgName(n.tag)) + ">")
+    }
+
+    ; The parser lower-cases names; SVG's own are case-sensitive.
+    sfn svgName:string (n:string) {
+        def names:[string] ([] _:string ( "viewBox" "preserveAspectRatio" "gradientUnits" "gradientTransform" "spreadMethod" "clipPath" "clipPathUnits" "linearGradient" "radialGradient" "patternUnits" "patternTransform" "textLength" "lengthAdjust" "markerWidth" "markerHeight" "refX" "refY" "stdDeviation" "foreignObject" "textPath" ))
+        for names v:string i {
+            if ((to_lowercase v) == n) {
+                return v
+            }
+        }
+        return n
     }
 
     fn image:EVGElement (c:HNode linkId:string) {
@@ -1214,7 +1274,7 @@ class HtmlToEvg {
         if n.isText {
             return n.text
         }
-        if (this.skipped(n)) {
+        if ((this.skipped(n)) || (n.tag == "svg")) {
             return ""
         }
         def out:string ""
@@ -1625,7 +1685,20 @@ class HtmlToEvg {
         el.setAttribute("display" "flex")
         el.setAttribute("flex-direction" "row")
         el.setAttribute("flex-wrap" "wrap")
-        el.setAttribute("align-items" "flex-start")
+        ; a one-row grid (a header bar) stretches its cells to the row, so
+        ; what they centre inside them is centred on the bar
+        def areas:string (trim (HtmlToEvg.prop(st "grid-template-areas" "")))
+        def rows:string (trim (HtmlToEvg.prop(st "grid-template-rows" "")))
+        def quotes:int (array_length (strsplit areas "\""))
+        if (((strlen areas) > 0) && (quotes == 3)) {
+            el.setAttribute("align-items" "stretch")
+        } {
+            if ((rows == "1fr") || (rows == "auto")) {
+                el.setAttribute("align-items" "stretch")
+            } {
+                el.setAttribute("align-items" "flex-start")
+            }
+        }
         this.applyGaps(el st)
     }
 
