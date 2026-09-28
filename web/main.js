@@ -31,6 +31,7 @@ const coarse = matchMedia("(pointer: coarse)").matches;
 const host = new mod.BrowserHost();
 const app = host.browser;
 if (params.get("images") === "0") app.setImagesEnabled(false);
+if (params.get("js") === "0") app.setScriptsEnabled(false);
 // the sample pages that ship with the demo, on this page's own origin
 app.setSamplesBase(new URL("samples/", location.href).href);
 
@@ -97,6 +98,62 @@ function syncTitle() {
   if (shown.href !== location.href) history.replaceState(null, "", shown);
 }
 
+// --- the script realm -------------------------------------------------------
+//
+// A page's scripts run in a Web Worker (realm-worker.js), on a copy of the
+// page; the DOM ops they produce come back as text. The worker is started
+// the first time a page has scripts, and terminated — with the page left as
+// the server sent it — when a job takes longer than REALM_LIMIT_MS.
+
+const REALM_LIMIT_MS = 8000;
+let realmWorker = null;
+let realmTimer = 0;
+let realmJob = -1;
+
+function stopRealm() {
+  if (realmWorker) realmWorker.terminate();
+  realmWorker = null;
+  clearTimeout(realmTimer);
+}
+
+function runRealm() {
+  if (!app.realmJobPending()) return;
+  const job = app.takeRealmJob();
+  const scripts = [];
+  for (let i = 0; i < app.realmScriptCount(); i++) scripts.push({ url: app.realmScriptUrl(i), text: app.realmScriptText(i) });
+  if (realmJob >= 0) stopRealm();  // a new page: the old job is abandoned
+  if (!realmWorker) {
+    realmWorker = new Worker("./realm-worker.js");
+    realmWorker.onmessage = (e) => {
+      const r = e.data;
+      if (r.job !== realmJob) return;
+      clearTimeout(realmTimer);
+      realmJob = -1;
+      if (r.ok) app.realmResult(r.job, r.ops, r.summary);
+      else app.realmFailed(r.job, r.error);
+      window.__realm = r;
+      dirty = true;
+      pump();
+    };
+    realmWorker.onerror = (e) => {
+      const j = realmJob;
+      stopRealm();
+      realmJob = -1;
+      app.realmFailed(j, String(e.message || e));
+      dirty = true;
+    };
+  }
+  realmJob = job;
+  realmTimer = setTimeout(() => {
+    stopRealm();
+    realmJob = -1;
+    app.realmFailed(job, "aikaraja");
+    window.__realm = { job, ok: false, error: "timeout" };
+    dirty = true;
+  }, REALM_LIMIT_MS);
+  realmWorker.postMessage({ job, html: app.realmHtml(), url: app.realmUrl(), width: app.realmWidth(), height: app.realmHeight(), scripts });
+}
+
 // --- painting ---------------------------------------------------------------
 
 let paintedFocus = "";
@@ -131,6 +188,7 @@ function frame(now) {
   try {
     if (host.tick(dt)) dirty = true;
     pump();
+    runRealm();
     if (dirty) paint();
   } catch (e) {
     showError(e);

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<title>Skriptitesti – EVG Browser</title>
+<link rel="stylesheet" href="uutiset.css">
+<script src="skriptit.js" defer></script>
+</head>
+<body>
+<header class="site-header"><div class="site-header__inner"><a class="logo" href="uutiset.html">Esimerkki<span>uutiset</span></a></div></header>
+<main>
+  <div class="breaking"><strong>Skriptit:</strong> tämän sivun uutislista rakennetaan JavaScriptillä. Selain ajaa skriptin omassa eristetyssä ympäristössään (Web Worker), jolla ei ole verkkoa.</div>
+  <h2 class="section-title">Tuoreimmat (skriptin tekemä lista)</h2>
+  <div id="lista" class="card-grid"><noscript><p>Lista näkyy, kun skriptit ovat käytössä.</p></noscript></div>
+  <p id="tila" class="meta">Skripti ei ole vielä ajanut.</p>
+</main>
+<script>
+  // an inline script, before the external one (which is deferred)
+  window.__uutiset = [
+    { otsikko: "Kirjasto avaa lukunurkan lapsille", aihe: "Kulttuuri", aika: "9.15" },
+    { otsikko: "Siilit heräsivät talviunilta tavallista aiemmin", aihe: "Luonto", aika: "10.40" },
+    { otsikko: "Koulun robotiikkakerho voitti kilpailun", aihe: "Tiede", aika: "12.05" }
+  ];
+</script>
+</body>
+</html>

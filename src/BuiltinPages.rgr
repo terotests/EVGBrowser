@@ -82,6 +82,7 @@ class BuiltinPages {
         b = (b + (BuiltinPages.tile("https://yle.fi/novosti" "🌍" "Yle muilla kielillä" "Uutiset eri kielillä" "#6b4fc4")))
         if ((strlen samples) > 0) {
             b = (b + (BuiltinPages.tile((samples + "uutiset.html") "🧸" "Esimerkkiuutiset" "Testisivu tämän selaimen mukana" "#b5476b")))
+            b = (b + (BuiltinPages.tile((samples + "skriptit.html") "⚙️" "Skriptitesti" "JavaScript omassa eristyksessään" "#3d6b8c")))
         }
         b = (b + "</div><h2>Tietoa ja ihmeteltävää</h2><div class=\"tiles\">")
         b = (b + (BuiltinPages.tile("https://fi.wikipedia.org/wiki/Kissa" "🐱" "Kissa" "Wikipedia-artikkeli" "#d9822b")))
