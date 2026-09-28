@@ -25,8 +25,8 @@ jobs:
       - name: Libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev \
-            libcurl4-openssl-dev fonts-dejavu-core fonts-noto-color-emoji xvfb
+          sudo apt-get install -y --no-install-recommends libsdl2-dev libcurl4-openssl-dev \
+            fonts-dejavu-core fonts-noto-color-emoji xvfb
       - name: Headless checks (C++)
         working-directory: EVGBrowser
         run: node tools/check.mjs --cpp

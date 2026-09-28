@@ -37,17 +37,23 @@ works locally. It only fetches from the allowlist, GET only, text only, no cooki
 `native/sdl/evg_browser_sdl.cpp` puts the same program in a desktop window.
 The Ranger source is compiled to C++ and included; the file adds only what a
 desktop has: an SDL2 window and input, libcurl on worker threads for the
-request queue, SDL_ttf fonts that both measure the text for the layout and
-draw it (with colour emoji from Noto Color Emoji when installed), SDL_image for
-JPEG/PNG/WebP/SVG pictures, and a painter for the display list (rounded boxes
-and borders as triangle geometry, text runs, `object-fit: cover`, a clip
-stack). It does not use Ranger's AGPL `gallery/`; everything is MIT.
+request queue, and a painter for the display list (rounded boxes and borders
+as triangle geometry, text runs, `object-fit: cover`, a clip stack).
+
+**Two libraries: SDL2 and libcurl** (which comes with macOS and every Linux).
+Everything else is compiled in from single-file libraries in
+`native/sdl/third_party/`: stb_truetype for type (the same faces measure the
+text for the layout and draw it), stb_image for JPEG/PNG/GIF, nanosvg for SVG,
+stb_image_write for screenshots. Colour emoji are read straight out of the
+system's emoji font (the PNGs in Noto Color Emoji's CBDT table, or Apple
+Color Emoji's sbix table). WebP and AVIF are not decoded; image requests
+ask for PNG, JPEG, GIF and SVG only.
 
 ```sh
 # Debian/Ubuntu
-sudo apt-get install libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libcurl4-openssl-dev fonts-dejavu-core
-# macOS (libcurl comes with the system)
-brew install sdl2 sdl2_ttf sdl2_image pkg-config
+sudo apt-get install libsdl2-dev libcurl4-openssl-dev fonts-dejavu-core
+# macOS
+brew install sdl2
 
 npm run sdl                         # -> build/evg-browser
 build/evg-browser                   # about:home

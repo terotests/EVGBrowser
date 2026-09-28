@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // EVG Browser in a desktop window: SDL2 for the window and the pixels,
-// SDL_ttf for the type, SDL_image for pictures, libcurl for the network.
+// libcurl for the network, stb_truetype for the type, stb_image and nanosvg
+// for pictures.
 //
 // Everything the browser IS — HTML, CSS, layout, history, scrolling, links,
 // the safety policy — is the Ranger program, compiled to C++ and included
@@ -22,9 +23,23 @@
 
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
-#include <SDL_image.h>
-#include <SDL_ttf.h>
 #include <curl/curl.h>
+
+// Type, pictures and screenshots from single-file libraries compiled in
+// (third_party/README.md), so the only libraries needed are SDL2 and libcurl.
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "third_party/stb_truetype.h"
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_HDR
+#define STBI_NO_PIC
+#define STBI_NO_PNM
+#include "third_party/stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "third_party/stb_image_write.h"
+#define NANOSVG_IMPLEMENTATION
+#include "third_party/nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "third_party/nanosvgrast.h"
 
 #include <atomic>
 #include <chrono>
@@ -109,32 +124,258 @@ static std::string firstExisting(const std::vector<std::string>& paths) {
   return "";
 }
 
+// A font file in memory, opened by stb_truetype.
+struct FontFile {
+  std::vector<unsigned char> data;
+  stbtt_fontinfo info;
+  bool ok = false;
+  int ascent = 0, descent = 0, lineGap = 0;  // font units
+
+  bool open(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long n = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (n <= 0) {
+      std::fclose(f);
+      return false;
+    }
+    data.resize((size_t)n);
+    size_t got = std::fread(data.data(), 1, (size_t)n, f);
+    std::fclose(f);
+    if (got != (size_t)n) return false;
+    int offset = stbtt_GetFontOffsetForIndex(data.data(), 0);  // a .ttc: its first face
+    if (offset < 0 || !stbtt_InitFont(&info, data.data(), offset)) return false;
+    stbtt_GetFontVMetrics(&info, &ascent, &descent, &lineGap);
+    ok = true;
+    return true;
+  }
+
+  // CSS sizes are em sizes: `font-size: 16px` makes the em 16 pixels.
+  float scale(double px) const { return stbtt_ScaleForMappingEmToPixels(&info, (float)px); }
+
+  bool has(uint32_t cp) const {
+    int g = stbtt_FindGlyphIndex(&info, (int)cp);
+    return g != 0 && !stbtt_IsGlyphEmpty(&info, g);
+  }
+};
+
+// Colour emoji: the pictures are PNGs inside the font — the CBDT/CBLC tables
+// (Noto Color Emoji, Linux and Android) or the sbix table (Apple Color Emoji).
+// stb_truetype finds the glyph and its advance; this finds the PNG, and
+// stb_image decodes it.
+class ColorEmoji {
+ public:
+  FontFile font;
+  bool ok = false;
+
+  bool open(const std::string& path) {
+    if (!font.open(path) && !openBitmapOnly(path)) return false;
+    const unsigned char* d = font.data.data();
+    unsigned int start = (unsigned int)font.info.fontstart;
+    cblc = stbtt__find_table((stbtt_uint8*)d, start, "CBLC");
+    cbdt = stbtt__find_table((stbtt_uint8*)d, start, "CBDT");
+    sbix = stbtt__find_table((stbtt_uint8*)d, start, "sbix");
+    ok = (cblc && cbdt) || sbix;
+    return ok;
+  }
+
+  bool has(uint32_t cp) const { return ok && stbtt_FindGlyphIndex(&font.info, (int)cp) != 0; }
+
+  // The PNG bytes of a glyph, or an empty span.
+  bool png(int glyph, const unsigned char*& out, size_t& len) const {
+    if (cblc && cbdt) return fromCbdt(glyph, out, len);
+    if (sbix) return fromSbix(glyph, out, len);
+    return false;
+  }
+
+ private:
+  unsigned int cblc = 0, cbdt = 0, sbix = 0;
+
+  // stbtt_InitFont wants outlines (glyf or CFF), and a bitmap-only face has
+  // none. What this needs of stb_truetype is the character map and the
+  // advances, so those are set up here the way stbtt_InitFont does.
+  bool openBitmapOnly(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long n = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (n <= 0) {
+      std::fclose(f);
+      return false;
+    }
+    font.data.resize((size_t)n);
+    size_t got = std::fread(font.data.data(), 1, (size_t)n, f);
+    std::fclose(f);
+    if (got != (size_t)n) return false;
+    stbtt_uint8* d = font.data.data();
+    int start = stbtt_GetFontOffsetForIndex(d, 0);
+    if (start < 0) return false;
+    stbtt_fontinfo& info = font.info;
+    std::memset(&info, 0, sizeof(info));
+    info.data = d;
+    info.fontstart = start;
+    unsigned int cmap = stbtt__find_table(d, (stbtt_uint32)start, "cmap");
+    info.head = (int)stbtt__find_table(d, (stbtt_uint32)start, "head");
+    info.hhea = (int)stbtt__find_table(d, (stbtt_uint32)start, "hhea");
+    info.hmtx = (int)stbtt__find_table(d, (stbtt_uint32)start, "hmtx");
+    unsigned int maxp = stbtt__find_table(d, (stbtt_uint32)start, "maxp");
+    if (!cmap || !info.head || !info.hhea || !info.hmtx) return false;
+    info.numGlyphs = maxp ? (int)u16(maxp + 4) : 0xffff;
+    unsigned int tables = u16(cmap + 2);
+    for (unsigned int i = 0; i < tables; i++) {
+      unsigned int rec = cmap + 4 + 8 * i;
+      unsigned int platform = u16(rec), encoding = u16(rec + 2);
+      if (platform == 3 && (encoding == 1 || encoding == 10)) info.index_map = (int)(cmap + u32(rec + 4));
+      if (platform == 0 && !info.index_map) info.index_map = (int)(cmap + u32(rec + 4));
+    }
+    if (!info.index_map) return false;
+    info.indexToLocFormat = (int)u16((unsigned int)info.head + 50);
+    stbtt_GetFontVMetrics(&info, &font.ascent, &font.descent, &font.lineGap);
+    font.ok = true;
+    return true;
+  }
+
+  // big-endian reads, 0 past the end of the file
+  unsigned int u32(unsigned int at) const {
+    if (!inside(at, 4)) return 0;
+    const unsigned char* p = font.data.data() + at;
+    return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) | ((unsigned int)p[2] << 8) | p[3];
+  }
+  unsigned int u16(unsigned int at) const {
+    if (!inside(at, 2)) return 0;
+    const unsigned char* p = font.data.data() + at;
+    return ((unsigned int)p[0] << 8) | p[1];
+  }
+  bool inside(size_t at, size_t n) const { return at + n <= font.data.size(); }
+
+  bool fromCbdt(int glyph, const unsigned char*& out, size_t& len) const {
+    unsigned int numSizes = u32(cblc + 4);
+    // the largest strike
+    unsigned int best = 0, bestPpem = 0;
+    for (unsigned int i = 0; i < numSizes; i++) {
+      unsigned int rec = cblc + 8 + i * 48;
+      unsigned int ppem = font.data[rec + 45];
+      if (ppem >= bestPpem) { bestPpem = ppem; best = rec; }
+    }
+    if (!best) return false;
+    unsigned int arr = cblc + u32(best);
+    unsigned int count = u32(best + 8);
+    for (unsigned int i = 0; i < count; i++) {
+      unsigned int e = arr + i * 8;
+      unsigned int first = u16(e), last = u16(e + 2);
+      if (glyph < (int)first || glyph > (int)last) continue;
+      unsigned int sub = arr + u32(e + 4);
+      unsigned int indexFormat = u16(sub), imageFormat = u16(sub + 2);
+      unsigned int dataOff = cbdt + u32(sub + 4);
+      unsigned int at = 0, end = 0;
+      unsigned int k = (unsigned int)glyph - first;
+      if (indexFormat == 1) {
+        at = dataOff + u32(sub + 8 + k * 4);
+        end = dataOff + u32(sub + 8 + (k + 1) * 4);
+      } else if (indexFormat == 3) {
+        at = dataOff + u16(sub + 8 + k * 2);
+        end = dataOff + u16(sub + 8 + (k + 1) * 2);
+      } else if (indexFormat == 2) {
+        unsigned int size = u32(sub + 8);
+        at = dataOff + k * size;
+        end = at + size;
+      } else if (indexFormat == 4) {
+        unsigned int n = u32(sub + 8);
+        for (unsigned int j = 0; j < n; j++) {
+          unsigned int pair = sub + 12 + j * 4;
+          if ((int)u16(pair) == glyph) {
+            at = dataOff + u16(pair + 2);
+            end = dataOff + u16(pair + 6);
+          }
+        }
+      } else if (indexFormat == 5) {
+        unsigned int size = u32(sub + 8);
+        unsigned int n = u32(sub + 20);
+        for (unsigned int j = 0; j < n; j++) {
+          if ((int)u16(sub + 24 + j * 2) == glyph) {
+            at = dataOff + j * size;
+            end = at + size;
+          }
+        }
+      }
+      if (!at || end <= at || !inside(at, end - at)) return false;
+      // the image formats with PNG in them: 17 small metrics, 18 big, 19 none
+      unsigned int head = imageFormat == 17 ? 5 : imageFormat == 18 ? 8 : imageFormat == 19 ? 0 : 1000;
+      if (head == 1000) return false;
+      unsigned int n = u32(at + head);
+      if (!inside(at + head + 4, n)) return false;
+      out = font.data.data() + at + head + 4;
+      len = n;
+      return true;
+    }
+    return false;
+  }
+
+  bool fromSbix(int glyph, const unsigned char*& out, size_t& len) const {
+    unsigned int strikes = u32(sbix + 4);
+    unsigned int best = 0, bestPpem = 0;
+    for (unsigned int i = 0; i < strikes; i++) {
+      unsigned int st = sbix + u32(sbix + 8 + i * 4);
+      unsigned int ppem = u16(st);
+      if (ppem >= bestPpem && ppem <= 160) { bestPpem = ppem; best = st; }
+    }
+    if (!best) return false;
+    unsigned int at = best + u32(best + 4 + glyph * 4);
+    unsigned int end = best + u32(best + 4 + (glyph + 1) * 4);
+    if (end <= at + 8 || !inside(at, end - at)) return false;
+    if (std::memcmp(font.data.data() + at + 4, "png ", 4) != 0) return false;
+    out = font.data.data() + at + 8;
+    len = end - at - 8;
+    return true;
+  }
+};
+
 class Fonts {
  public:
-  std::string path[FACE_COUNT];
-  std::string emojiPath;
-  double dpi = 1.0;
+  FontFile face[FACE_COUNT];
+  // faces that fill in what the main ones have no glyph for (symbols, other
+  // scripts); a colour emoji face is bitmap-only and cannot be one of them
+  std::vector<std::unique_ptr<FontFile>> fallbacks;
+  ColorEmoji emoji;
 
   bool load() {
     const char* dir = std::getenv("EVG_FONT_DIR");
     std::string d = dir ? std::string(dir) + "/" : "";
-    path[SANS] = firstExisting({d + "sans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-      "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-      "/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf", "C:/Windows/Fonts/arial.ttf"});
-    path[SANS_BOLD] = firstExisting({d + "sans-bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-      "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-      "/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf", "C:/Windows/Fonts/arialbd.ttf"});
-    path[MONO] = firstExisting({d + "mono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-      "/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-      "/System/Library/Fonts/Supplemental/Courier New.ttf", "C:/Windows/Fonts/cour.ttf"});
-    path[MONO_BOLD] = firstExisting({d + "mono-bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-      "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
-      "/System/Library/Fonts/Supplemental/Courier New Bold.ttf", "C:/Windows/Fonts/courbd.ttf"});
-    emojiPath = firstExisting({d + "emoji.ttf", "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-      "/usr/share/fonts/noto/NotoColorEmoji.ttf", "/System/Library/Fonts/Apple Color Emoji.ttc", "C:/Windows/Fonts/seguiemj.ttf"});
-    if (path[SANS].empty()) return false;
+    const std::vector<std::string> paths[FACE_COUNT] = {
+      {d + "sans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
+       "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf",
+       "/Library/Fonts/Arial.ttf", "C:/Windows/Fonts/arial.ttf"},
+      {d + "sans-bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+       "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+       "/Library/Fonts/Arial Bold.ttf", "C:/Windows/Fonts/arialbd.ttf"},
+      {d + "mono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+       "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", "/System/Library/Fonts/Supplemental/Courier New.ttf",
+       "C:/Windows/Fonts/cour.ttf"},
+      {d + "mono-bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+       "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf", "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
+       "C:/Windows/Fonts/courbd.ttf"}};
+    for (int f = 0; f < FACE_COUNT; f++) {
+      for (auto& p : paths[f]) if (face[f].open(p)) break;
+    }
+    if (!face[SANS].ok) return false;
     for (int f = 1; f < FACE_COUNT; f++) {
-      if (path[f].empty()) path[f] = (f == MONO_BOLD && !path[MONO].empty()) ? path[MONO] : path[SANS];
+      if (!face[f].ok) face[f] = (f == MONO_BOLD && face[MONO].ok) ? face[MONO] : face[SANS];
+    }
+    const std::vector<std::string> extra = {
+      d + "fallback.ttf", "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+      "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf", "/usr/share/fonts/truetype/freefont/FreeSerif.ttf",
+      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "/System/Library/Fonts/Apple Symbols.ttf",
+      "C:/Windows/Fonts/seguiemj.ttf", "C:/Windows/Fonts/seguisym.ttf"};
+    for (auto& p : extra) {
+      auto ff = std::make_unique<FontFile>();
+      if (ff->open(p)) fallbacks.push_back(std::move(ff));
+    }
+    for (auto& p : {d + "emoji.ttf", std::string("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"),
+                    std::string("/usr/share/fonts/noto/NotoColorEmoji.ttf"), std::string("/System/Library/Fonts/Apple Color Emoji.ttc")}) {
+      if (emoji.open(p)) break;
     }
     return true;
   }
@@ -148,105 +389,69 @@ class Fonts {
     return bold ? SANS_BOLD : SANS;
   }
 
-  TTF_Font* font(Face face, int px) {
-    if (px < 4) px = 4;
-    if (px > 400) px = 400;
-    int key = face * 1000 + px;
-    auto it = cache.find(key);
-    if (it != cache.end()) return it->second;
-    TTF_Font* f = TTF_OpenFont(path[face].c_str(), px);
-    if (f) TTF_SetFontHinting(f, TTF_HINTING_LIGHT);
-    cache[key] = f;
-    return f;
-  }
-
-  // The colour emoji face is a bitmap font with one size; it is opened once
-  // and scaled to the text around it.
-  TTF_Font* emoji() {
-    if (emojiTried) return emojiFont;
-    emojiTried = true;
-    if (!emojiPath.empty()) emojiFont = TTF_OpenFont(emojiPath.c_str(), 109);
-    return emojiFont;
-  }
-
-  double emojiScale(double size) {
-    TTF_Font* e = emoji();
-    if (!e) return 1.0;
-    int h = TTF_FontHeight(e);
-    return h > 0 ? (size * 1.17) / h : 1.0;
-  }
-
+  // One stretch of text drawn with one font file.
   struct Run {
-    std::string text;
-    bool emoji;
+    const FontFile* font;
+    std::vector<uint32_t> cps;
   };
 
-  // Split a run into the stretches the main face has glyphs for and the
-  // stretches that fall back to the emoji face.
-  std::vector<Run> runs(const std::string& text, TTF_Font* main) {
+  const FontFile* fontFor(Face f, uint32_t cp) const {
+    const FontFile* main = &face[f];
+    if (cp < 0x80) return main;
+    // pictographs in colour when there is a colour face, whatever else has them
+    if (cp >= 0x1F000 && emoji.has(cp)) return &emoji.font;
+    if (main->has(cp)) return main;
+    for (auto& fb : fallbacks) if (fb->has(cp)) return fb.get();
+    if (emoji.has(cp)) return &emoji.font;
+    return main;
+  }
+
+  bool isEmoji(const FontFile* f) const { return f == &emoji.font; }
+
+  std::vector<Run> runs(const std::string& text, Face f) const {
     std::vector<Run> out;
-    TTF_Font* e = emoji();
     size_t i = 0;
     uint32_t cp = 0;
-    while (i < text.size()) {
-      size_t start = i;
-      nextCodepoint(text, i, cp);
-      bool isEmoji = false;
-      if (e && cp > 0x7F) {
-        bool joiner = cp == 0x200D || cp == 0xFE0F || (cp >= 0x1F3FB && cp <= 0x1F3FF);
-        if (joiner) {
-          isEmoji = !out.empty() && out.back().emoji;
-        } else if (!TTF_GlyphIsProvided32(main, cp) || cp >= 0x1F000) {
-          isEmoji = TTF_GlyphIsProvided32(e, cp) != 0;
-        }
-      }
-      if (out.empty() || out.back().emoji != isEmoji) out.push_back({"", isEmoji});
-      out.back().text.append(text, start, i - start);
+    while (nextCodepoint(text, i, cp)) {
+      if (cp == 0xFE0F || cp == 0x200D) continue;  // emoji presentation marks draw nothing
+      const FontFile* ff = fontFor(f, cp);
+      // U+FE0F after a symbol asks for its emoji (colour) form
+      size_t peek = i;
+      uint32_t next = 0;
+      if (nextCodepoint(text, peek, next) && next == 0xFE0F && emoji.has(cp)) ff = &emoji.font;
+      if (out.empty() || out.back().font != ff) out.push_back(Run{ff, {}});
+      out.back().cps.push_back(cp);
     }
     return out;
   }
 
+  static double runWidth(const Run& r, double px) {
+    float sc = r.font->scale(px);
+    double w = 0.0;
+    for (size_t k = 0; k < r.cps.size(); k++) {
+      int adv = 0, lsb = 0;
+      stbtt_GetCodepointHMetrics(&r.font->info, (int)r.cps[k], &adv, &lsb);
+      w += adv * sc;
+      if (k + 1 < r.cps.size()) w += stbtt_GetCodepointKernAdvance(&r.font->info, (int)r.cps[k], (int)r.cps[k + 1]) * sc;
+    }
+    return w;
+  }
+
   // What EVGHostTextMeasurer asks: a run's width, or a face's ascent,
   // descent and line gap, in CSS pixels at `size`.
-  double metric(int kind, const std::string& text, const std::string& family, double size, bool bold) {
-    Face face = faceFor(family, bold);
-    TTF_Font* f = font(face, (int)std::lround(size));
-    if (!f) return 0.0;
-    double k = size / std::max(1.0, (double)std::lround(size));
+  double metric(int kind, const std::string& text, const std::string& family, double size, bool bold) const {
+    Face f = faceFor(family, bold);
     if (kind == 0) {
       double w = 0.0;
-      for (auto& r : runs(text, f)) {
-        int rw = 0, rh = 0;
-        if (r.emoji) {
-          TTF_SizeUTF8(emoji(), r.text.c_str(), &rw, &rh);
-          w += rw * emojiScale(size);
-        } else {
-          TTF_SizeUTF8(f, r.text.c_str(), &rw, &rh);
-          w += rw * k;
-        }
-      }
+      for (auto& r : runs(text, f)) w += runWidth(r, size);
       return w;
     }
-    double asc = TTF_FontAscent(f) * k;
-    double desc = -TTF_FontDescent(f) * k;
-    if (kind == 1) return asc;
-    if (kind == 2) return desc;
-    double gap = TTF_FontLineSkip(f) * k - (asc + desc);
-    return gap > 0 ? gap : 0.0;
+    const FontFile& ff = face[f];
+    float sc = ff.scale(size);
+    if (kind == 1) return ff.ascent * sc;
+    if (kind == 2) return -ff.descent * sc;
+    return ff.lineGap > 0 ? ff.lineGap * sc : 0.0;
   }
-
-  // Before TTF_Quit: a face closed after it takes FreeType down with it.
-  void closeAll() {
-    for (auto& kv : cache) if (kv.second) TTF_CloseFont(kv.second);
-    cache.clear();
-    if (emojiFont) TTF_CloseFont(emojiFont);
-    emojiFont = nullptr;
-  }
-
- private:
-  std::unordered_map<int, TTF_Font*> cache;
-  TTF_Font* emojiFont = nullptr;
-  bool emojiTried = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -360,7 +565,7 @@ class Net {
     Sink sink{&r.body};
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Accept-Language: fi,en;q=0.7");
-    headers = curl_slist_append(headers, job.kind == "image" ? "Accept: image/avif,image/webp,image/png,image/jpeg,image/svg+xml,*/*;q=0.5"
+    headers = curl_slist_append(headers, job.kind == "image" ? "Accept: image/png,image/jpeg,image/gif,image/svg+xml"
                                                            : "Accept: text/html,text/css,*/*;q=0.5");
     curl_easy_setopt(c, CURLOPT_URL, job.url.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
@@ -426,6 +631,46 @@ struct Image {
   int w = 0, h = 0;
 };
 
+// A picture's bytes as a texture: JPEG, PNG, GIF (first frame), BMP through
+// stb_image; SVG through nanosvg, rasterised at its own size (at most 2048
+// on a side). WebP and AVIF are not decoded; the request asks for neither.
+static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
+  Image im;
+  int w = 0, h = 0;
+  std::vector<unsigned char> rgba;
+  std::string head = lower(bytes.substr(0, 1024));
+  if (head.find("<svg") != std::string::npos) {
+    std::vector<char> text(bytes.begin(), bytes.end());
+    text.push_back(0);
+    NSVGimage* svg = nsvgParse(text.data(), "px", 96.0f);
+    if (!svg) return im;
+    float sw = svg->width > 0 ? svg->width : 300.0f, sh = svg->height > 0 ? svg->height : 150.0f;
+    float k = std::min(1.0f, 2048.0f / std::max(sw, sh));
+    w = std::max(1, (int)std::lround(sw * k));
+    h = std::max(1, (int)std::lround(sh * k));
+    rgba.assign((size_t)w * h * 4, 0);
+    NSVGrasterizer* rast = nsvgCreateRasterizer();
+    nsvgRasterize(rast, svg, 0, 0, k, rgba.data(), w, h, w * 4);
+    nsvgDeleteRasterizer(rast);
+    nsvgDelete(svg);
+  } else {
+    int n = 0;
+    unsigned char* px = stbi_load_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &n, 4);
+    if (!px) return im;
+    rgba.assign(px, px + (size_t)w * h * 4);
+    stbi_image_free(px);
+  }
+  SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
+  if (!tex) return im;
+  SDL_UpdateTexture(tex, nullptr, rgba.data(), w * 4);
+  SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+  SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+  im.tex = tex;
+  im.w = w;
+  im.h = h;
+  return im;
+}
+
 class Painter {
  public:
   SDL_Renderer* ren = nullptr;
@@ -460,6 +705,8 @@ class Painter {
   void clearTextCache() {
     for (auto& kv : textCache) SDL_DestroyTexture(kv.second.tex);
     textCache.clear();
+    for (auto& kv : emojiCache) if (kv.second) SDL_DestroyTexture(kv.second);
+    emojiCache.clear();
   }
 
   ~Painter() { clearTextCache(); }
@@ -467,9 +714,10 @@ class Painter {
  private:
   struct Tex {
     SDL_Texture* tex;
-    int w, h;
+    int w, h, ascent;
   };
   std::unordered_map<std::string, Tex> textCache;
+  std::unordered_map<int, SDL_Texture*> emojiCache;
   std::vector<SDL_Rect> clips;
   int viewW = 0, viewH = 0;
 
@@ -588,21 +836,103 @@ class Painter {
     SDL_RenderCopyF(ren, im.tex, &src, &dst);
   }
 
-  Tex* runTexture(const std::string& runText, bool emoji, Face face, int px) {
-    std::string key = (emoji ? std::string("E|") : std::to_string(face) + "|" + std::to_string(px) + "|") + runText;
+  // A run rasterised at `px` device pixels: white, with the glyphs in the
+  // alpha, so one texture serves every colour through the colour mod.
+  Tex* runTexture(const Fonts::Run& run, double px) {
+    std::string key = std::to_string((uintptr_t)run.font) + "|" + std::to_string(px) + "|";
+    for (uint32_t cp : run.cps) key += std::to_string(cp) + ",";
     auto it = textCache.find(key);
     if (it != textCache.end()) return &it->second;
-    TTF_Font* f = emoji ? fonts->emoji() : fonts->font(face, px);
-    if (!f) return nullptr;
-    SDL_Surface* surf = emoji ? TTF_RenderUTF8_Blended(f, runText.c_str(), SDL_Color{255, 255, 255, 255})
-                              : TTF_RenderUTF8_Blended(f, runText.c_str(), SDL_Color{255, 255, 255, 255});
-    if (!surf) return nullptr;
-    SDL_Texture* tex = SDL_CreateTextureFromSurface(ren, surf);
-    Tex t{tex, surf->w, surf->h};
-    SDL_FreeSurface(surf);
+    const stbtt_fontinfo* info = &run.font->info;
+    float sc = run.font->scale(px);
+    int ascentPx = (int)std::ceil(run.font->ascent * sc);
+    int h = (int)std::ceil((run.font->ascent - run.font->descent) * sc) + 2;
+    int w = (int)std::ceil(Fonts::runWidth(run, px)) + 4;
+    if (w <= 0 || h <= 0 || w > 16384) return nullptr;
+    std::vector<unsigned char> alpha((size_t)w * h, 0);
+    std::vector<unsigned char> glyph;
+    double x = 1.0;
+    for (size_t k = 0; k < run.cps.size(); k++) {
+      int g = stbtt_FindGlyphIndex(info, (int)run.cps[k]);
+      int adv = 0, lsb = 0;
+      stbtt_GetGlyphHMetrics(info, g, &adv, &lsb);
+      float shift = (float)(x - std::floor(x));
+      int x0, y0, x1, y1;
+      stbtt_GetGlyphBitmapBoxSubpixel(info, g, sc, sc, shift, 0, &x0, &y0, &x1, &y1);
+      int gw = x1 - x0, gh = y1 - y0;
+      if (gw > 0 && gh > 0) {
+        glyph.assign((size_t)gw * gh, 0);
+        stbtt_MakeGlyphBitmapSubpixel(info, glyph.data(), gw, gh, gw, sc, sc, shift, 0, g);
+        int ox = (int)std::floor(x) + x0, oy = ascentPx + y0;
+        for (int yy = 0; yy < gh; yy++) {
+          int ty = oy + yy;
+          if (ty < 0 || ty >= h) continue;
+          for (int xx = 0; xx < gw; xx++) {
+            int tx = ox + xx;
+            if (tx < 0 || tx >= w) continue;
+            unsigned char v = glyph[(size_t)yy * gw + xx];
+            unsigned char& d = alpha[(size_t)ty * w + tx];
+            if (v > d) d = v;
+          }
+        }
+      }
+      x += adv * sc;
+      if (k + 1 < run.cps.size()) x += stbtt_GetGlyphKernAdvance(info, g, stbtt_FindGlyphIndex(info, (int)run.cps[k + 1])) * sc;
+    }
+    SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h);
     if (!tex) return nullptr;
+    std::vector<Uint32> px32((size_t)w * h);
+    for (size_t k = 0; k < px32.size(); k++) px32[k] = ((Uint32)alpha[k] << 24) | 0x00FFFFFFu;
+    SDL_UpdateTexture(tex, nullptr, px32.data(), w * 4);
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-    return &(textCache[key] = t);
+    return &(textCache[key] = Tex{tex, w, h, ascentPx});
+  }
+
+  // Colour emoji: each glyph's PNG, decoded once, drawn as wide as its
+  // advance and sitting on the baseline the way the text around it does.
+  double emojiRun(const Fonts::Run& run, double x, double baseline, double size, Uint8 alpha) {
+    const stbtt_fontinfo* info = &run.font->info;
+    float sc = run.font->scale(size);
+    for (uint32_t cp : run.cps) {
+      int g = stbtt_FindGlyphIndex(info, (int)cp);
+      int adv = 0, lsb = 0;
+      stbtt_GetGlyphHMetrics(info, g, &adv, &lsb);
+      double w = adv * sc;
+      SDL_Texture* tex = emojiTexture(g);
+      if (tex) {
+        int tw = 0, th = 0;
+        SDL_QueryTexture(tex, nullptr, nullptr, &tw, &th);
+        double h = tw > 0 ? w * th / tw : w;
+        SDL_FRect dst{(float)(x * s), (float)((baseline + size * 0.12 - h) * s), (float)(w * s), (float)(h * s)};
+        SDL_SetTextureAlphaMod(tex, alpha);
+        SDL_RenderCopyF(ren, tex, nullptr, &dst);
+      }
+      x += w;
+    }
+    return x;
+  }
+
+  SDL_Texture* emojiTexture(int glyph) {
+    auto it = emojiCache.find(glyph);
+    if (it != emojiCache.end()) return it->second;
+    SDL_Texture* tex = nullptr;
+    const unsigned char* png = nullptr;
+    size_t len = 0;
+    if (fonts->emoji.png(glyph, png, len)) {
+      int w = 0, h = 0, n = 0;
+      unsigned char* px = stbi_load_from_memory(png, (int)len, &w, &h, &n, 4);
+      if (px) {
+        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
+        if (tex) {
+          SDL_UpdateTexture(tex, nullptr, px, w * 4);
+          SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+          SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
+        }
+        stbi_image_free(px);
+      }
+    }
+    emojiCache[glyph] = tex;
+    return tex;
   }
 
   void text(const EVGDrawCmd& c) {
@@ -610,38 +940,25 @@ class Painter {
     bool bold = c.fontWeight == "bold" || c.fontWeight == "700" || c.fontWeight == "800" || c.fontWeight == "900";
     Face face = Fonts::faceFor(c.fontFamily, bold);
     double size = c.fontSize;
-    int px = (int)std::lround(size * s);
-    TTF_Font* layoutFont = fonts->font(face, (int)std::lround(size));
-    TTF_Font* drawFont = fonts->font(face, px);
-    if (!layoutFont || !drawFont) return;
     // the baseline the layout gave the line: half the leading above the face
     double asc = fonts->metric(1, "", c.fontFamily, size, bold);
     double desc = fonts->metric(2, "", c.fontFamily, size, bold);
     double baseline = c.y + (c.h > 0 ? (c.h - (asc + desc)) / 2.0 : 0.0) + asc;
     double x = c.x;
     SDL_Color col = color(c.r, c.g, c.b, c.a);
-    for (auto& run : fonts->runs(c.text, drawFont)) {
-      Tex* t = runTexture(run.text, run.emoji, face, px);
-      if (run.emoji) {
-        double k = fonts->emojiScale(size);
-        double w = t ? t->w * k : size;
-        if (t) {
-          double h = t->h * k;
-          SDL_FRect dst{(float)(x * s), (float)((baseline - h * 0.8) * s), (float)(w * s), (float)(h * s)};
-          SDL_SetTextureColorMod(t->tex, 255, 255, 255);
-          SDL_SetTextureAlphaMod(t->tex, col.a);
-          SDL_RenderCopyF(ren, t->tex, nullptr, &dst);
-        }
-        x += w;
+    for (auto& run : fonts->runs(c.text, face)) {
+      if (fonts->isEmoji(run.font)) {
+        x = emojiRun(run, x, baseline, size, col.a);
         continue;
       }
-      if (!t) continue;
-      double top = baseline - TTF_FontAscent(drawFont) / s;
-      SDL_FRect dst{(float)(x * s), (float)(top * s), (float)t->w, (float)t->h};
-      SDL_SetTextureColorMod(t->tex, col.r, col.g, col.b);
-      SDL_SetTextureAlphaMod(t->tex, col.a);
-      SDL_RenderCopyF(ren, t->tex, nullptr, &dst);
-      x += t->w / s;
+      Tex* t = runTexture(run, size * s);
+      if (t) {
+        SDL_FRect dst{(float)(std::floor(x * s) - 1.0), (float)(std::round(baseline * s) - t->ascent), (float)t->w, (float)t->h};
+        SDL_SetTextureColorMod(t->tex, col.r, col.g, col.b);
+        SDL_SetTextureAlphaMod(t->tex, col.a);
+        SDL_RenderCopyF(ren, t->tex, nullptr, &dst);
+      }
+      x += Fonts::runWidth(run, size);
     }
   }
 
@@ -744,11 +1061,6 @@ static int run(int argc, char** argv) {
     std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
     return 1;
   }
-  if (TTF_Init() != 0) {
-    std::fprintf(stderr, "TTF_Init: %s\n", TTF_GetError());
-    return 1;
-  }
-  IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG | IMG_INIT_WEBP);
   curl_global_init(CURL_GLOBAL_DEFAULT);
 
   Fonts fonts;
@@ -790,7 +1102,6 @@ static int run(int argc, char** argv) {
   int winW = 0, winH = 0;
   double scale = 1.0;
   measureWindow(winW, winH, scale);
-  fonts.dpi = scale;
 
   std::unordered_map<std::string, Image> images;
   Painter painter;
@@ -803,6 +1114,8 @@ static int run(int argc, char** argv) {
   std::shared_ptr<BrowserApp> app = host->browser;
   // the sample pages that ship with the web demo, where Pages publishes them
   app->setSamplesBase(opt.samples);
+  // page scripts need the realm process, which this host does not start yet
+  app->setScriptsEnabled(false);
   if (!opt.allow.empty()) app->setAllowedSites(app->allowedSitesText() + "," + opt.allow);
   host->startAt(winW, winH, false, opt.url);
 
@@ -845,16 +1158,7 @@ static int run(int argc, char** argv) {
       any = true;
       if (r.kind == "image") {
         Image im;
-        if (r.status >= 200 && r.status < 300 && !r.body.empty()) {
-          SDL_RWops* rw = SDL_RWFromConstMem(r.body.data(), (int)r.body.size());
-          SDL_Surface* surf = rw ? IMG_Load_RW(rw, 1) : nullptr;
-          if (surf) {
-            im.tex = SDL_CreateTextureFromSurface(ren, surf);
-            im.w = surf->w;
-            im.h = surf->h;
-            SDL_FreeSurface(surf);
-          }
-        }
+        if (r.status >= 200 && r.status < 300 && !r.body.empty()) im = decodeImage(ren, r.body);
         images[r.url] = im;
         if (im.tex) app->imageLoaded(r.url, im.w, im.h); else app->imageFailed(r.url);
         continue;
@@ -891,8 +1195,7 @@ static int run(int argc, char** argv) {
           if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
             measureWindow(winW, winH, scale);
             painter.s = scale;
-            fonts.dpi = scale;
-            painter.clearTextCache();
+                      painter.clearTextCache();
             host->resize(winW, winH);
           }
           dirty = true;
@@ -1025,10 +1328,9 @@ static int run(int argc, char** argv) {
         int ow = 0, oh = 0;
         SDL_GetRendererOutputSize(ren, &ow, &oh);
         painter.paint(dl, ow, oh);
-        SDL_Surface* shot = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
-        SDL_RenderReadPixels(ren, nullptr, SDL_PIXELFORMAT_ARGB8888, shot->pixels, shot->pitch);
-        int ok = IMG_SavePNG(shot, opt.screenshot.c_str());
-        SDL_FreeSurface(shot);
+        std::vector<unsigned char> rgba((size_t)ow * oh * 4);
+        SDL_RenderReadPixels(ren, nullptr, SDL_PIXELFORMAT_RGBA32, rgba.data(), ow * 4);
+        int ok = stbi_write_png(opt.screenshot.c_str(), ow, oh, 4, rgba.data(), ow * 4) ? 0 : 1;
         std::printf("%s %s (%dx%d) url=%s title=%s\n", ok == 0 ? "wrote" : "FAILED to write", opt.screenshot.c_str(), ow, oh,
                     app->currentUrl().c_str(), app->pageTitle().c_str());
         quit = true;
@@ -1039,15 +1341,12 @@ static int run(int argc, char** argv) {
   std::fflush(stdout);
   for (auto& kv : images) if (kv.second.tex) SDL_DestroyTexture(kv.second.tex);
   painter.clearTextCache();
-  fonts.closeAll();
   SDL_FreeCursor(arrow);
   SDL_FreeCursor(hand);
   SDL_FreeCursor(ibeam);
   SDL_DestroyRenderer(ren);
   SDL_DestroyWindow(win);
   curl_global_cleanup();
-  IMG_Quit();
-  TTF_Quit();
   SDL_Quit();
   return 0;
 }
