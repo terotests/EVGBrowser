@@ -21,25 +21,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: EVGBrowser
-      # The compiler and the EVG engine: ranger.json points at ../Ranger/lib/evg
-      - uses: actions/checkout@v4
-        with:
-          repository: terotests/Ranger
-          path: Ranger
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # the Ranger compiler (npm) and the Ranger packages in ranger.lock
+      - run: npm ci
       - name: Headless checks (JavaScript)
-        working-directory: EVGBrowser
         run: node tools/check.mjs
       - name: Headless checks (C++)
-        working-directory: EVGBrowser
         run: node tools/check.mjs --cpp
       - name: Build the page
-        working-directory: EVGBrowser
-        run: node web/build.mjs --out ../site
+        run: node web/build.mjs --out site
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

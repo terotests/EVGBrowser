@@ -18,11 +18,16 @@ HTML ──► HtmlParser ──► CssCascade ──► HtmlToEvg ──► EVG
 
 ## Running it
 
-It needs a Ranger checkout next to this repository (`../Ranger`), or `RANGER_DIR`
-pointing at one, and Node 20+. The desktop build needs a recent Ranger (master
-of late September 2026 or later); older compilers write C++ that does not build.
+It needs Node 20+ and nothing next to this repository. `npm install` brings
+the Ranger compiler (the npm package `ranger-compiler`) and fetches the Ranger
+packages the source uses — `evg`, `image`, `zip`, `componentengine`,
+`ts_parser`, `core` — from the Ranger repository at the revision pinned in
+`ranger.json` / `ranger.lock` into `vendor/ranger/` (`rgrc install -vendor`).
+`RANGER_DIR=/path/to/Ranger` uses that checkout's compiler instead, for
+trying a compiler change.
 
 ```sh
+npm install            # once, and after ranger.json changes
 npm run check          # headless checks, compiled to JavaScript
 npm run check:cpp      # the same checks compiled to C++ (g++ or clang++)
 npm run sdl            # the desktop browser, see below
@@ -183,9 +188,6 @@ browser                                   realm (Worker / child process)
 | `web/realm-worker.js` | the Worker; `evg_realm.js` is loaded only when a page has scripts |
 | `native/sdl/evg_browser_sdl.cpp` | `RealmProcess`: `evg-browser --realm` over pipes, killed on timeout |
 
-The realm's C++ build needs Ranger's master from 28 September 2026 or later
-(terotests/Ranger#1082, two ComponentEngine lines the C++ writer could not
-compile).
 
 ## I/O is the host's job
 

@@ -2,3 +2,4 @@ build/
 web/dist/
 node_modules/
 .stage/
+vendor/

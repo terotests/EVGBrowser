@@ -8,15 +8,13 @@
 //   node tools/check.mjs --cpp    the same checks through C++ (g++ or clang++),
 //                                 which is the target the SDL host builds on
 //
-// The Ranger checkout is RANGER_DIR, else ../Ranger beside this repository.
+// The compiler and the Ranger packages come from npm install (tools/ranger.mjs).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { ROOT, RGRC, requireToolchain } from "./ranger.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const RANGER = path.resolve(process.env.RANGER_DIR || path.join(ROOT, "..", "Ranger"));
-const RGRC = path.join(RANGER, "dist", "rgrc.js");
+requireToolchain();
 const cpp = process.argv.includes("--cpp");
 
 function compile(args) {

@@ -11,6 +11,11 @@
     "build": "node web/build.mjs",
     "serve": "node web/build.mjs && node tools/serve.mjs",
     "sdl": "native/sdl/build.sh",
-    "sdl:run": "native/sdl/build.sh && build/evg-browser"
+    "sdl:run": "native/sdl/build.sh && build/evg-browser",
+    "postinstall": "rgrc install -vendor",
+    "deps": "rgrc install -vendor"
+  },
+  "devDependencies": {
+    "ranger-compiler": "4.0.0"
   }
 }

@@ -13,28 +13,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: EVGBrowser
-      - uses: actions/checkout@v4
-        with:
-          repository: terotests/Ranger
-          path: Ranger
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # the Ranger compiler (npm) and the Ranger packages in ranger.lock
+      - run: npm ci
       - name: Libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsdl2-dev libcurl4-openssl-dev \
             fonts-dejavu-core fonts-noto-color-emoji xvfb
       - name: Headless checks (C++)
-        working-directory: EVGBrowser
         run: node tools/check.mjs --cpp
       - name: Build
-        working-directory: EVGBrowser
         run: native/sdl/build.sh
       - name: Render
-        working-directory: EVGBrowser
         run: |
           mkdir -p shots
           xvfb-run -a build/evg-browser about:home --screenshot shots/home.png
@@ -43,5 +36,5 @@ jobs:
         with:
           name: evg-browser-linux
           path: |
-            EVGBrowser/build/evg-browser
-            EVGBrowser/shots/
+            build/evg-browser
+            shots/

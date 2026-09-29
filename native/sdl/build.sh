@@ -5,21 +5,18 @@
 #   build/evg-browser [url]
 #   build/evg-browser about:demo --screenshot out.png     # render once, headless
 #
-# Needs: a C++17 compiler, SDL2 and libcurl, and the Ranger checkout in
-# ../Ranger or RANGER_DIR. Fonts, images and PNG writing are compiled in.
+# Needs: a C++17 compiler, SDL2 and libcurl, and `npm install` run once (the
+# Ranger compiler and packages). Fonts, images and PNG writing are compiled in.
 #   Debian/Ubuntu: sudo apt-get install libsdl2-dev libcurl4-openssl-dev fonts-dejavu-core
 #   macOS:         brew install sdl2            (libcurl comes with macOS)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RANGER="${RANGER_DIR:-$ROOT/../Ranger}"
 OUT="$ROOT/build"
 OPT="${OPT:--O2}"
 
-if [[ ! -f "$RANGER/dist/rgrc.js" ]]; then
-  echo "error: Ranger compiler not found at $RANGER/dist/rgrc.js (set RANGER_DIR)" >&2
-  exit 1
-fi
+# the compiler and the Ranger packages (npm install); exits with advice if missing
+RGRC="$(cd "$ROOT" && node tools/ranger.mjs rgrc)"
 # SDL2 is the one library to install; libcurl comes with macOS and every
 # Linux distribution. Everything else is compiled in (third_party/).
 if command -v sdl2-config >/dev/null 2>&1; then
@@ -41,19 +38,10 @@ else
 fi
 CXX="${CXX:-$(command -v clang++ || command -v g++)}"
 
-# The script realm's C++ build needs ComponentEngine as of Ranger PR #1082
-# (master from 28 September 2026 on).
-ENGINE="$RANGER/gallery/game_engine/v2/interp/migrate/src/ComponentEngine.rgr"
-if grep -q "if ((false == hasBase) && leftNode.left) {" "$ENGINE" 2>/dev/null; then
-  echo "error: this Ranger checkout is too old for the desktop build; update it:" >&2
-  echo "  git -C \"$RANGER\" checkout master && git -C \"$RANGER\" pull" >&2
-  exit 1
-fi
-
 mkdir -p "$OUT/cpp"
 echo "==> 1/2 Ranger -> C++"
 cd "$ROOT"
-LOG="$(node --stack-size=8000 "$RANGER/dist/rgrc.js" -l=cpp native/sdl/SdlEntry.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
+LOG="$(node --stack-size=8000 "$RGRC" -l=cpp native/sdl/SdlEntry.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
 if grep -q "FAIL" <<<"$LOG"; then
   echo "$LOG" >&2
   exit 1
@@ -64,7 +52,7 @@ echo "==> 2/2 C++ -> build/evg-browser ($CXX $OPT)"
 if ! "$CXX" -std=c++17 $OPT -w -I"$OUT/cpp" native/sdl/evg_browser_sdl.cpp \
   $SDL_FLAGS $CURL_FLAGS -pthread -o "$OUT/evg-browser"; then
   echo "error: the C++ build failed. If the errors are in the generated file (build/cpp/evg_browser.cpp)," >&2
-  echo "       update Ranger: older compilers emit C++ that does not build (git -C \"$RANGER\" pull)." >&2
+  echo "       run npm install to update the Ranger compiler and packages." >&2
   exit 1
 fi
 echo "built $OUT/evg-browser"

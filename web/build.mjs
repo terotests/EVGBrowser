@@ -14,26 +14,22 @@
  *                    included; loaded into a Web Worker only when a page has
  *                    scripts, so a page without any never downloads it
  *
- * The Ranger checkout is RANGER_DIR, else ../Ranger next to this repository.
+ * The compiler and the Ranger packages come from npm install (tools/ranger.mjs).
  */
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ROOT, RGRC, rangerPackage, requireToolchain } from "../tools/ranger.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(HERE, "..");
-const RANGER = path.resolve(process.env.RANGER_DIR || path.join(ROOT, "..", "Ranger"));
 const argv = process.argv.slice(2);
 const outFlag = argv.indexOf("--out");
 const OUT = outFlag >= 0 ? path.resolve(argv[outFlag + 1]) : path.join(HERE, "dist");
 const STAGE = path.join(ROOT, "build", "web-stage");
 const withRealm = !argv.includes("--no-realm");
 
-if (!fs.existsSync(path.join(RANGER, "dist", "rgrc.js"))) {
-  console.error(`Ranger compiler not found at ${RANGER}/dist/rgrc.js — set RANGER_DIR or clone Ranger next to this repository.`);
-  process.exit(1);
-}
+requireToolchain();
 
 fs.mkdirSync(STAGE, { recursive: true });
 fs.mkdirSync(OUT, { recursive: true });
@@ -45,7 +41,7 @@ function bundle(entry, outName, globalName, exportsJs, probe) {
   try {
     log = execFileSync(
       process.execPath,
-      ["--stack-size=8000", path.join(RANGER, "dist", "rgrc.js"), "-es6", entry, `-d=${path.relative(ROOT, STAGE)}`, `-o=${outName}`, "-nodecli"],
+      ["--stack-size=8000", RGRC, "-es6", entry, `-d=${path.relative(ROOT, STAGE)}`, `-o=${outName}`, "-nodecli"],
       { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 }
     );
   } catch (e) {
@@ -77,8 +73,8 @@ if (withRealm) {
 for (const f of ["index.html", "main.js", "fetchers.js", "style.css", "realm-worker.js"]) {
   fs.copyFileSync(path.join(HERE, f), path.join(OUT, f));
 }
-fs.copyFileSync(path.join(RANGER, "lib/evg/html/evg-html.js"), path.join(OUT, "evg-html.js"));
-fs.copyFileSync(path.join(RANGER, "lib/evg/gl/evg-measure.js"), path.join(OUT, "evg-measure.js"));
+fs.copyFileSync(path.join(rangerPackage("evg"), "html/evg-html.js"), path.join(OUT, "evg-html.js"));
+fs.copyFileSync(path.join(rangerPackage("evg"), "gl/evg-measure.js"), path.join(OUT, "evg-measure.js"));
 fs.cpSync(path.join(HERE, "samples"), path.join(OUT, "samples"), { recursive: true });
 fs.writeFileSync(path.join(OUT, ".nojekyll"), "");
 console.log(`Wrote ${path.relative(process.cwd(), OUT) || "."} (${sizes.map((n) => (n / 1024).toFixed(0) + " KB").join(" + ")})`);

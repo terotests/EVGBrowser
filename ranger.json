@@ -5,10 +5,19 @@
   "license": "AGPL-3.0-or-later",
   "dependencies": {
     "evg": {
-      "path": "../Ranger/lib/evg"
+      "git": "https://github.com/terotests/Ranger",
+      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
+      "subdir": "lib/evg"
     },
     "image": {
-      "path": "../Ranger/lib/image"
+      "git": "https://github.com/terotests/Ranger",
+      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
+      "subdir": "lib/image"
+    },
+    "componentengine": {
+      "git": "https://github.com/terotests/Ranger",
+      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
+      "subdir": "gallery/game_engine/v2/interp/migrate"
     }
   }
 }

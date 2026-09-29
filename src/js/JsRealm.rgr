@@ -20,8 +20,8 @@
 ; stopped by its host, and the page stays as the server sent it.
 ; ==============================================================================
 
-Import "../../../Ranger/gallery/game_engine/v2/interp/migrate/src/ComponentEngine.rgr"
-Import "../../../Ranger/gallery/game_engine/v2/interp/migrate/src/EvHandle.rgr"
+Import "pkg:componentengine/src/ComponentEngine.rgr"
+Import "pkg:componentengine/src/EvHandle.rgr"
 Import "../HtmlParser.rgr"
 Import "../DomTree.rgr"
 Import "../CssParser.rgr"
