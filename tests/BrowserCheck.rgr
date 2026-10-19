@@ -141,6 +141,45 @@ class BrowserCheck {
         this.check("icon-only button hidden" ((null? (this.findText(r4 "Lähetä"))) && (!null? (this.findText(r4 "Hae")))))
     }
 
+    ; Warp, the design system tori.fi and finn.no are built on: minified
+    ; utility classes, rem against a 10px root, web components.
+    fn warpChecks:void () {
+        this.check("@media without a space" ((this.colorOf("<style>p{color:red}@media(min-width:768px){p{color:blue}}</style><p>x</p>" 900.0)) == "blue"))
+        this.check("escaped class name" ((this.colorOf("<style>.md\\:k{color:green}</style><p class='md:k'>x</p>" 900.0)) == "green"))
+        this.check("escaped quote in a selector" ((this.colorOf("<style>.q\\\"x\\\"{color:red} p{color:blue}</style><p>x</p>" 900.0)) == "blue"))
+        def p1:HNode (this.styledP("<style>html{font-size:62.5%} p{margin-left:1.6rem}</style><p>x</p>" 900.0))
+        this.check("rem against the root" ((HtmlToEvg.prop(p1.style "margin-left" "")) == "16px"))
+        def p2:HNode (this.styledP("<style>p{position:absolute;inset:0 4px}</style><p>x</p>" 900.0))
+        this.check("inset shorthand" (((HtmlToEvg.prop(p2.style "top" "")) == "0") && ((HtmlToEvg.prop(p2.style "left" "")) == "4px")))
+        def r1:EVGElement (this.laidOut("<style>.g{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.s{grid-column:span 2/span 2}</style><div class=g><div>vasen</div><div class=s>oikea</div><div>alla</div></div>"))
+        this.check("col-span-2" (((this.yOf(r1 "alla")) > (this.yOf(r1 "vasen"))) && ((this.yOf(r1 "oikea")) == (this.yOf(r1 "vasen")))))
+        def r2:EVGElement (this.laidOut("<div style='position:relative'><a href='#x' style='position:absolute;top:0;left:0;opacity:0'>hyppy</a><p>teksti</p></div>"))
+        this.check("transparent layer hidden" ((null? (this.findText(r2 "hyppy"))) && (!null? (this.findText(r2 "teksti")))))
+        def pg (new BrPage())
+        pg.load((BrUrl.parse("https://www.tori.fi/s?q=a")) "<form><w-textfield name=q value=luistimet placeholder=Hae></w-textfield></form>" (new SafetyPolicy()))
+        pg.restyle(900.0 700.0)
+        pg.render(900.0 700.0 (new SafetyPolicy()))
+        def named:string ""
+        for pg.converter.fields f:BrField i {
+            if (f.kind == "text") {
+                named = (f.name + "=" + f.value)
+            }
+        }
+        this.check("w-textfield is a text field" (named == "q=luistimet"))
+        def fp (new BrPage())
+        def pol (new SafetyPolicy())
+        fp.load((BrUrl.parse("https://example.com/")) "<div style='width:300px'><div style='position:relative;aspect-ratio:3/4'><div style='position:absolute;inset:0;background:#ccc'><img style='position:absolute;inset:0;width:100%;height:100%' src='https://example.com/a.jpg'></div></div><p>alla</p></div>" pol)
+        fp.restyle(800.0 600.0)
+        def root:EVGElement (fp.render(800.0 600.0 pol))
+        def lay (new EVGLayout())
+        lay.setPageSize(800.0 600.0)
+        lay.layout(root)
+        fp.converter.settleFluidImages()
+        root.resetLayoutState()
+        lay.layout(root)
+        this.check("aspect-ratio frame" (((this.yOf(root "alla")) > 400.0) && ((this.yOf(root "alla")) < 440.0)))
+    }
+
     fn formCheck:void () {
         def app (new BrowserApp())
         app.setPageSize(900.0 700.0)
@@ -228,6 +267,7 @@ class BrowserCheck {
         this.cascadeChecks()
         this.formCheck()
         this.layoutChecks()
+        this.warpChecks()
         print ("passed " + (to_string passes) + ", failed " + (to_string fails))
     }
 }

@@ -194,6 +194,23 @@ class HtmlToEvg {
             el.setAttribute("cursor" "pointer")
         }
         this.noteAnchor(node el)
+        ; `aspect-ratio: 3/4` on a box whose picture is laid over it: the box
+        ; takes its height from its width once a layout has said what that is
+        def ratio:double (HtmlToEvg.aspectRatio((HtmlToEvg.prop(st "aspect-ratio" ""))))
+        def padB:string (trim (HtmlToEvg.prop(st "padding-bottom" "")))
+        if ((ratio <= 0.0) && ((endsWith padB "%") && ((HtmlToEvg.prop(st "position" "static")) == "relative"))) {
+            ; the older way to the same: `padding-bottom: 133%` (a share of
+            ; the width) around children laid over it
+            def pct:double (CssParser.num(padB))
+            if (pct > 0.0) {
+                ratio = (100.0 / pct)
+                el.setAttribute("padding-bottom" "0px")
+            }
+        }
+        if ((ratio > 0.0) && ((HtmlToEvg.prop(st "height" "auto")) == "auto")) {
+            push fluidImages el
+            push fluidAspect ratio
+        }
         def isForm:boolean false
         if (node.tag == "form") {
             isForm = true
@@ -290,6 +307,8 @@ class HtmlToEvg {
             if (this.positionedIn(c node.style)) {
                 if ((this.decorativeOverlay(c)) == false) {
                     push absKids (this.absoluteBox(c (this.linkFor(c linkId)) node.style))
+                } {
+                    HtmlToEvg.takeLink(el (this.coverLink(c el.id)))
                 }
                 continue
             }
@@ -341,8 +360,23 @@ class HtmlToEvg {
     ; divider, a gradient) or one that takes no clicks: decoration, which
     ; would only cover what is under it here.
     fn decorativeOverlay:boolean (c:HNode) {
+        ; a picture laid over a box of a set shape (a product photo in an
+        ; `aspect-ratio` frame) is the content, not decoration, even when it
+        ; lets the clicks through to a link under it
+        if (c.tag == "img") {
+            return false
+        }
+        def pics:[HNode]
+        c.findAll("img" pics)
+        if ((array_length pics) > 0) {
+            return false
+        }
         if ((HtmlToEvg.prop(c.style "pointer-events" "")) == "none") {
             return true
+        }
+        ; a caption or a badge laid over a picture says something
+        if ((strlen (trim (this.visibleText(c)))) > 0) {
+            return false
         }
         def hasTop:boolean (this.sideSet(c "top" 0))
         def hasBottom:boolean (this.sideSet(c "bottom" 2))
@@ -351,6 +385,53 @@ class HtmlToEvg {
             return true
         }
         return false
+    }
+
+    ; An empty link stretched over a card (`<a class="absolute inset-0">`)
+    ; is how the whole card is made clickable: the card takes the link. The
+    ; link's id, or "" when the card has one already or this is no such link.
+    fn coverLink:string (c:HNode cardId:string) {
+        if ((c.tag != "a") || ((strlen cardId) > 0)) {
+            return ""
+        }
+        if ((strlen (trim (this.visibleText(c)))) > 0) {
+            return ""
+        }
+        return (this.linkFor(c ""))
+    }
+
+    sfn takeLink:void (el:EVGElement lid:string) {
+        if ((strlen lid) > 0) {
+            el.id = lid
+            el.setAttribute("cursor" "pointer")
+        }
+    }
+
+    ; A box whose shape is set by its width: `aspect-ratio`, or the
+    ; `padding-bottom: 75%` that came before it.
+    sfn isFrame:boolean (st:[string:string]) {
+        if ((HtmlToEvg.aspectRatio((HtmlToEvg.prop(st "aspect-ratio" "")))) > 0.0) {
+            return true
+        }
+        return (endsWith (trim (HtmlToEvg.prop(st "padding-bottom" ""))) "%")
+    }
+
+    ; `inset: 0`: pinned to all four edges of its parent.
+    fn fillsParent:boolean (c:HNode) {
+        def names:[string] ([] _:string ( "top" "right" "bottom" "left" ))
+        for names nm:string i {
+            if ((this.sideSet(c nm i)) == false) {
+                return false
+            }
+            def v:string (trim (HtmlToEvg.prop(c.style nm "")))
+            if ((strlen v) == 0) {
+                v = (itemAt (CssCascade.splitValues((HtmlToEvg.prop(c.style "inset" "0")))) 0)
+            }
+            if ((CssParser.num(v)) != 0.0) {
+                return false
+            }
+        }
+        return true
     }
 
     fn sideSet:boolean (c:HNode side:string idx:int) {
@@ -376,6 +457,13 @@ class HtmlToEvg {
 
     fn absoluteBox:EVGElement (c:HNode lid:string parentStyle:[string:string]) {
         def box:EVGElement (this.boxFor(c lid))
+        if ((HtmlToEvg.isFrame(parentStyle)) && (this.fillsParent(c))) {
+            ; the picture layer of a frame of a set shape: EVG's absolute boxes
+            ; take their content's height, so it fills the frame in the flow
+            box.setAttribute("width" "100%")
+            box.setAttribute("height" "100%")
+            return box
+        }
         box.setAttribute("position" "absolute")
         def em:double (HtmlToEvg.fontPx(c.style))
         def inset:string (trim (HtmlToEvg.prop(c.style "inset" "")))
@@ -657,6 +745,8 @@ class HtmlToEvg {
         if (this.positionedIn(c flow.style)) {
             if ((this.decorativeOverlay(c)) == false) {
                 push flow.abs (this.absoluteBox(c (this.linkFor(c linkId)) flow.style))
+            } {
+                HtmlToEvg.takeLink((unwrap flow.container) (this.coverLink(c flow.container.id)))
             }
             return
         }
@@ -915,6 +1005,12 @@ class HtmlToEvg {
             if ((w >= 0.0) && (w <= 1.0)) {
                 return true
             }
+            ; a transparent layer: a skip link that shows on focus, or a native
+            ; <select> laid invisibly over the page's own sort button
+            def op:string (trim (HtmlToEvg.prop(c.style "opacity" "")))
+            if (((strlen op) > 0) && ((CssParser.num(op)) == 0.0)) {
+                return true
+            }
         }
         def t:string c.tag
         if ((t == "script") || ((t == "style") || ((t == "head") || ((t == "template") || (t == "math"))))) {
@@ -1136,7 +1232,7 @@ class HtmlToEvg {
 
     fn isReplaced:boolean (c:HNode) {
         def t:string c.tag
-        return ((t == "img") || ((t == "svg") || ((t == "input") || ((t == "button") || ((t == "select") || ((t == "textarea") || ((t == "video") || ((t == "audio") || ((t == "iframe") || ((t == "object") || ((t == "embed") || (t == "canvas"))))))))))))
+        return ((t == "img") || ((t == "svg") || ((t == "input") || ((t == "button") || ((t == "select") || ((t == "textarea") || ((t == "video") || ((t == "audio") || ((t == "iframe") || ((t == "object") || ((t == "embed") || ((t == "canvas") || (t == "w-textfield")))))))))))))
     }
 
     fn replaced:EVGElement (c:HNode linkId:string) {
@@ -1144,7 +1240,9 @@ class HtmlToEvg {
         if ((t == "img") || (t == "svg")) {
             return (this.image(c linkId))
         }
-        if ((t == "input") || ((t == "button") || ((t == "select") || (t == "textarea")))) {
+        ; `<w-textfield name="q">`: the Warp design system's text field (tori.fi,
+        ; finn.no), a web component whose <input> a script would draw
+        if ((t == "input") || ((t == "button") || ((t == "select") || ((t == "textarea") || (t == "w-textfield"))))) {
             return (this.control(c))
         }
         return (this.mediaNotice(c))
@@ -1339,15 +1437,23 @@ class HtmlToEvg {
         elementCount = (elementCount + 1)
         def loaded:BrImage (unwrap info)
         im.setAttribute("src" loaded.url)
-        if (pctW && usable) {
-            ; a share of whatever box it lands in; `settleFluidImages` gives
-            ; it its height once a layout has said how wide that is
-            im.setAttribute("width" cssW)
-            im.setAttribute("max-width" "100%")
+        ; laid over a frame of a set shape and filling it (`absolute inset-0
+        ; w-full h-full object-cover`): the frame decides, the picture is cut
+        def fills:boolean (((HtmlToEvg.prop(st "position" "static")) == "absolute") && ((cssW == "100%") && ((trim (HtmlToEvg.prop(st "height" ""))) == "100%")))
+        if fills {
+            im.setAttribute("width" "100%")
+            im.setAttribute("height" "100%")
         } {
-            im.setAttribute("width" ((CssParser.fmt(w)) + "px"))
-            im.setAttribute("height" ((CssParser.fmt(h)) + "px"))
-            im.setAttribute("max-width" "100%")
+            if (pctW && usable) {
+                ; a share of whatever box it lands in; `settleFluidImages` gives
+                ; it its height once a layout has said how wide that is
+                im.setAttribute("width" cssW)
+                im.setAttribute("max-width" "100%")
+            } {
+                im.setAttribute("width" ((CssParser.fmt(w)) + "px"))
+                im.setAttribute("height" ((CssParser.fmt(h)) + "px"))
+                im.setAttribute("max-width" "100%")
+            }
         }
         im.setAttribute("object-fit" "cover")
         def radius:string (HtmlToEvg.prop(st "border-top-left-radius" (HtmlToEvg.prop(st "border-radius" ""))))
@@ -1359,7 +1465,7 @@ class HtmlToEvg {
             im.setAttribute("cursor" "pointer")
         }
         this.applyMargins(im st)
-        if (pctW && usable) {
+        if ((pctW && usable) && (fills == false)) {
             push fluidImages im
             push fluidAspect (natW / natH)
         }
@@ -1500,6 +1606,10 @@ class HtmlToEvg {
                         width = contentWidth
                     }
                     box.setAttribute("width" ((CssParser.fmt(width)) + "px"))
+                    if ((t == "w-textfield") && ((strlen (HtmlToEvg.prop(c.style "width" ""))) == 0)) {
+                        ; it fills its box, as the component's own input does
+                        box.setAttribute("width" "100%")
+                    }
                     f.box = box
                 }
                 box.setAttribute("padding" "6px 10px")
@@ -2014,6 +2124,67 @@ class HtmlToEvg {
             item.setAttribute("flex-basis" "0px")
             item.setAttribute("min-width" "0px")
         }
+        def gc:string (HtmlToEvg.gridLines((HtmlToEvg.prop(st "grid-column" ""))))
+        if ((strlen gc) > 0) {
+            item.setAttribute("grid-column" gc)
+        }
+        def gr:string (HtmlToEvg.gridLines((HtmlToEvg.prop(st "grid-row" ""))))
+        if ((strlen gr) > 0) {
+            item.setAttribute("grid-row" gr)
+        }
+    }
+
+    ; `3/4`, `1.5` or `16 / 9` as width over height; 0 for `auto` or nothing.
+    sfn aspectRatio:double (v:string) {
+        def t:string (trim (to_lowercase v))
+        if (startsWith t "auto") {
+            t = (trim (substring t 4 (strlen t)))
+        }
+        if ((strlen t) == 0) {
+            return 0.0
+        }
+        def parts:[string] (strsplit t "/")
+        def w:double (CssParser.num((itemAt parts 0)))
+        def h:double 1.0
+        if ((array_length parts) > 1) {
+            h = (CssParser.num((itemAt parts 1)))
+        }
+        if ((w <= 0.0) || (h <= 0.0)) {
+            return 0.0
+        }
+        return (w / h)
+    }
+
+    ; `grid-column` in the forms EVG places: `span 2 / span 2` (Tailwind's
+    ; col-span-2) and `span 2 / auto` are `span 2`; line numbers pass as they
+    ; are. Negative lines and names are left to the auto-placement.
+    sfn gridLines:string (v:string) {
+        def t:string (trim (to_lowercase v))
+        if (((strlen t) == 0) || (t == "auto")) {
+            return ""
+        }
+        def sides:[string] (strsplit t "/")
+        def a:string (trim (itemAt sides 0))
+        def b:string "auto"
+        if ((array_length sides) > 1) {
+            b = (trim (itemAt sides 1))
+        }
+        if (startsWith a "span") {
+            if ((startsWith b "span") || (b == "auto")) {
+                return a
+            }
+            return ""
+        }
+        if (((CssParser.num(a)) < 1.0) || ((indexOf b "-") >= 0)) {
+            return ""
+        }
+        if ((b == "auto") || ((CssParser.num(b)) < 1.0)) {
+            if (startsWith b "span") {
+                return (a + " / " + b)
+            }
+            return a
+        }
+        return (a + " / " + b)
     }
 
     fn stretchesItems:boolean (parent:[string:string] item:[string:string]) {
