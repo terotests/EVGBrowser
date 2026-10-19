@@ -151,7 +151,8 @@ class CssParser {
         pos = (pos + 1)
         while (pos < len) {
             def c:int (charAt src pos)
-            if ((c == 123) || ((c == 59) || (CssParser.isSpace(c)))) {
+            ; `@media(min-width:768px)`: minified sheets leave out the space
+            if ((c == 123) || ((c == 59) || ((c == 40) || (CssParser.isSpace(c))))) {
                 break
             }
             pos = (pos + 1)
@@ -240,6 +241,11 @@ class CssParser {
                 ; a stray `}` or garbage: drop what we read
                 return
             }
+            ; `.before\:content-\[\"–\"\]`: an escaped quote opens no string
+            if (c == 92) {
+                pos = (pos + 2)
+                continue
+            }
             if ((c == 34) || (c == 39)) {
                 this.skipString(c)
                 continue
@@ -247,6 +253,7 @@ class CssParser {
             pos = (pos + 1)
         }
         if (pos >= len) {
+            pos = len
             return
         }
         def selText:string (substring src ss pos)
@@ -536,6 +543,11 @@ class CssParser {
             def depth:int 0
             while (i < n) {
                 def d:int (charAt text i)
+                ; `.md\:block`, `.w-\[50\%\]`: an escaped character is part of the name
+                if (d == 92) {
+                    i = (i + 2)
+                    continue
+                }
                 if ((d == 40) || (d == 91)) {
                     depth = (depth + 1)
                 }
@@ -548,6 +560,9 @@ class CssParser {
                     }
                 }
                 i = (i + 1)
+            }
+            if (i > n) {
+                i = n
             }
             def comp:CssCompound (CssParser.parseCompound((substring text start i)))
             if ((array_length lefts) > 0) {
@@ -589,10 +604,17 @@ class CssParser {
                 i = (i + 1)
                 while (i < n) {
                     def d:int (charAt text i)
+                    if (d == 92) {
+                        i = (i + 2)
+                        continue
+                    }
                     if ((d == 46) || ((d == 35) || ((d == 91) || (d == 58)))) {
                         break
                     }
                     i = (i + 1)
+                }
+                if (i > n) {
+                    i = n
                 }
                 def name:string (CssParser.unescapeIdent((substring text s i)))
                 if (c == 46) {
@@ -770,11 +792,11 @@ class CssParser {
         def n:int (strlen s)
         while (i < n) {
             def c:int (charAt s i)
+            if (c == 92) {
+                i = (i + 2)
+                continue
+            }
             if (quote != 0) {
-                if (c == 92) {
-                    i = (i + 2)
-                    continue
-                }
                 if (c == quote) {
                     quote = 0
                 }

@@ -479,6 +479,9 @@ class CssCascade {
                 return
             }
         }
+        if ((indexOf v "rem") >= 0) {
+            v = (CssCascade.remToPx(v rootFontSize))
+        }
         if ((indexOf v "calc(") >= 0) {
             v = (CssCalc.resolveIn(v viewportWidth viewportHeight))
         }
@@ -730,6 +733,32 @@ class CssCascade {
                 if ((indexOf value "none") >= 0) {
                     set st "text-decoration-line" "none"
                 }
+            }
+            return
+        }
+        if (name == "inset") {
+            ; `inset: 0` is the four sides at once, as `margin` is
+            def parts:[string] (CssCascade.splitValues(value))
+            def np:int (array_length parts)
+            if ((np >= 1) && (np <= 4)) {
+                def t:string (itemAt parts 0)
+                def r:string t
+                def b:string t
+                def l:string t
+                if (np >= 2) {
+                    r = (itemAt parts 1)
+                    l = r
+                }
+                if (np >= 3) {
+                    b = (itemAt parts 2)
+                }
+                if (np == 4) {
+                    l = (itemAt parts 3)
+                }
+                set st "top" t
+                set st "right" r
+                set st "bottom" b
+                set st "left" l
             }
             return
         }
@@ -1014,7 +1043,7 @@ class CssCascade {
         if ((startsWith name "min-") || ((startsWith name "max-") || (startsWith name "list-style"))) {
             return true
         }
-        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "grid-template-rows" "grid-template-areas" "word-break" "overflow-wrap" "order" "left" "top" "right" "bottom" "inset" "z-index" "pointer-events" "clear" ))
+        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "grid-template-rows" "grid-template-areas" "grid-column" "grid-row" "aspect-ratio" "word-break" "overflow-wrap" "order" "left" "top" "right" "bottom" "inset" "z-index" "pointer-events" "clear" ))
         for list k:string i {
             if (k == name) {
                 return true
@@ -1036,6 +1065,47 @@ class CssCascade {
             }
         }
         return out
+    }
+
+    ; `1.6rem` as pixels of the root's font size: sites that set
+    ; `html { font-size: 62.5% }` size everything in rem against 10px. The
+    ; root is styled first, so its size is known when its descendants declare.
+    sfn remToPx:string (v:string root:double) {
+        def out:string ""
+        def n:int (strlen v)
+        def i:int 0
+        def last:int 0
+        while (i < n) {
+            def c:int (charAt v i)
+            if ((c == 114) && ((i + 3) <= n)) {
+                if ((substring v i (i + 3)) == "rem") {
+                    def after:int 32
+                    if ((i + 3) < n) {
+                        after = (charAt v (i + 3))
+                    }
+                    ; the number before it
+                    def s:int i
+                    while (s > last) {
+                        def d:int (charAt v (s - 1))
+                        if (((d >= 48) && (d <= 57)) || (d == 46)) {
+                            s = (s - 1)
+                        } {
+                            break
+                        }
+                    }
+                    def letterAfter:boolean (((after >= 97) && (after <= 122)) || ((after >= 65) && (after <= 90)))
+                    if ((s < i) && (letterAfter == false)) {
+                        def num:double (CssParser.num((substring v s i)))
+                        out = (out + (substring v last s) + (CssParser.fmt((num * root))) + "px")
+                        i = (i + 3)
+                        last = i
+                        continue
+                    }
+                }
+            }
+            i = (i + 1)
+        }
+        return (out + (substring v last n))
     }
 
     sfn unitOf:string (v:string) {
