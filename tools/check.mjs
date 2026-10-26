@@ -43,6 +43,11 @@ if (cpp) {
   if (!cxx) { console.error("no C++ compiler found"); process.exit(1); }
   execFileSync(cxx, ["-std=c++17", "-O1", "-w", "build/cpp/browser_check.cpp", "-o", "build/cpp/browser_check"], { cwd: ROOT, stdio: "inherit" });
   run(path.join(ROOT, "build/cpp/browser_check"), []);
+  if (!process.argv.includes("--fast")) {
+    compile(["-l=cpp", "tests/RealmCheck.rgr", "-d=build/cpp", "-o=realm_check.cpp"]);
+    execFileSync(cxx, ["-std=c++17", "-O1", "-w", "build/cpp/realm_check.cpp", "-o", "build/cpp/realm_check"], { cwd: ROOT, stdio: "inherit" });
+    run(path.join(ROOT, "build/cpp/realm_check"), []);
+  }
 } else {
   compile(["-es6", "tests/ParseCheck.rgr", "-d=build", "-o=parse_check.js", "-nodecli"]);
   compile(["-es6", "tests/BrowserCheck.rgr", "-d=build", "-o=browser_check.js", "-nodecli"]);

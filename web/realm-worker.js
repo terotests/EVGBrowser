@@ -2,24 +2,25 @@
 //
 // The script realm in a Web Worker.
 //
-// A page's scripts run here, in Ranger's JavaScript interpreter
-// (ComponentEngine, compiled into evg_realm.js), on a copy of the page. What
-// crosses to the page is text: the job in, the DOM ops out. A worker has no
-// DOM, and the interpreter is given no network, so a script that tries to
-// reach either finds nothing. The page terminates the worker when a job takes
-// too long.
+// A page's scripts run here, in RangerDOM (webapi.js on CEr, compiled into
+// evg_realm.js), on a copy of the page that lives as long as the page is
+// shown. What crosses to the page is text the browser wrote and reads
+// (src/RealmWire.rgr): requests in, answers out. A worker has no DOM, and
+// the realm is given no network, so a script that reaches for either
+// finds nothing; what it asks for goes to the browser as a message. The
+// page terminates the worker when an answer takes too long.
 
 importScripts("./evg_realm.js");
 
+let realm = null;
+
 self.onmessage = (e) => {
-  const job = e.data;
-  const started = Date.now();
+  const m = e.data;
   try {
-    const realm = new self.EvgRealm.JsRealm();
-    for (const s of job.scripts) realm.addScript(s.url, s.text);
-    const ops = realm.run(job.html, job.url, job.width, job.height);
-    self.postMessage({ job: job.job, ok: true, ops, summary: realm.summary() + " ms=" + (Date.now() - started) });
+    if (m.start || !realm) realm = new self.EvgRealm.PageRealm();
+    const answer = realm.handle(m.request);
+    self.postMessage({ job: m.job, ok: true, answer });
   } catch (err) {
-    self.postMessage({ job: job.job, ok: false, error: String((err && err.message) || err) });
+    self.postMessage({ job: m.job, ok: false, error: String((err && err.message) || err) });
   }
 };

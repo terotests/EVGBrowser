@@ -10,9 +10,9 @@
  * Two bundles, both compiled from Ranger with the Ranger compiler:
  *
  *   evg_browser.js   the browser (src/BrowserApp.rgr), EVG included
- *   evg_realm.js     the script realm (src/js/JsRealm.rgr), ComponentEngine
- *                    included; loaded into a Web Worker only when a page has
- *                    scripts, so a page without any never downloads it
+ *   evg_realm.js     the script realm (src/js/PageRealm.rgr), RangerDOM and
+ *                    CEr included; loaded into a Web Worker only when a page
+ *                    has scripts, so a page without any never downloads it
  *
  * The compiler and the Ranger packages come from npm install (tools/ranger.mjs).
  */
@@ -67,7 +67,7 @@ sizes.push(bundle("src/BrowserApp.rgr", "evg_browser.js", "EvgBrowser",
   "{ BrowserHost: BrowserHost, BrowserApp: BrowserApp, EVGHostTextMeasurer: EVGHostTextMeasurer, EVGDefaultMeasurer: EVGDefaultMeasurer }",
   "typeof BrowserHost + '|' + typeof EVGHostTextMeasurer"));
 if (withRealm) {
-  sizes.push(bundle("src/js/JsRealm.rgr", "evg_realm.js", "EvgRealm", "{ JsRealm: JsRealm }", "typeof JsRealm"));
+  sizes.push(bundle("src/js/PageRealm.rgr", "evg_realm.js", "EvgRealm", "{ PageRealm: PageRealm }", "typeof PageRealm"));
 }
 
 for (const f of ["index.html", "main.js", "fetchers.js", "style.css", "realm-worker.js"]) {
