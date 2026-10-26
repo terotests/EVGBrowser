@@ -1,0 +1,78 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; ==============================================================================
+; RealmWire — what goes between the browser and its script realm, as text.
+; ==============================================================================
+;
+; A message is a list of fields, each "<length>\n<text>". The browser writes
+; a request (BrowserApp.realmRequest), the host carries it to the realm (a
+; Worker, a child process) unread, the realm answers (PageRealm.handle) and
+; the host hands the answer back (BrowserApp.realmResult). Both ends are the
+; same build, so a length counts what that target's strings count.
+; ==============================================================================
+
+class RealmWire {
+    def text:string ""
+    def at:int 0
+    def ok:boolean true
+
+    Constructor (t:string) {
+        text = t
+    }
+
+    sfn put:string (out:string v:string) {
+        return (out + (to_string (strlen v)) + "\n" + v)
+    }
+
+    fn more:boolean () {
+        return (ok && (at < (strlen text)))
+    }
+
+    fn next:string () {
+        if ((this.more()) == false) {
+            ok = false
+            return ""
+        }
+        def end:int (at + 24)
+        if (end > (strlen text)) {
+            end = (strlen text)
+        }
+        def head:string (substring text at end)
+        def nl:int (indexOf head "\n")
+        if (nl < 0) {
+            ok = false
+            return ""
+        }
+        def n@(optional):int (str2int (substring head 0 nl))
+        if (null? n) {
+            ok = false
+            return ""
+        }
+        def from:int (at + nl + 1)
+        def to:int (from + (unwrap n))
+        if (to > (strlen text)) {
+            ok = false
+            return ""
+        }
+        at = to
+        return (substring text from to)
+    }
+
+    ; (the field read first: str2int of a call would make the call twice)
+    fn nextInt:int () {
+        def f:string (this.next())
+        def v@(optional):int (str2int f)
+        if (null? v) {
+            return 0
+        }
+        return (unwrap v)
+    }
+
+    fn nextDouble:double () {
+        def f:string (this.next())
+        def v@(optional):double (str2double f)
+        if (null? v) {
+            return 0.0
+        }
+        return (unwrap v)
+    }
+}

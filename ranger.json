@@ -14,10 +14,9 @@
       "rev": "9be90513115efdb044bdce3f3a633fee9c087906",
       "subdir": "image"
     },
-    "componentengine": {
-      "git": "https://github.com/terotests/componentengine.git",
-      "rev": "86715589b3a5d8aae590209fc9f624cc5c4540df",
-      "subdir": "engine"
+    "rangerdom": {
+      "git": "https://github.com/terotests/RangerDOM.git",
+      "rev": "2c6f9e1c9ff8fdb99347ab26b338ea528a16f533"
     }
   }
 }

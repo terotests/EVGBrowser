@@ -37,6 +37,8 @@ Import "SafetyPolicy.rgr"
 class BrLink {
     def id:string ""
     def href:string ""
+    ; the element's id in the page's script realm, "" without one
+    def rd:string ""
 }
 
 class BrImage {
@@ -54,6 +56,8 @@ class BrField {
     def value:string ""
     def placeholder:string ""
     def form:int -1
+    ; the element's id in the page's script realm, "" without one
+    def rd:string ""
     ; the text element that shows the value
     def label:EVGElement (EVGElement.createSpan())
     def box:EVGElement (EVGElement.createDiv())
@@ -102,6 +106,9 @@ class HtmlToEvg {
     def minHeight:double 0.0
     ; scripts ran, so <noscript> is what a browser with scripts does not show
     def hideNoscript:boolean false
+    ; the page is a script realm's snapshot: its elements are click targets
+    ; ("J" + their data-rd)
+    def scriptTargets:boolean false
     def links:[BrLink]
     def linkById:[string:string]
     def images:[string:BrImage]
@@ -191,7 +198,7 @@ class HtmlToEvg {
         this.applyBox(el st)
         if ((strlen linkId) > 0) {
             el.id = linkId
-            el.setAttribute("cursor" "pointer")
+            HtmlToEvg.pointerFor(el linkId)
         }
         this.noteAnchor(node el)
         ; `aspect-ratio: 3/4` on a box whose picture is laid over it: the box
@@ -403,7 +410,7 @@ class HtmlToEvg {
     sfn takeLink:void (el:EVGElement lid:string) {
         if ((strlen lid) > 0) {
             el.id = lid
-            el.setAttribute("cursor" "pointer")
+            HtmlToEvg.pointerFor(el lid)
         }
     }
 
@@ -603,7 +610,7 @@ class HtmlToEvg {
             this.applyBox(wrap c.style)
             if ((strlen lid) > 0) {
                 wrap.id = lid
-                wrap.setAttribute("cursor" "pointer")
+                HtmlToEvg.pointerFor(wrap lid)
             }
             this.fillFlow(wrap c lid "")
             return wrap
@@ -963,7 +970,7 @@ class HtmlToEvg {
         }
         if ((strlen lid) > 0) {
             span.id = lid
-            span.setAttribute("cursor" "pointer")
+            HtmlToEvg.pointerFor(span lid)
         }
         this.noteAnchor(c span)
         return span
@@ -977,13 +984,27 @@ class HtmlToEvg {
                     def lk (new BrLink())
                     lk.id = ("L" + (to_string (array_length links)))
                     lk.href = ((base.resolve(href)).toString())
+                    lk.rd = (c.attr("data-rd"))
                     push links lk
                     set linkById lk.id lk.href
                     return lk.id
                 }
             }
         }
+        ; a page whose scripts run: every element is a target, the
+        ; innermost one under the pointer gets the click (and its handlers,
+        ; or the ones it bubbles to, decide what it does)
+        if (scriptTargets && (c.hasAttr("data-rd"))) {
+            return ("J" + (c.attr("data-rd")))
+        }
         return linkId
+    }
+
+    ; A link's box shows the hand; a script target's does not.
+    sfn pointerFor:void (el:EVGElement lid:string) {
+        if ((startsWith lid "J") == false) {
+            el.setAttribute("cursor" "pointer")
+        }
     }
 
     fn skipped:boolean (c:HNode) {
@@ -1187,7 +1208,7 @@ class HtmlToEvg {
         s.setAttribute("flex-shrink" "0")
         if ((strlen linkId) > 0) {
             s.id = linkId
-            s.setAttribute("cursor" "pointer")
+            HtmlToEvg.pointerFor(s linkId)
         }
         def bg:string (HtmlToEvg.prop(st "background-color" ""))
         if (HtmlToEvg.isPaintableColor(bg)) {
@@ -1462,7 +1483,7 @@ class HtmlToEvg {
         }
         if ((strlen linkId) > 0) {
             im.id = linkId
-            im.setAttribute("cursor" "pointer")
+            HtmlToEvg.pointerFor(im linkId)
         }
         this.applyMargins(im st)
         if ((pctW && usable) && (fills == false)) {
@@ -1524,6 +1545,7 @@ class HtmlToEvg {
         def f (new BrField())
         f.id = ("F" + (to_string (array_length fields)))
         f.kind = kind
+        f.rd = (c.attr("data-rd"))
         f.name = (c.attr("name"))
         f.value = (c.attr("value"))
         f.placeholder = (c.attr("placeholder"))

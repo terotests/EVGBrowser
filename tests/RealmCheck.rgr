@@ -1,13 +1,16 @@
 ; SPDX-License-Identifier: AGPL-3.0-or-later
-; The script realm, driven in-process: a page's scripts edit the realm's copy,
-; the ops are applied to a second copy parsed from the same HTML, and the two
-; must agree.
-Import "../src/js/JsRealm.rgr"
+; The script realm, driven in-process as a host drives it: the browser's
+; requests go to a PageRealm, its answers come back, and the page the
+; browser shows must be what the scripts made of it. React 18 comes from
+; RangerDOM's tests (vendor/ranger/rangerdom/tests/react).
+Import "../src/js/PageRealm.rgr"
 Import "../src/BrowserApp.rgr"
 
 class RealmCheck {
     def fails:int 0
     def passes:int 0
+    def realm:PageRealm (new PageRealm())
+    def realmJob:int -1
 
     fn check:void (name:string ok:boolean) {
         if ok {
@@ -18,22 +21,43 @@ class RealmCheck {
         }
     }
 
-    ; Run `html` in a realm; return the browser's copy after the ops.
-    fn after:HNode (html:string) {
-        def realm (new JsRealm())
-        def ops:string (realm.run(html "https://example.com/a/" 800.0 600.0))
-        def main (new DomTree())
-        def doc:HNode (HtmlParser.parseDocument(html))
-        main.index(doc)
-        main.apply(ops)
-        if ((realm.errorCount()) > 0) {
-            print ("  script errors: " + (realm.errorAt(0)))
+    ; What the host does each frame: requests to the realm, answers back.
+    fn drive:void (app:BrowserApp) {
+        def guard:int 0
+        while ((app.realmJobPending()) && (guard < 20)) {
+            def job:int (app.takeRealmJob())
+            if (app.realmRequestIsStart()) {
+                realm = (new PageRealm())
+            }
+            realmJob = job
+            app.realmResult(job (realm.handle((app.realmRequest()))))
+            guard = (guard + 1)
         }
-        return doc
     }
 
-    fn bodyText:string (doc:HNode) {
-        def b@(optional):HNode (doc.find("body"))
+    ; The first queued request: [id, kind, url].
+    fn nextReq:[string] (app:BrowserApp) {
+        def r:string (app.nextRequest())
+        return (strsplit r "\t")
+    }
+
+    fn reqId:int (r:[string]) {
+        return (unwrap (str2int (itemAt r 0)))
+    }
+
+    ; A browser showing `html` from https://example.com/a/, its scripts run.
+    fn open:BrowserApp (html:string) {
+        def app (new BrowserApp())
+        app.setPageSize(900.0 700.0)
+        app.navigate("https://example.com/a/")
+        def r:[string] (this.nextReq(app))
+        app.deliver((this.reqId(r)) 200 "https://example.com/a/" "text/html" html)
+        this.drive(app)
+        return app
+    }
+
+    fn bodyText:string (app:BrowserApp) {
+        def b@(optional):HNode (app.page.doc.find("body"))
         if (null? b) {
             return ""
         }
@@ -55,12 +79,131 @@ class RealmCheck {
         return out
     }
 
-    fn checkText:void (name:string doc:HNode want:string) {
-        def got:string (this.bodyText(doc))
+    fn checkText:void (name:string app:BrowserApp want:string) {
+        def got:string (this.bodyText(app))
         if (got != want) {
-            print ("  " + name + ": got [" + got + "]")
+            print ("  " + name + ": got [" + got + "] " + (app.realmStatus()))
         }
         this.check(name (got == want))
+    }
+
+    fn file:string (name:string) {
+        def c@(optional):string (read_file "vendor/ranger/rangerdom/tests/react" name)
+        if (null? c) {
+            print ("cannot read " + name)
+            return ""
+        }
+        return (unwrap c)
+    }
+
+    fn fieldFor:string (app:BrowserApp sel:string) {
+        for app.page.converter.fields f:BrField i {
+            if ((strlen f.rd) > 0) {
+                if ((this.realm.realm.eval(("String(document.querySelector(" + (DomRealm.quote(sel)) + ").__id)"))) == f.rd) {
+                    return f.id
+                }
+            }
+        }
+        return ""
+    }
+
+    fn basics:void () {
+        this.checkText("textContent" (this.open("<p id=a>vanha</p><script>document.getElementById('a').textContent = 'uusi';</script>")) "uusi")
+        this.checkText("createElement + appendChild" (this.open("<ul id=l></ul><script>var l = document.getElementById('l'); ['yksi','kaksi'].forEach(function (t) { var li = document.createElement('li'); li.className = 'x'; li.appendChild(document.createTextNode(t)); l.appendChild(li); });</script>")) "yksikaksi")
+        this.checkText("innerHTML" (this.open("<div id=r></div><script>document.querySelector('#r').innerHTML = '<b>lihava</b> ja <i>vino</i>';</script>")) "lihava ja vino")
+        def a4:BrowserApp (this.open("<div class='a b'>x</div><script>var d = document.querySelector('div.a'); d.classList.remove('a'); d.classList.add('c'); d.style.color = 'red';</script>"))
+        def div4@(optional):HNode (a4.page.doc.find("div"))
+        def dv:HNode (unwrap div4)
+        this.check("classList" ((dv.attr("class")) == "b c"))
+        this.check("style" ((indexOf (dv.attr("style")) "red") >= 0))
+        this.checkText("an error ends one script only" (this.open("<p id=x>a</p><script>throw new Error('boom');</script><script>document.getElementById('x').textContent = 'b';</script>")) "b")
+        def a6:BrowserApp (this.open("<p id=x>a</p><script>setTimeout(function () { document.getElementById('x').textContent = 'myöhemmin'; }, 100);</script>"))
+        this.checkText("timer not yet" a6 "a")
+        a6.tick(60.0)
+        this.drive(a6)
+        this.checkText("timer still not" a6 "a")
+        a6.tick(60.0)
+        this.drive(a6)
+        this.checkText("timer after 120 ms" a6 "myöhemmin")
+    }
+
+    ; fetch goes through the browser, under its allowlist
+    fn fetching:void () {
+        def app:BrowserApp (this.open("<p id=x>a</p><script>fetch('/data.json').then(function (r) { return r.json(); }).then(function (j) { document.getElementById('x').textContent = j.v; }); fetch('https://evil.example/').then(function () {}, function () { document.body.setAttribute('data-refused', '1'); });</script>"))
+        def r:[string] (this.nextReq(app))
+        this.check("fetch: requested by the browser" (((itemAt r 1) == "data") && ((itemAt r 2) == "https://example.com/data.json")))
+        app.deliver((this.reqId(r)) 200 "https://example.com/data.json" "application/json" "{\"v\":\"palvelimelta\"}")
+        this.drive(app)
+        this.checkText("fetch: answer reaches the page" app "palvelimelta")
+        def body@(optional):HNode (app.page.doc.find("body"))
+        this.check("fetch: a host off the list is refused" (((unwrap body).attr("data-refused")) == "1"))
+    }
+
+    fn react:void () {
+        def html:string "<html><head><title>React</title><script src=\"react.js\"></script><script src=\"react-dom.js\"></script></head><body><div id=\"root\"><noscript>JavaScript tarvitaan</noscript></div><script src=\"app.js\"></script></body></html>"
+        def app (new BrowserApp())
+        app.setPageSize(900.0 700.0)
+        app.navigate("https://example.com/a/")
+        def r:[string] (this.nextReq(app))
+        app.deliver((this.reqId(r)) 200 "https://example.com/a/" "text/html" html)
+        def code:string ""
+        code = (code + "var h = React.createElement;\n")
+        code = (code + "function App() {\n")
+        code = (code + "  var c = React.useState(0), t = React.useState('');\n")
+        code = (code + "  return h('div', null,\n")
+        code = (code + "    h('h1', null, 'Laskuri'),\n")
+        code = (code + "    h('button', { id: 'inc', onClick: function () { c[1](c[0] + 1); } }, 'Painettu ' + c[0]),\n")
+        code = (code + "    h('div', { id: 'card', onClick: function () { c[1](10); } }, h('span', null, 'Kortti')),\n")
+        code = (code + "    h('input', { id: 'name', value: t[0], onChange: function (ev) { t[1](ev.target.value.toUpperCase()); } }),\n")
+        code = (code + "    h('p', { id: 'out' }, 'Hei ' + t[0]),\n")
+        code = (code + "    h('a', { href: '/toinen' }, 'Toinen sivu'));\n")
+        code = (code + "}\n")
+        code = (code + "ReactDOM.createRoot(document.getElementById('root')).render(h(App));\n")
+        def i:int 0
+        while (i < 3) {
+            def sr:[string] (this.nextReq(app))
+            def u:string (itemAt sr 2)
+            def text:string code
+            if (endsWith u "/react.js") {
+                text = (this.file("react.production.min.js"))
+            }
+            if (endsWith u "/react-dom.js") {
+                text = (this.file("react-dom.production.min.js"))
+            }
+            app.deliver((this.reqId(sr)) 200 u "text/javascript" text)
+            i = (i + 1)
+        }
+        this.drive(app)
+        this.check("react: realm live" ((startsWith (app.realmStatus()) "live scripts=3 failed=0")))
+        if ((startsWith (app.realmStatus()) "live scripts=3 failed=0") == false) {
+            print ("  " + (app.realmStatus()))
+        }
+        this.checkText("react: rendered" app "LaskuriPainettu 0KorttiHei Toinen sivu")
+        ; the button is a field of the browser's; a press goes to the page
+        def inc:string (this.fieldFor(app "#inc"))
+        this.check("react: the button is a target" ((strlen inc) > 0))
+        app.press(inc)
+        this.drive(app)
+        this.checkText("react: a click on the button" app "LaskuriPainettu 1KorttiHei Toinen sivu")
+        ; a plain element's handler: the text inside it is the target
+        def spanRd:string (this.realm.realm.eval("String(document.querySelector('#card span').__id)"))
+        app.press(("J" + spanRd))
+        this.drive(app)
+        this.checkText("react: a click bubbles to a div's onClick" app "LaskuriPainettu 10KorttiHei Toinen sivu")
+        ; typing in a controlled field
+        def nameId:string (this.fieldFor(app "#name"))
+        app.setFocus(nameId)
+        app.setFieldValue(nameId "ada")
+        this.drive(app)
+        this.checkText("react: a controlled field" app "LaskuriPainettu 10KorttiHei ADAToinen sivu")
+        this.check("react: the field shows the page's value" ((app.fieldValue(nameId)) == "ADA"))
+        this.check("react: the field keeps the focus" ((app.focusedField()) == nameId))
+        ; a link: the page lets it through, so the browser goes there
+        def lid:string (app.linkIdFor("https://example.com/toinen"))
+        app.press(lid)
+        this.drive(app)
+        def nav:[string] (this.nextReq(app))
+        this.check("react: a link goes through the page to the browser" (((itemAt nav 1) == "page") && ((itemAt nav 2) == "https://example.com/toinen")))
     }
 
     sfn main:void () {
@@ -68,62 +211,10 @@ class RealmCheck {
         c.run()
     }
 
-    ; The browser and the realm together, as a host drives them.
-    fn pipeline:void () {
-        def app (new BrowserApp())
-        app.setPageSize(900.0 700.0)
-        app.navigate("https://example.com/")
-        def req:string (app.nextRequest())
-        def id:int (unwrap (str2int (itemAt (strsplit req "\t") 0)))
-        app.deliver(id 200 "https://example.com/" "text/html" "<html><head><title>Alku</title><script src='/app.js'></script></head><body><div id=root><noscript>Ota JavaScript käyttöön</noscript></div></body></html>")
-        def sreq:string (app.nextRequest())
-        this.check("script requested" (endsWith sreq "\tscript\thttps://example.com/app.js"))
-        def sid:int (unwrap (str2int (itemAt (strsplit sreq "\t") 0)))
-        this.check("no realm job before the script arrives" ((app.realmJobPending()) == false))
-        def before:string (app.frameJson())
-        this.check("noscript shown before scripts ran" ((indexOf before "JavaScript") >= 0))
-        app.deliver(sid 200 "https://example.com/app.js" "text/javascript" "document.addEventListener('DOMContentLoaded', function () { var h = document.createElement('h1'); h.textContent = 'Skriptin tekemä otsikko'; document.getElementById('root').appendChild(h); document.title = 'Valmis'; });")
-        this.check("realm job pending" (app.realmJobPending()))
-        def job:int (app.takeRealmJob())
-        def realm (new JsRealm())
-        def i:int 0
-        while (i < (app.realmScriptCount())) {
-            realm.addScript((app.realmScriptUrl(i)) (app.realmScriptText(i)))
-            i = (i + 1)
-        }
-        def ops:string (realm.run((app.realmHtml()) (app.realmUrl()) (app.realmWidth()) (app.realmHeight())))
-        app.realmResult(job ops (realm.summary()))
-        def after:string (app.frameJson())
-        this.check("script output rendered" ((indexOf after "otsikko") >= 0))
-        this.check("noscript hidden after scripts ran" ((indexOf after "JavaScript") < 0))
-        this.check("title from script" ((app.pageTitle()) == "Valmis"))
-    }
-
     fn run:void () {
-        def d1:HNode (this.after("<p id=a>vanha</p><script>document.getElementById('a').textContent = 'uusi';</script>"))
-        this.checkText("textContent" d1 "uusi")
-        def d2:HNode (this.after("<ul id=l></ul><script>var l = document.getElementById('l'); ['yksi','kaksi'].forEach(function (t) { var li = document.createElement('li'); li.className = 'x'; li.appendChild(document.createTextNode(t)); l.appendChild(li); });</script>"))
-        this.checkText("createElement + appendChild" d2 "yksikaksi")
-        def d3:HNode (this.after("<div id=r></div><script>document.querySelector('#r').innerHTML = '<b>lihava</b> ja <i>vino</i>';</script>"))
-        this.checkText("innerHTML" d3 "lihava ja vino")
-        def d4:HNode (this.after("<div class='a b'>x</div><script>var d = document.querySelector('div.a'); d.classList.remove('a'); d.classList.add('c'); d.style.color = 'red'; d.setAttribute('data-k', '1');</script>"))
-        def div4@(optional):HNode (d4.find("div"))
-        def dv:HNode (unwrap div4)
-        this.check("classList" ((dv.attr("class")) == "b c"))
-        this.check("style" ((dv.attr("style")) == "color: red"))
-        def d5:HNode (this.after("<p>a</p><script>document.addEventListener('DOMContentLoaded', function () { document.body.appendChild(document.createTextNode('valmis')); }); setTimeout(function () { document.body.appendChild(document.createTextNode('!')); }, 100);</script>"))
-        this.checkText("DOMContentLoaded + setTimeout" d5 "avalmis!")
-        def d6:HNode (this.after("<p id=x>a</p><script>throw new Error('boom');</script><script>document.getElementById('x').textContent = 'b';</script>"))
-        this.checkText("an error ends one script only" d6 "b")
-        def d7:HNode (this.after("<p id=x>a</p><script>fetch('https://evil.example/').then(function () { document.getElementById('x').textContent = 'verkko'; }, function () { document.getElementById('x').textContent = 'ei verkkoa'; });</script>"))
-        this.checkText("no network" d7 "ei verkkoa")
-        def d8:HNode (this.after("<p id=x>a</p><p>b</p><script>var p = document.querySelectorAll('p'); p[1].parentNode.removeChild(p[1]); document.title = 'Otsikko ' + p.length;</script>"))
-        this.checkText("removeChild" d8 "a")
-        def d9:HNode (this.after("<img data-src='k.jpg' class=lazy><script>new IntersectionObserver(function (es) { es.forEach(function (e) { e.target.src = e.target.dataset.src; }); }).observe(document.querySelector('img.lazy'));</script>"))
-        def img@(optional):HNode (d9.find("img"))
-        def im:HNode (unwrap img)
-        this.check("lazy image via IntersectionObserver" ((im.attr("src")) == "k.jpg"))
-        this.pipeline()
+        this.basics()
+        this.fetching()
+        this.react()
         print ("realm: passed " + (to_string passes) + ", failed " + (to_string fails))
     }
 }
