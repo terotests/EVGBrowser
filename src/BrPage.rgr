@@ -22,7 +22,6 @@ Import "CssCascade.rgr"
 Import "HtmlToEvg.rgr"
 Import "UaSheet.rgr"
 Import "SafetyPolicy.rgr"
-Import "DomTree.rgr"
 Import "PageScripts.rgr"
 
 class BrSheet {
@@ -44,10 +43,8 @@ class BrPage {
     def truncated:boolean false
     def cascadeMs:double 0.0
     def ruleCount:int 0
-    ; the HTML as delivered, the node numbering the script realm shares, and
-    ; the external scripts it needs
+    ; the HTML as delivered, and the external scripts the realm needs
     def html:string ""
-    def tree:DomTree (new DomTree())
     def hasScripts:boolean false
     def scriptUrls:[string]
     def scriptTexts:[string]
@@ -75,7 +72,6 @@ class BrPage {
         def parser (new HtmlParser())
         doc = (parser.parse(html))
         this.html = html
-        tree.index(doc)
         truncated = parser.truncated
         clear sheets
         def t@(optional):HNode (doc.find("title"))
@@ -126,14 +122,33 @@ class BrPage {
         return true
     }
 
-    ; What the realm changed, applied to this copy.
-    fn applyScriptOps:int (ops:string) {
-        def n:int (tree.apply(ops))
-        if tree.titleChanged {
-            title = tree.title
+    ; The document as the page's scripts have made it (the realm's
+    ; snapshot): parsed again, with the stylesheets it names now. The ones
+    ; that arrived before are kept; a new one is fetched (neededSheets).
+    fn applySnapshot:void (snapshot:string policy:SafetyPolicy) {
+        def old:[BrSheet] sheets
+        def parser (new HtmlParser())
+        doc = (parser.parse(snapshot))
+        truncated = parser.truncated
+        def fresh:[BrSheet]
+        sheets = fresh
+        this.collectSheets(doc policy)
+        for sheets s:BrSheet i {
+            if (s.inline == false) {
+                for old o:BrSheet j {
+                    if ((o.inline == false) && ((o.url == s.url) && o.arrived)) {
+                        s.text = o.text
+                        s.arrived = true
+                    }
+                }
+            }
+        }
+        def t@(optional):HNode (doc.find("title"))
+        if (!null? t) {
+            def tn:HNode (unwrap t)
+            title = (HtmlParser.collapseSpace((tn.textContent())))
         }
         scriptsRan = true
-        return n
     }
 
     fn collectSheets:void (n:HNode policy:SafetyPolicy) {
@@ -250,6 +265,7 @@ class BrPage {
         def conv (new HtmlToEvg())
         conv.minHeight = height
         conv.hideNoscript = scriptsRan
+        conv.scriptTargets = scriptsRan
         conv.base = baseUrl
         conv.policy = policy
         conv.contentWidth = (width - 32.0)

@@ -103,58 +103,59 @@ function syncTitle() {
 
 // --- the script realm -------------------------------------------------------
 //
-// A page's scripts run in a Web Worker (realm-worker.js), on a copy of the
-// page; the DOM ops they produce come back as text. The worker is started
-// the first time a page has scripts, and terminated — with the page left as
-// the server sent it — when a job takes longer than REALM_LIMIT_MS.
+// A page's scripts run in a Web Worker (realm-worker.js) that keeps the page
+// alive: the browser writes requests (the page to start, then the user's
+// events and the time that passed), the worker answers, and this carries
+// both unread. A new page starts a new realm; a request that takes longer
+// than REALM_LIMIT_MS ends the worker, and the page stays as it was.
 
 const REALM_LIMIT_MS = 8000;
 let realmWorker = null;
 let realmTimer = 0;
-let realmJob = -1;
+let realmBusy = -1;
 
 function stopRealm() {
   if (realmWorker) realmWorker.terminate();
   realmWorker = null;
   clearTimeout(realmTimer);
+  realmBusy = -1;
 }
 
 function runRealm() {
   if (!app.realmJobPending()) return;
   const job = app.takeRealmJob();
-  const scripts = [];
-  for (let i = 0; i < app.realmScriptCount(); i++) scripts.push({ url: app.realmScriptUrl(i), text: app.realmScriptText(i) });
-  if (realmJob >= 0) stopRealm();  // a new page: the old job is abandoned
+  const start = app.realmRequestIsStart();
+  const request = app.realmRequest();
+  // a new page while the old one's request is out: that worker goes
+  if (start && realmBusy >= 0) stopRealm();
   if (!realmWorker) {
     realmWorker = new Worker("./realm-worker.js");
     realmWorker.onmessage = (e) => {
       const r = e.data;
-      if (r.job !== realmJob) return;
+      if (r.job !== realmBusy) return;
       clearTimeout(realmTimer);
-      realmJob = -1;
-      if (r.ok) app.realmResult(r.job, r.ops, r.summary);
+      realmBusy = -1;
+      if (r.ok) app.realmResult(r.job, r.answer);
       else app.realmFailed(r.job, r.error);
-      window.__realm = r;
+      window.__realm = { job: r.job, ok: r.ok, status: app.realmStatus() };
       dirty = true;
       pump();
     };
     realmWorker.onerror = (e) => {
-      const j = realmJob;
+      const j = realmBusy;
       stopRealm();
-      realmJob = -1;
       app.realmFailed(j, String(e.message || e));
       dirty = true;
     };
   }
-  realmJob = job;
+  realmBusy = job;
   realmTimer = setTimeout(() => {
     stopRealm();
-    realmJob = -1;
     app.realmFailed(job, "aikaraja");
     window.__realm = { job, ok: false, error: "timeout" };
     dirty = true;
   }, REALM_LIMIT_MS);
-  realmWorker.postMessage({ job, html: app.realmHtml(), url: app.realmUrl(), width: app.realmWidth(), height: app.realmHeight(), scripts });
+  realmWorker.postMessage({ job, start, request });
 }
 
 // --- painting ---------------------------------------------------------------

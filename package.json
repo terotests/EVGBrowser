@@ -16,6 +16,6 @@
     "deps": "rgrc install -vendor"
   },
   "devDependencies": {
-    "ranger-compiler": "4.0.0"
+    "ranger-compiler": "4.0.2"
   }
 }

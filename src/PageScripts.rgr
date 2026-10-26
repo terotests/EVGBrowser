@@ -7,18 +7,22 @@
 ; (src/js/JsRealm.rgr), which runs them; kept apart from the realm so the
 ; browser does not carry the JavaScript interpreter to find out.
 ;
-; Classic scripts only. Modules would import from the network, which the realm
-; does not have, and their `nomodule` fallbacks therefore run instead — the
-; same choice an older browser makes.
+; Classic scripts, and module scripts, which the realm runs as classic ones:
+; a bundle that imports nothing (what a build tool makes of a small app)
+; runs, one that imports fails as a script with an error does. `nomodule`
+; fallbacks are left alone, as a browser with modules leaves them.
 ; ==============================================================================
 
 Import "HtmlParser.rgr"
 Import "BrUrl.rgr"
 
 class PageScripts {
-    sfn isClassic:boolean (s:HNode) {
+    sfn runs:boolean (s:HNode) {
         def t:string (to_lowercase (trim (s.attr("type"))))
         if ((strlen t) == 0) {
+            return ((s.hasAttr("nomodule")) == false)
+        }
+        if (t == "module") {
             return true
         }
         return (((indexOf t "javascript") >= 0) || ((indexOf t "ecmascript") >= 0))
@@ -30,7 +34,7 @@ class PageScripts {
         def all:[HNode]
         doc.findAll("script" all)
         for all s:HNode i {
-            if ((PageScripts.isClassic(s)) && (s.hasAttr("src"))) {
+            if ((PageScripts.runs(s)) && (s.hasAttr("src"))) {
                 def u:BrUrl (base.resolve((s.attr("src"))))
                 if (u.isWeb()) {
                     push out (u.toString())
@@ -45,7 +49,7 @@ class PageScripts {
         def all:[HNode]
         doc.findAll("script" all)
         for all s:HNode i {
-            if (PageScripts.isClassic(s)) {
+            if (PageScripts.runs(s)) {
                 if ((s.hasAttr("src")) || ((strlen (trim (s.textContent()))) > 0)) {
                     return true
                 }

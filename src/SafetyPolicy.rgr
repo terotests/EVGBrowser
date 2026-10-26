@@ -31,7 +31,8 @@ class SafetyPolicy {
     def maxStylesheets:int 32
     def showImages:boolean true
     ; Page scripts run in a realm of their own, with no network and no way
-    ; to open anything; what they can do is change the page's DOM.
+    ; to open anything themselves: a link they follow and a fetch they make
+    ; come to the browser, which applies this policy to them.
     def runScripts:boolean true
     def maxScripts:int 30
     def maxScriptBytes:int 2000000

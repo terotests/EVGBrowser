@@ -20,9 +20,11 @@ HTML ──► HtmlParser ──► CssCascade ──► HtmlToEvg ──► EVG
 
 It needs Node 20+ and nothing next to this repository. `npm install` brings
 the Ranger compiler (the npm package `ranger-compiler`) and fetches the Ranger
-packages the source uses — `evg`, `image`, `zip`, `componentengine`,
-`ts_parser`, `core` — from the Ranger repository at the revision pinned in
-`ranger.json` / `ranger.lock` into `vendor/ranger/` (`rgrc install -vendor`).
+packages the source uses into `vendor/ranger/` (`rgrc install -vendor`), at
+the revisions pinned in `ranger.json` / `ranger.lock`: `evg` and `image`
+from [terotests/evg](https://github.com/terotests/evg), `rangerdom` from
+[terotests/RangerDOM](https://github.com/terotests/RangerDOM), and what
+they bring (`cer` from terotests/componentengine, `zip`).
 `RANGER_DIR=/path/to/Ranger` uses that checkout's compiler instead, for
 trying a compiler change.
 
@@ -107,14 +109,16 @@ To publish: merge to `main`, then set *Settings → Pages → Source* to
   it can be switched off: `--open` or `EVG_OPEN=1` on the desktop,
   `?open=1` on the web page (with `EVG_OPEN=1 npm run serve` locally, so
   the proxy fetches any site too). The other rules stay on.
-- **Scripts in a realm of their own.** A page's scripts run in Ranger's
-  JavaScript interpreter (ComponentEngine) on a *copy* of the page, in a Web
-  Worker on the web and in a child process on the desktop. They see a DOM
-  (`src/js/prelude.js`) and nothing else: no network (`fetch` and
-  `XMLHttpRequest` fail), no storage that outlives the page, no dialogs or
-  windows, timers on a virtual clock. What they change comes back to the
-  browser as DOM operations; a realm that runs longer than 8 s is stopped and
-  the page stays as the server sent it. `?js=0` / `--no-js` turn scripts off.
+- **Scripts in a realm of their own.** A page's scripts run in
+  [RangerDOM](https://github.com/terotests/RangerDOM) (a DOM in JavaScript
+  on CEr, a JavaScript engine written in Ranger's Rust subset) on a *copy* of
+  the page, in a Web Worker on the web and in a child process on the
+  desktop. The realm reaches nothing itself: a link, a GET form,
+  `window.open` and `fetch` come back to the browser as messages, and the
+  browser applies its own rules (the allowlist; GET only, text only for
+  `fetch`). No storage outlives the page, no dialogs, no windows. A request
+  the realm takes longer than 8 s to answer stops it, and the page stays as
+  it was. `?js=0` / `--no-js` turn scripts off.
 - **No video, audio, iframes, plugins or canvas.** They are replaced by a short
   notice.
 - **No overlays.** `position: fixed` boxes (cookie banners, chat bubbles,
@@ -171,22 +175,31 @@ Things EVG does not have, and how they are handled:
 ## Scripts: the realm
 
 ```
-browser                                   realm (Worker / child process)
-  parse HTML, number nodes (DomTree)  ──►   parse the same HTML, same numbers
-  fetch external scripts              ──►   run scripts in ComponentEngine
-                                             against prelude.js's DOM
-  apply ops, restyle, lay out         ◄──   every DOM change as an op:
-                                             C/T create, A/R attributes,
-                                             I insert, X remove, D text, W title
+browser                                     realm (Worker / child process)
+  page + external scripts       start ──►    RangerDOM: parse, run the scripts
+  clicks, typing, time passed   step  ──►    events to their elements, timers
+  parse, style, lay out again   ◄── answer   the page as HTML when it changed,
+  navigate / fetch (its rules)  ◄──          messages: open, fetch, console
 ```
+
+The realm keeps the page as long as it is shown, so a React or other
+single-page app works: every element of a scripted page carries `data-rd`,
+the converter makes each one a click target, and a click goes to the
+innermost element under the pointer and bubbles to the page's handlers.
+Text typed in a field is set on the page's element (its `input` and
+`change` events fire), Enter goes to it as a key. Module scripts run as
+classic ones, so a bundle that imports nothing runs.
 
 | File | Role |
 | --- | --- |
-| `src/DomTree.rgr` | node numbering, the ops as text, applying them |
-| `src/js/JsRealm.rgr` | the realm: ComponentEngine plus the `__dom` bridge and selector matching |
-| `src/js/prelude.js` | the DOM scripts see (generated into `JsPrelude.rgr` by `tools/gen-prelude.mjs`) |
+| `src/RealmWire.rgr` | the requests and answers as text; the host carries them unread |
+| `src/js/PageRealm.rgr` | the realm's side: RangerDOM's `DomRealm` behind the requests |
+| `src/BrPage.rgr` | `applySnapshot`: the page as the realm has it |
 | `web/realm-worker.js` | the Worker; `evg_realm.js` is loaded only when a page has scripts |
-| `native/sdl/evg_browser_sdl.cpp` | `RealmProcess`: `evg-browser --realm` over pipes, killed on timeout |
+| `native/sdl/evg_browser_sdl.cpp` | `RealmProcess`: `evg-browser --realm`, one per page, killed on timeout |
+
+`web/samples/react/` is a React 18 app (a to-do list with a field, a form,
+filters and a clock) for trying it: about:home links to it.
 
 
 ## I/O is the host's job
@@ -215,8 +228,9 @@ Not done yet:
   `::after` content and CSS background images are ignored. `calc()` is
   worked out when its terms are px, rem, pt or numbers (after `var()`),
   and left alone when they depend on the layout (%, em, vw).
-- Scripts run once, at load: a click does not reach a page's own handlers
-  yet, and modules (`<script type="module">`) do not run.
+- Scripts: ES modules that import other modules do not run (a module
+  script runs as a classic one), and CEr has no generators or `eval` yet.
+  Form controls are drawn by the browser, not by the page's CSS.
 
 ## License
 

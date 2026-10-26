@@ -40,6 +40,7 @@ Import "BuiltinPages.rgr"
 Import "SafetyPolicy.rgr"
 Import "HtmlToEvg.rgr"
 Import "BrImageMeasurer.rgr"
+Import "RealmWire.rgr"
 
 class BrRequest {
     def id:int 0
@@ -48,6 +49,8 @@ class BrRequest {
     def url:string ""
     ; the navigation this belongs to; a late answer to an old one is dropped
     def nav:int 0
+    ; kind "data": the page script's fetch this answers
+    def realmFetch:int 0
 }
 
 class BrHistoryEntry {
@@ -106,10 +109,27 @@ class BrowserApp extends EvgApp {
     def imageRebuildMs:double 0.0
     def lastError:string ""
     ; the script realm: "" nothing to do, "waiting" for scripts or styles,
-    ; "ready" for the host to take, "running" in the host's realm, "done"
+    ; "ready" for the host to start, "running" its scripts, "live" (it keeps
+    ; the page: clicks, typing and time go to it), "done" (it failed)
     def realmState:string ""
     def realmJob:int 0
     def realmSummary:string ""
+    ; a request is out (start or step) and not answered yet
+    def realmBusy:boolean false
+    def realmStarting:boolean false
+    ; what the next step carries: the user's events (JSON lines), the
+    ; answers to the page's fetches (RealmWire records), the time
+    def realmEvents:[string]
+    def realmResources:string ""
+    def realmResourceCount:int 0
+    def realmElapsed:double 0.0
+    ; ms until the realm's next timer, -1 for none
+    def realmDue:double -1.0
+    def realmErrors:[string]
+    def realmLog:[string]
+    ; where the pointer was when a target was hit (page coordinates)
+    def pointX:double 0.0
+    def pointY:double 0.0
     def renderCount:int 0
     def lastRenderMs:double 0.0
 
@@ -120,6 +140,12 @@ class BrowserApp extends EvgApp {
         requests = r
         def o:[BrRequest]
         open = o
+        def re:[string]
+        realmEvents = re
+        def rr:[string]
+        realmErrors = rr
+        def rl:[string]
+        realmLog = rl
         def sc:[string:string]
         sheetCache = sc
         frameSheet.parse((BrowserApp.frameCss()))
@@ -385,6 +411,16 @@ class BrowserApp extends EvgApp {
             this.pageArrived(r status finalUrl contentType body)
             return
         }
+        if (r.kind == "data") {
+            ; a page script's fetch: its answer goes to the realm
+            def rec:string (RealmWire.put("" (to_string r.realmFetch)))
+            rec = (RealmWire.put(rec (to_string status)))
+            rec = (RealmWire.put(rec contentType))
+            rec = (RealmWire.put(rec body))
+            realmResources = (realmResources + rec)
+            realmResourceCount = (realmResourceCount + 1)
+            return
+        }
         if (r.kind == "script") {
             def stext:string ""
             if ((status >= 200) && (status < 300)) {
@@ -481,8 +517,7 @@ class BrowserApp extends EvgApp {
             }
         }
         sheetWaitMs = 0.0
-        realmState = ""
-        realmSummary = ""
+        this.resetRealm()
         if page.hasScripts {
             realmState = "waiting"
             for page.scriptUrls scu:string k {
@@ -501,8 +536,32 @@ class BrowserApp extends EvgApp {
     ; --- the script realm ----------------------------------------------------
     ;
     ; The page is shown as the server sent it first; once its scripts are here
-    ; the host runs them in its realm (a Worker, a child process), hands the
-    ; ops back to `realmResult`, and the page is styled and laid out again.
+    ; the host starts a realm for it (src/js/PageRealm.rgr, in a Worker or a
+    ; child process) and carries requests to it and answers back, unread.
+    ; The realm keeps the page from then on: the user's clicks and typing go
+    ; to it (`press`, the fields), the time that passes too (`tick`), and
+    ; whenever the page changed the answer has it as HTML, which is styled
+    ; and laid out again like any page.
+    ;
+    ;   realmJobPending()   something to send
+    ;   takeRealmJob()      its job number (the navigation); a new number
+    ;                       means a new realm: the old one is dropped
+    ;   realmRequest()      the request, text
+    ;   realmResult(job, answer) / realmFailed(job, why)
+
+    fn resetRealm:void () {
+        realmState = ""
+        realmSummary = ""
+        realmBusy = false
+        realmStarting = false
+        clear realmEvents
+        realmResources = ""
+        realmResourceCount = 0
+        realmElapsed = 0.0
+        realmDue = -1.0
+        clear realmErrors
+        clear realmLog
+    }
 
     fn maybeRealm:void () {
         if (realmState != "waiting") {
@@ -515,56 +574,91 @@ class BrowserApp extends EvgApp {
         realmJob = navId
     }
 
-    fn realmJobPending:boolean () {
-        return (realmState == "ready")
+    fn realmLive:boolean () {
+        return (realmState == "live")
     }
 
-    ; The job's number; its inputs are read with the getters below.
+    fn realmJobPending:boolean () {
+        if (realmState == "ready") {
+            return true
+        }
+        if ((realmState != "live") || realmBusy) {
+            return false
+        }
+        if (((array_length realmEvents) > 0) || (realmResourceCount > 0)) {
+            return true
+        }
+        return ((realmDue >= 0.0) && (realmElapsed >= realmDue))
+    }
+
     fn takeRealmJob:int () {
-        realmState = "running"
+        realmStarting = (realmState == "ready")
+        if realmStarting {
+            realmState = "running"
+        }
+        realmBusy = true
         return realmJob
     }
 
-    fn realmHtml:string () {
-        return page.html
+    ; Whether the request taken last starts a new realm (a new page).
+    fn realmRequestIsStart:boolean () {
+        return realmStarting
     }
 
-    fn realmUrl:string () {
-        return (page.url.toString())
+    fn realmRequest:string () {
+        if realmStarting {
+            def out:string (RealmWire.put("" "start"))
+            out = (RealmWire.put(out (page.url.toString())))
+            out = (RealmWire.put(out page.html))
+            out = (RealmWire.put(out (to_string pageW)))
+            out = (RealmWire.put(out (to_string (this.pageHeight()))))
+            out = (RealmWire.put(out (to_string (array_length page.scriptUrls))))
+            for page.scriptUrls su:string i {
+                out = (RealmWire.put(out su))
+                out = (RealmWire.put(out (itemAt page.scriptTexts i)))
+            }
+            realmElapsed = 0.0
+            return out
+        }
+        def step:string (RealmWire.put("" "step"))
+        step = (RealmWire.put(step (join realmEvents "\n")))
+        step = (RealmWire.put(step (to_string realmElapsed)))
+        step = (RealmWire.put(step (to_string realmResourceCount)))
+        step = (step + realmResources)
+        step = (RealmWire.put(step ""))
+        clear realmEvents
+        realmResources = ""
+        realmResourceCount = 0
+        realmElapsed = 0.0
+        return step
     }
 
-    fn realmWidth:double () {
-        return pageW
-    }
-
-    fn realmHeight:double () {
-        return (this.pageHeight())
-    }
-
-    fn realmScriptCount:int () {
-        return (array_length page.scriptUrls)
-    }
-
-    fn realmScriptUrl:string (i:int) {
-        return (itemAt page.scriptUrls i)
-    }
-
-    fn realmScriptText:string (i:int) {
-        return (itemAt page.scriptTexts i)
-    }
-
-    fn realmResult:void (job:int ops:string summary:string) {
-        if ((job != navId) || (realmState != "running")) {
+    fn realmResult:void (job:int answer:string) {
+        if ((job != navId) || (realmBusy == false)) {
             return
         }
-        realmState = "done"
-        realmSummary = summary
-        def n:int (page.applyScriptOps(ops))
-        if (n > 0) {
-            this.renderPage(true)
+        realmBusy = false
+        def w (new RealmWire(answer))
+        if ((w.next()) != "ok") {
+            this.realmFailed(job "the realm did not answer")
+            return
+        }
+        def snap:string (w.next())
+        def msgs:string (w.next())
+        def due:double (w.nextDouble())
+        def title:string (w.next())
+        realmSummary = (w.next())
+        realmState = "live"
+        realmDue = due
+        if ((strlen snap) > 0) {
+            this.showSnapshot(snap)
+        }
+        if ((strlen title) > 0) {
+            page.title = title
         }
         statusText = page.title
         frameDirty = true
+        this.realmMessages(msgs)
     }
 
     fn realmFailed:void (job:int message:string) {
@@ -572,7 +666,152 @@ class BrowserApp extends EvgApp {
             return
         }
         realmState = "done"
+        realmBusy = false
         realmSummary = message
+        if ((array_length realmErrors) < 20) {
+            push realmErrors message
+        }
+    }
+
+    ; The page as the realm has it now.
+    fn showSnapshot:void (html:string) {
+        def keepField:string ""
+        def keepValue:string ""
+        if (((strlen focusedFieldId) > 0) && ((array_length realmEvents) > 0)) {
+            ; typed since the request went out: the field keeps what is typed
+            keepField = focusedFieldId
+            keepValue = (this.fieldValue(focusedFieldId))
+        }
+        page.applySnapshot(html policy)
+        def needed:[string] (page.neededSheets(policy.maxStylesheets))
+        for needed su:string i {
+            if (has sheetCache su) {
+                page.deliverSheet(su (unwrap (get sheetCache su)))
+            } {
+                this.request("css" su)
+            }
+        }
+        if (page.sheetsReady()) {
+            this.renderPage(true)
+            this.restoreFieldFocus()
+            if ((strlen keepField) > 0) {
+                if (has page.converter.fieldById keepField) {
+                    def f:BrField (unwrap (get page.converter.fieldById keepField))
+                    f.value = keepValue
+                    page.converter.showFieldText(f.label f)
+                    this.relayoutPage()
+                }
+            }
+        } {
+            loading = true
+        }
+    }
+
+    ; What the page asked for: a URL to open, a fetch, its console.
+    fn realmMessages:void (text:string) {
+        def lines:[string] (strsplit text "\n")
+        for lines line:string i {
+            def f:[string] (strsplit line "\t")
+            if ((array_length f) < 2) {
+                continue
+            }
+            def tag:string (itemAt f 0)
+            if ((tag == "open") && ((array_length f) >= 2)) {
+                ; a link, a GET form, window.open: as if the user followed it
+                def target:string ""
+                if ((array_length f) >= 3) {
+                    target = (itemAt f 2)
+                }
+                if ((target == "") || ((target == "_self") || ((target == "_top") || (target == "_parent")))) {
+                    this.navigate((itemAt f 1))
+                    return
+                }
+                statusText = "Sivu yritti avata uuden ikkunan."
+                frameDirty = true
+                continue
+            }
+            if ((tag == "fetch") && ((array_length f) >= 3)) {
+                def fid@(optional):int (str2int (itemAt f 1))
+                if (null? fid) {
+                    continue
+                }
+                this.realmFetch((unwrap fid) (itemAt f 2))
+                continue
+            }
+            if (tag == "error") {
+                if ((array_length realmErrors) < 20) {
+                    push realmErrors (itemAt f 1)
+                }
+                continue
+            }
+            if ((array_length realmLog) < 200) {
+                push realmLog line
+            }
+        }
+    }
+
+    ; A page script's fetch: http(s) only, under the same allowlist as a
+    ; page; a refused one is answered at once as a network error.
+    fn realmFetch:void (fetchId:int url:string) {
+        def u:BrUrl (page.baseUrl.resolve(url))
+        if ((u.isWeb()) && (policy.pageAllowed(u))) {
+            def r (new BrRequest())
+            r.id = nextRequestId
+            nextRequestId = (nextRequestId + 1)
+            r.kind = "data"
+            r.url = (u.toString())
+            r.nav = navId
+            r.realmFetch = fetchId
+            push requests r
+            push open r
+            return
+        }
+        def rec:string (RealmWire.put("" (to_string fetchId)))
+        rec = (RealmWire.put(rec "0"))
+        rec = (RealmWire.put(rec ""))
+        rec = (RealmWire.put(rec ""))
+        realmResources = (realmResources + rec)
+        realmResourceCount = (realmResourceCount + 1)
+    }
+
+    fn realmEvent:void (json:string) {
+        if (realmState == "live") {
+            push realmEvents json
+        }
+    }
+
+    ; A press and release on an element of the realm's page.
+    fn realmClick:void (rd:string) {
+        def at:string (",\"x\":" + (to_string pointX) + ",\"y\":" + (to_string pointY))
+        this.realmEvent(("{\"type\":\"down\",\"target\":" + rd + at + "}"))
+        this.realmEvent(("{\"type\":\"up\",\"target\":" + rd + at + "}"))
+    }
+
+    ; A field's text changed in the browser: the page's element gets it.
+    fn fieldToRealm:void (f:BrField) {
+        if ((this.realmLive()) && ((strlen f.rd) > 0)) {
+            this.realmEvent(("{\"type\":\"set\",\"target\":" + f.rd + ",\"value\":\"" + (BrowserApp.jsonEscape(f.value)) + "\"}"))
+        }
+    }
+
+    fn realmErrorCount:int () {
+        return (array_length realmErrors)
+    }
+
+    fn realmErrorAt:string (i:int) {
+        return (itemAt realmErrors i)
+    }
+
+    fn realmLogCount:int () {
+        return (array_length realmLog)
+    }
+
+    fn realmLogAt:string (i:int) {
+        return (itemAt realmLog i)
+    }
+
+    fn realmStatus:string () {
+        return (realmState + " " + realmSummary)
     }
 
     fn setScriptsEnabled:void (on:boolean) {
@@ -794,6 +1033,9 @@ class BrowserApp extends EvgApp {
 
     fn tick:boolean (dtMs:double) {
         def moved:boolean false
+        if (realmState == "live") {
+            realmElapsed = (realmElapsed + dtMs)
+        }
         if (fling.running()) {
             def d:double (fling.step(dtMs))
             if (d != 0.0) {
@@ -844,6 +1086,8 @@ class BrowserApp extends EvgApp {
         }
         def ht2 (new EVGHitTest())
         def id:string (ht2.idAt(viewport px (py - barH)))
+        pointX = px
+        pointY = ((py - barH) + viewport.scrollTop)
         if (id == "page") {
             return ""
         }
@@ -859,6 +1103,9 @@ class BrowserApp extends EvgApp {
     }
 
     fn hoveredId:string () {
+        if (startsWith hovered "J") {
+            return ""
+        }
         return hovered
     }
 
@@ -891,6 +1138,30 @@ class BrowserApp extends EvgApp {
         if (id == "btn-home") {
             this.navigate("about:home")
             return true
+        }
+        if (this.realmLive()) {
+            ; the page's scripts decide: the click goes to the element, and
+            ; a link's or a form's default comes back as a message
+            if (startsWith id "J") {
+                this.realmClick((substring id 1 (strlen id)))
+                return true
+            }
+            for page.converter.links lk:BrLink li {
+                if ((lk.id == id) && ((strlen lk.rd) > 0)) {
+                    this.realmClick(lk.rd)
+                    return true
+                }
+            }
+            if (has page.converter.fieldById id) {
+                def rf:BrField (unwrap (get page.converter.fieldById id))
+                if (((strlen rf.rd) > 0) && (this.hasField(id) == false)) {
+                    this.realmClick(rf.rd)
+                    return true
+                }
+            }
+        }
+        if (startsWith id "J") {
+            return false
         }
         if (has page.converter.linkById id) {
             def href:string (unwrap (get page.converter.linkById id))
@@ -949,6 +1220,12 @@ class BrowserApp extends EvgApp {
         focusedFieldId = ""
         if (has page.converter.fieldById id) {
             focusedFieldId = id
+            if ((old != id) && (this.realmLive())) {
+                def ff:BrField (unwrap (get page.converter.fieldById id))
+                if ((strlen ff.rd) > 0) {
+                    this.realmEvent(("{\"type\":\"focus\",\"target\":" + ff.rd + "}"))
+                }
+            }
         }
         if (old != focusedFieldId) {
             this.markFields()
@@ -1007,6 +1284,7 @@ class BrowserApp extends EvgApp {
                 f.value = text
                 page.converter.showFieldText(f.label f)
                 this.relayoutPage()
+                this.fieldToRealm(f)
             }
         }
     }
@@ -1026,6 +1304,7 @@ class BrowserApp extends EvgApp {
             f.value = (f.value + text)
             page.converter.showFieldText(f.label f)
             this.relayoutPage()
+            this.fieldToRealm(f)
             return true
         }
         return false
@@ -1066,6 +1345,17 @@ class BrowserApp extends EvgApp {
                     f.value = (BrowserApp.dropLast(f.value))
                     page.converter.showFieldText(f.label f)
                     this.relayoutPage()
+                    this.fieldToRealm(f)
+                    return true
+                }
+                if ((k == "Enter") && ((this.realmLive()) && ((strlen f.rd) > 0))) {
+                    ; the page's own key handlers, and its form's submit
+                    this.realmEvent(("{\"type\":\"focus\",\"target\":" + f.rd + "}"))
+                    this.realmEvent("{\"type\":\"key\",\"key\":\"Enter\"}")
+                    if (f.kind == "textarea") {
+                        f.value = (f.value + "\n")
+                        this.fieldToRealm(f)
+                    }
                     return true
                 }
                 if (k == "Enter") {

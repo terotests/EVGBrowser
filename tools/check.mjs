@@ -4,7 +4,7 @@
 // Compile the headless checks with the Ranger compiler and run them.
 //
 //   node tools/check.mjs          JavaScript (Node), including the script realm
-//   node tools/check.mjs --fast   without the realm (it takes ~90 s to compile)
+//   node tools/check.mjs --fast   without the script realm
 //   node tools/check.mjs --cpp    the same checks through C++ (g++ or clang++),
 //                                 which is the target the SDL host builds on
 //
@@ -43,13 +43,17 @@ if (cpp) {
   if (!cxx) { console.error("no C++ compiler found"); process.exit(1); }
   execFileSync(cxx, ["-std=c++17", "-O1", "-w", "build/cpp/browser_check.cpp", "-o", "build/cpp/browser_check"], { cwd: ROOT, stdio: "inherit" });
   run(path.join(ROOT, "build/cpp/browser_check"), []);
+  if (!process.argv.includes("--fast")) {
+    compile(["-l=cpp", "tests/RealmCheck.rgr", "-d=build/cpp", "-o=realm_check.cpp"]);
+    execFileSync(cxx, ["-std=c++17", "-O1", "-w", "build/cpp/realm_check.cpp", "-o", "build/cpp/realm_check"], { cwd: ROOT, stdio: "inherit" });
+    run(path.join(ROOT, "build/cpp/realm_check"), []);
+  }
 } else {
   compile(["-es6", "tests/ParseCheck.rgr", "-d=build", "-o=parse_check.js", "-nodecli"]);
   compile(["-es6", "tests/BrowserCheck.rgr", "-d=build", "-o=browser_check.js", "-nodecli"]);
   run(process.execPath, [path.join(ROOT, "build/browser_check.js")]);
   if (!process.argv.includes("--fast")) {
-    // the script realm: ComponentEngine is large, so this one takes a minute and a half
-    execFileSync(process.execPath, [path.join(ROOT, "tools/gen-prelude.mjs"), "--check"], { stdio: "inherit" });
+    // the script realm: RangerDOM on CEr, with React 18 from RangerDOM's tests
     compile(["-es6", "tests/RealmCheck.rgr", "-d=build", "-o=realm_check.cjs", "-nodecli"]);
     run(process.execPath, [path.join(ROOT, "build/realm_check.cjs")]);
   }

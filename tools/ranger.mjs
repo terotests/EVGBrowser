@@ -3,7 +3,7 @@
 // Where the Ranger compiler and the Ranger packages this project uses are.
 //
 // The compiler is the npm package `ranger-compiler` (a devDependency); the
-// packages (evg, image, zip, componentengine) are named in ranger.json,
+// packages (evg, image, rangerdom and what they bring) are named in ranger.json,
 // pinned in ranger.lock, and `npm install` fetches them into vendor/ranger
 // (`rgrc install -vendor`). RANGER_DIR, if set, points at a Ranger checkout
 // whose compiler is used instead, for trying out a compiler change.

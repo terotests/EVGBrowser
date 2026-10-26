@@ -83,6 +83,7 @@ class BuiltinPages {
         if ((strlen samples) > 0) {
             b = (b + (BuiltinPages.tile((samples + "uutiset.html") "🧸" "Esimerkkiuutiset" "Testisivu tämän selaimen mukana" "#b5476b")))
             b = (b + (BuiltinPages.tile((samples + "skriptit.html") "⚙️" "Skriptitesti" "JavaScript omassa eristyksessään" "#3d6b8c")))
+            b = (b + (BuiltinPages.tile((samples + "react/index.html") "⚛️" "React-testi" "Tehtävälista Reactilla" "#2f7a6b")))
         }
         b = (b + "</div><h2>Lapsille</h2><div class=\"tiles\">")
         b = (b + (BuiltinPages.tile("https://sieppo.fi/lasten-galleria/" "🎨" "Sieppo" "Lasten galleria" "#e0613a")))

@@ -2,40 +2,33 @@
   "lockVersion": 1,
   "packages": {
     "evg": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "lib/evg",
-      "sha256": "7f6c97541da59aef1b4732705d907234125864327dbc730518d44ddf5c814a03"
+      "git": "https://github.com/terotests/evg.git",
+      "rev": "9be90513115efdb044bdce3f3a633fee9c087906",
+      "subdir": "storm",
+      "sha256": "db911bc6d53c0e2f02f9a3200519fbcb166311cf3b93f85cbbfd3bd9a023f943"
     },
     "image": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "lib/image",
-      "sha256": "1e003798b5a0d5a78137af4542e9950d45c681a2e35d55889436a438d02858c2"
+      "git": "https://github.com/terotests/evg.git",
+      "rev": "9be90513115efdb044bdce3f3a633fee9c087906",
+      "subdir": "image",
+      "sha256": "ab9804949d5564dc802d6f236fff9f701519213add55d2b03b217ee50d369076"
     },
-    "componentengine": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "gallery/game_engine/v2/interp/migrate",
-      "sha256": "1d9d93b5129b9f81a1ef932cff4381f365f4d89333964f049c8946a1af7721eb"
+    "rangerdom": {
+      "git": "https://github.com/terotests/RangerDOM.git",
+      "rev": "2c6f9e1c9ff8fdb99347ab26b338ea528a16f533",
+      "sha256": "39c6e3491b9ab496c8d89bce69de865af59851d72c281af1ec0adb35562dba38"
     },
     "zip": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "lib/zip",
+      "git": "https://github.com/terotests/evg.git",
+      "rev": "9be90513115efdb044bdce3f3a633fee9c087906",
+      "subdir": "zip",
       "sha256": "c9a617acbc94bddbc56eac40ed9947815f1398eb0890fd2932f5d1b5e810a625"
     },
-    "ts_parser": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "gallery/ts_parser",
-      "sha256": "3f05128a7313056f5c4f8202cf818a59fe71135d5eae905ce7fac8ca79e298d5"
-    },
-    "core": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "lib/core",
-      "sha256": "636109eebbd9cd17a7009bd60285d00a228593ea1b1fe587a70e5be48335e333"
+    "cer": {
+      "git": "https://github.com/terotests/componentengine.git",
+      "rev": "86715589b3a5d8aae590209fc9f624cc5c4540df",
+      "subdir": "cer",
+      "sha256": "073376a87cbe28d6cea6c206473f810a720d774ab5842ab6b4a550ae39fed6e8"
     }
   }
 }

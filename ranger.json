@@ -5,19 +5,18 @@
   "license": "AGPL-3.0-or-later",
   "dependencies": {
     "evg": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "lib/evg"
+      "git": "https://github.com/terotests/evg.git",
+      "rev": "9be90513115efdb044bdce3f3a633fee9c087906",
+      "subdir": "storm"
     },
     "image": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "lib/image"
+      "git": "https://github.com/terotests/evg.git",
+      "rev": "9be90513115efdb044bdce3f3a633fee9c087906",
+      "subdir": "image"
     },
-    "componentengine": {
-      "git": "https://github.com/terotests/Ranger",
-      "rev": "9bdce3f6ba1eb64b0e27aa90c2334ea89d5e401c",
-      "subdir": "gallery/game_engine/v2/interp/migrate"
+    "rangerdom": {
+      "git": "https://github.com/terotests/RangerDOM.git",
+      "rev": "2c6f9e1c9ff8fdb99347ab26b338ea528a16f533"
     }
   }
 }

@@ -1053,12 +1053,14 @@ class Painter {
 // The script realm, as a child process of this same binary
 // ---------------------------------------------------------------------------
 //
-// A page's scripts run in `evg-browser --realm`: the job (URL, HTML, window
-// size, external scripts) goes in on its stdin, the DOM ops come out on its
-// stdout, each field as "<length>\n<bytes>". A child that runs past its time
-// is killed, and a script that overflows the stack takes down only the
-// child; the page stays as the server sent it. The child has no window and
-// makes no requests.
+// A page's scripts run in `evg-browser --realm`, which keeps the page alive
+// as long as it is shown: the browser's requests (src/RealmWire.rgr: the
+// page to start, then the user's events and the time that passed) go in on
+// its stdin and the answers come out on its stdout, each as one field,
+// "<length>\n<bytes>"; neither side here reads them. A new page starts a
+// new child. A request that takes too long kills the child, and a script
+// that overflows the stack takes down only the child; the page stays as it
+// was. The child has no window and makes no requests.
 
 static void putField(std::string& out, const std::string& v) {
   out += std::to_string(v.size());
@@ -1066,59 +1068,52 @@ static void putField(std::string& out, const std::string& v) {
   out += v;
 }
 
-static bool getField(const std::string& in, size_t& at, std::string& v) {
-  size_t nl = in.find('\n', at);
-  if (nl == std::string::npos) return false;
-  size_t n = (size_t)std::strtoull(in.substr(at, nl - at).c_str(), nullptr, 10);
-  if (nl + 1 + n > in.size()) return false;
-  v.assign(in, nl + 1, n);
-  at = nl + 1 + n;
+#ifndef _WIN32
+static bool readExactly(int fd, char* buf, size_t n) {
+  size_t got = 0;
+  while (got < n) {
+    ssize_t k = ::read(fd, buf + got, n - got);
+    if (k <= 0) return false;
+    got += (size_t)k;
+  }
   return true;
 }
 
-static std::string readAll(int fd) {
-  std::string out;
-  char buf[65536];
+// one field from a pipe; false at its end
+static bool readField(int fd, std::string& v) {
+  std::string len;
+  char c;
   for (;;) {
-#ifndef _WIN32
-    ssize_t n = ::read(fd, buf, sizeof buf);
-#else
-    long n = -1;
-#endif
-    if (n <= 0) break;
-    out.append(buf, (size_t)n);
+    if (!readExactly(fd, &c, 1)) return false;
+    if (c == '\n') break;
+    len += c;
+    if (len.size() > 20) return false;
   }
-  return out;
+  size_t n = (size_t)std::strtoull(len.c_str(), nullptr, 10);
+  v.assign(n, '\0');
+  return n == 0 || readExactly(fd, &v[0], n);
 }
 
-// The child's side: one job, then exit.
+static bool writeAll(int fd, const std::string& s) {
+  size_t done = 0;
+  while (done < s.size()) {
+    ssize_t k = ::write(fd, s.data() + done, s.size() - done);
+    if (k <= 0) return false;
+    done += (size_t)k;
+  }
+  return true;
+}
+#endif
+
+// The child's side: requests until its stdin closes.
 static int realmMain() {
 #ifndef _WIN32
-  std::string in = readAll(0);
-  size_t at = 0;
-  std::string magic, url, html, w, h, count;
-  if (!getField(in, at, magic) || magic != "evg-realm-1" || !getField(in, at, url) || !getField(in, at, html) ||
-      !getField(in, at, w) || !getField(in, at, h) || !getField(in, at, count)) {
-    std::fputs("bad job\n", stderr);
-    return 2;
-  }
-  auto realm = std::make_shared<JsRealm>();
-  int n = std::atoi(count.c_str());
-  for (int i = 0; i < n; i++) {
-    std::string su, st;
-    if (!getField(in, at, su) || !getField(in, at, st)) return 2;
-    realm->addScript(su, st);
-  }
-  std::string ops = realm->run(html, url, std::atof(w.c_str()), std::atof(h.c_str()));
-  std::string out;
-  putField(out, "ok");
-  putField(out, ops);
-  putField(out, realm->summary());
-  size_t done = 0;
-  while (done < out.size()) {
-    ssize_t k = ::write(1, out.data() + done, out.size() - done);
-    if (k <= 0) break;
-    done += (size_t)k;
+  auto realm = std::make_shared<PageRealm>();
+  std::string request;
+  while (readField(0, request)) {
+    std::string out;
+    putField(out, realm->handle(request));
+    if (!writeAll(1, out)) break;
   }
 #endif
   return 0;
@@ -1153,17 +1148,119 @@ class RealmProcess {
 #endif
   }
 
-  bool busy() const { return pid > 0; }
+  // a request is out
+  bool busy() const { return job >= 0; }
 
-  void start(int jobId, const std::string& payload) {
+  void send(int jobId, bool start, const std::string& request) {
 #ifndef _WIN32
-    stop();
+    if (start || pid <= 0) {
+      stop();
+      if (!spawn()) return;
+    }
+    joinAll();
+    job = jobId;
+    started = SDL_GetTicks64();
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      finished = false;
+      failed = false;
+      reply.clear();
+    }
+    std::string payload;
+    putField(payload, request);
+    int toChild = toFd, fromChild = fromFd;
+    // one thread writes the request and one reads the answer, so a large
+    // page cannot fill a pipe with nobody draining the other end
+    writer = std::thread([toChild, payload] { writeAll(toChild, payload); });
+    reader = std::thread([this, fromChild] {
+      std::string got;
+      bool ok = readField(fromChild, got);
+      std::lock_guard<std::mutex> lk(mu);
+      reply = std::move(got);
+      failed = !ok;
+      finished = true;
+    });
+#endif
+  }
+
+  // Called every frame: hands a finished (or timed-out) answer to the app.
+  void poll(const std::shared_ptr<BrowserApp>& app, bool& dirty) {
+#ifndef _WIN32
+    if (job < 0) return;
+    bool fin = false, bad = false;
+    std::string got;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      fin = finished;
+      bad = failed;
+      if (fin) got = std::move(reply);
+    }
+    int j = job;
+    if (!fin) {
+      if ((double)(SDL_GetTicks64() - started) > limitMs) {
+        stop();
+        app->realmFailed(j, "aikaraja");
+        dirty = true;
+      }
+      return;
+    }
+    joinAll();
+    job = -1;
+    if (bad) {
+      stop();
+      app->realmFailed(j, "the realm ended without an answer");
+    } else {
+      app->realmResult(j, got);
+    }
+    dirty = true;
+#endif
+  }
+
+  void stop() {
+#ifndef _WIN32
+    if (pid > 0) {
+      ::kill(pid, SIGKILL);
+      int status = 0;
+      ::waitpid(pid, &status, 0);
+      pid = -1;
+    }
+    joinAll();
+    if (toFd >= 0) ::close(toFd);
+    if (fromFd >= 0) ::close(fromFd);
+    toFd = fromFd = -1;
+    job = -1;
+#endif
+  }
+
+  ~RealmProcess() { stop(); }
+
+ private:
+#ifndef _WIN32
+  pid_t pid = -1;
+#else
+  int pid = -1;
+#endif
+  int job = -1;
+  int toFd = -1, fromFd = -1;
+  Uint64 started = 0;
+  std::thread writer, reader;
+  std::mutex mu;
+  bool finished = false, failed = false;
+  std::string reply;
+
+  void joinAll() {
+    if (writer.joinable()) writer.join();
+    if (reader.joinable()) reader.join();
+  }
+
+#ifndef _WIN32
+  bool spawn() {
     int in[2], out[2];
-    if (::pipe(in) != 0) return;
+    if (::pipe(in) != 0) return false;
     if (::pipe(out) != 0) {
       ::close(in[0]);
       ::close(in[1]);
-      return;
+      return false;
     }
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -1180,122 +1277,15 @@ class RealmProcess {
     if (rc != 0) {
       ::close(in[1]);
       ::close(out[0]);
-      return;
+      return false;
     }
     pid = p;
-    job = jobId;
-    started = SDL_GetTicks64();
-    {
-      std::lock_guard<std::mutex> lk(mu);
-      finished = false;
-      reply.clear();
-    }
-    int toChild = in[1], fromChild = out[0];
-    // one thread writes the job and one reads the answer, so a large page
-    // cannot fill a pipe with nobody draining the other end
-    writer = std::thread([toChild, payload] {
-      size_t done = 0;
-      while (done < payload.size()) {
-        ssize_t k = ::write(toChild, payload.data() + done, payload.size() - done);
-        if (k <= 0) break;
-        done += (size_t)k;
-      }
-      ::close(toChild);
-    });
-    reader = std::thread([this, fromChild] {
-      std::string got = readAll(fromChild);
-      ::close(fromChild);
-      std::lock_guard<std::mutex> lk(mu);
-      reply = std::move(got);
-      finished = true;
-    });
-#endif
+    toFd = in[1];
+    fromFd = out[0];
+    return true;
   }
-
-  // Called every frame: hands a finished (or timed-out) job to the app.
-  void poll(const std::shared_ptr<BrowserApp>& app, bool& dirty) {
-#ifndef _WIN32
-    if (pid <= 0) return;
-    bool fin = false;
-    std::string got;
-    {
-      std::lock_guard<std::mutex> lk(mu);
-      fin = finished;
-      if (fin) got = reply;
-    }
-    if (!fin) {
-      if ((double)(SDL_GetTicks64() - started) > limitMs) {
-        int j = job;
-        stop();
-        app->realmFailed(j, "aikaraja");
-        dirty = true;
-      }
-      return;
-    }
-    int j = job;
-    joinAll();
-    int status = 0;
-    ::waitpid(pid, &status, 0);
-    pid = -1;
-    size_t at = 0;
-    std::string okField, ops, summary;
-    if (getField(got, at, okField) && okField == "ok" && getField(got, at, ops) && getField(got, at, summary)) {
-      app->realmResult(j, ops, summary);
-    } else {
-      app->realmFailed(j, "realm ended without an answer");
-    }
-    dirty = true;
 #endif
-  }
-
-  void stop() {
-#ifndef _WIN32
-    if (pid > 0) {
-      ::kill(pid, SIGKILL);
-      int status = 0;
-      ::waitpid(pid, &status, 0);
-      pid = -1;
-    }
-    joinAll();
-#endif
-  }
-
-  ~RealmProcess() { stop(); }
-
- private:
-#ifndef _WIN32
-  pid_t pid = -1;
-#else
-  int pid = -1;
-#endif
-  int job = -1;
-  Uint64 started = 0;
-  std::thread writer, reader;
-  std::mutex mu;
-  bool finished = false;
-  std::string reply;
-
-  void joinAll() {
-    if (writer.joinable()) writer.join();
-    if (reader.joinable()) reader.join();
-  }
 };
-
-static std::string realmPayload(const std::shared_ptr<BrowserApp>& app) {
-  std::string p;
-  putField(p, "evg-realm-1");
-  putField(p, app->realmUrl());
-  putField(p, app->realmHtml());
-  putField(p, std::to_string(app->realmWidth()));
-  putField(p, std::to_string(app->realmHeight()));
-  int n = app->realmScriptCount();
-  putField(p, std::to_string(n));
-  for (int i = 0; i < n; i++) {
-    putField(p, app->realmScriptUrl(i));
-    putField(p, app->realmScriptText(i));
-  }
-  return p;
-}
 
 // ---------------------------------------------------------------------------
 // Keys, as the app names them
@@ -1651,9 +1641,10 @@ static int run(int argc, char** argv) {
     deliver();
     pump();
     realm.poll(app, dirty);
-    if (app->realmJobPending()) {
+    if (!realm.busy() && app->realmJobPending()) {
       int job = app->takeRealmJob();
-      realm.start(job, realmPayload(app));
+      bool start = app->realmRequestIsStart();
+      realm.send(job, start, app->realmRequest());
     }
 
     if (dirty) {

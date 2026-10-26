@@ -1,0 +1,108 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; ==============================================================================
+; PageRealm — the realm's side of the browser's script realm.
+; ==============================================================================
+;
+; A page's scripts run here, away from the browser: in a Web Worker on the
+; web, in a child process on the desktop. The DOM they see is RangerDOM's
+; (terotests/RangerDOM: webapi.js on CEr), which keeps the page alive: after
+; the scripts have run, the browser sends the user's clicks and typing and
+; the time that passed, and gets the page back as HTML whenever it changed.
+;
+; It has no network and no way to open anything. What a page asks for — a
+; link's URL, a GET form's, `window.open`, `fetch` — comes back to the
+; browser as a message, and the browser applies its own rules (the
+; allowlist, GET only, text only) before it does anything.
+;
+; Requests (RealmWire fields):
+;
+;   start  url html width height n (scriptUrl scriptText)×n
+;   step   events (JSON objects, one per line) elapsedMs
+;          n (id status contentType text)×n  layoutJson
+;
+; The answer: "ok" snapshot (the page as HTML, "" when it did not change)
+; messages (lines: open\turl\ttarget, fetch\tid\turl, error\ttext,
+; console\tlevel\ttext) dueIn (ms, -1 for no timer) title summary.
+; ==============================================================================
+
+Import "pkg:rangerdom/src/DomRealm.rgr"
+Import "../RealmWire.rgr"
+
+class PageRealm {
+    def realm:DomRealm (new DomRealm())
+    def started:boolean false
+
+    fn handle:string (request:string) {
+        def w (new RealmWire(request))
+        def kind:string (w.next())
+        if (kind == "start") {
+            realm = (new DomRealm())
+            def url:string (w.next())
+            def html:string (w.next())
+            def width:double (w.nextDouble())
+            def height:double (w.nextDouble())
+            def n:int (w.nextInt())
+            def i:int 0
+            while (i < n) {
+                def su:string (w.next())
+                def st:string (w.next())
+                realm.addScript(su st)
+                i = (i + 1)
+            }
+            realm.start(html url width height)
+            realm.runScripts()
+            started = true
+        }
+        if ((kind == "step") && started) {
+            def events:string (w.next())
+            def elapsed:double (w.nextDouble())
+            def rn:int (w.nextInt())
+            def k:int 0
+            while (k < rn) {
+                def id:int (w.nextInt())
+                def status:int (w.nextInt())
+                def ct:string (w.next())
+                def body:string (w.next())
+                realm.resource(id status body ct)
+                k = (k + 1)
+            }
+            def layout:string (w.next())
+            if ((strlen layout) > 0) {
+                realm.layout(layout)
+            }
+            def lines:[string] (strsplit events "\n")
+            for lines ev:string j {
+                if ((strlen (trim ev)) > 0) {
+                    realm.input(ev)
+                }
+            }
+            realm.tick(elapsed)
+        }
+        if (started == false) {
+            return (RealmWire.put("" "no realm"))
+        }
+        def out:string (RealmWire.put("" "ok"))
+        def snap:string ""
+        if (realm.changed()) {
+            snap = (realm.snapshot())
+        }
+        out = (RealmWire.put(out snap))
+        out = (RealmWire.put(out (this.messages())))
+        out = (RealmWire.put(out (to_string (realm.dueIn()))))
+        out = (RealmWire.put(out (realm.title())))
+        out = (RealmWire.put(out (realm.summary())))
+        return out
+    }
+
+    ; The page's messages since the last answer, a line each.
+    fn messages:string () {
+        def js:string "(function (a) { var o = [], c = function (s) { return String(s).replace(/[\\t\\n\\r]/g, ' '); };"
+        js = (js + " for (var i = 0; i < a.length; i++) { var m = a[i];")
+        js = (js + " if (m.tag === 'open') o.push('open\\t' + c(m.url) + '\\t' + c(m.target));")
+        js = (js + " else if (m.tag === 'fetch') o.push('fetch\\t' + m.id + '\\t' + c(m.url));")
+        js = (js + " else if (m.tag === 'error') o.push('error\\t' + c(m.text));")
+        js = (js + " else if (m.tag === 'console') o.push('console\\t' + c(m.level) + '\\t' + c(m.text)); }")
+        js = (js + " return o.join('\\n'); })(JSON.parse(__drain()))")
+        return (realm.eval(js))
+    }
+}

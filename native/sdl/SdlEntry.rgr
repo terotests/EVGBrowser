@@ -2,7 +2,7 @@
 ; What the desktop binary is built from: the browser, and the script realm it
 ; starts as a child process of itself (evg-browser --realm).
 Import "../../src/BrowserApp.rgr"
-Import "../../src/js/JsRealm.rgr"
+Import "../../src/js/PageRealm.rgr"
 ; WebP pictures: Ranger's decoder (the image package comes with evg)
 Import "pkg:image/WebPDecoder.rgr"
 

@@ -41,9 +41,6 @@ class HNode {
     def hasVars:boolean false
     def cachedClasses:[string]
     def classesCached:boolean false
-    ; this node's number in a DomTree (document order, text nodes included),
-    ; the name both sides of the script realm use for it
-    def domId:int -1
 
     Constructor () {
         def st:[string:string]
