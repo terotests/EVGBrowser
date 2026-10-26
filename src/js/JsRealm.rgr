@@ -20,8 +20,8 @@
 ; stopped by its host, and the page stays as the server sent it.
 ; ==============================================================================
 
-Import "pkg:componentengine/src/ComponentEngine.rgr"
-Import "pkg:componentengine/src/EvHandle.rgr"
+Import "pkg:componentengine/ComponentEngine.rgr"
+Import "pkg:componentengine/EvHandle.rgr"
 Import "../HtmlParser.rgr"
 Import "../DomTree.rgr"
 Import "../CssParser.rgr"
