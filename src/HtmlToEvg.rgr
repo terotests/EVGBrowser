@@ -286,7 +286,6 @@ class HtmlToEvg {
         if isForm {
             removeLast formStack
         }
-        this.edgeBorders(el st)
         return (this.centred(el st))
     }
 
@@ -327,6 +326,11 @@ class HtmlToEvg {
             def item:EVGElement (this.boxFor(c linkId))
             this.applyFlexItem(item c.style)
             this.sizeCell(item c)
+            if ((item.width.isSet == false) && ((el.display == "grid") && (this.stretchesInGrid(node.style c.style item)))) {
+                ; a grid item fills its area across; EVG leaves a box of
+                ; text at the text's width
+                item.setAttribute("width" "100%")
+            }
             if ((item.width.isSet == false) && (this.stretchesItems(node.style c.style))) {
                 ; a column stretches its items across (a card's title bar);
                 ; EVG leaves a text box at the text's width
@@ -1706,32 +1710,57 @@ class HtmlToEvg {
         this.lengthProp(el st "max-height" em false)
         this.applyMargins(el st)
         def sides:[string] ([] _:string ( "top" "right" "bottom" "left" ))
+        ; the border: all round when the four sides agree, otherwise each
+        ; side's width folded into the padding and painted there by EVG
+        ; (side-borders, folded-border)
+        def bws:[double]
+        def bcs:[string]
+        def c0:string (HtmlToEvg.prop(st "border-top-color" "#000000"))
+        def same:boolean true
+        def any:boolean false
+        for sides s0:string k0 {
+            def w0:double (this.borderWidth(st s0))
+            def col0:string (HtmlToEvg.prop(st ("border-" + s0 + "-color") "#000000"))
+            if (HtmlToEvg.isPaintableColor(col0) == false) {
+                col0 = "rgba(0,0,0,0)"
+            }
+            push bws w0
+            push bcs col0
+            if (w0 > 0.0) {
+                any = true
+            }
+            if ((w0 != (this.borderWidth(st "top"))) || (col0 != (itemAt bcs 0))) {
+                same = false
+            }
+        }
+        def folded:boolean (any && (same == false))
         for sides s:string i {
             def pv:string (HtmlToEvg.prop(st ("padding-" + s) ""))
             def pp:double (CssCascade.pxOf(pv em contentWidth))
+            if (pp < 0.0) {
+                pp = 0.0
+            }
+            if folded {
+                pp = (pp + (itemAt bws i))
+            }
             if (pp > 0.0) {
                 el.setAttribute(("padding-" + s) ((CssParser.fmt(pp)) + "px"))
             }
         }
         this.applyBackground(el st)
         this.applyOverflow(el st)
-        ; a border all round, when the four sides agree
-        def bw:double (this.borderWidth(st "top"))
-        if (bw > 0.0) {
-            def same:boolean true
-            def c0:string (HtmlToEvg.prop(st "border-top-color" "#000000"))
-            for sides s2:string k {
-                if ((this.borderWidth(st s2)) != bw) {
-                    same = false
-                }
-                if ((HtmlToEvg.prop(st ("border-" + s2 + "-color") "#000000")) != c0) {
-                    same = false
-                }
+        if folded {
+            def wl:[string]
+            for bws bv:double bi {
+                push wl (CssParser.fmt(bv))
             }
-            if same {
-                if (HtmlToEvg.isPaintableColor(c0)) {
-                    el.setAttribute("border" ((CssParser.fmt(bw)) + "px solid " + c0))
-                }
+            def ws:string (join wl " ")
+            el.setAttribute("side-borders" (ws + "|" + (join bcs "|")))
+            el.setAttribute("folded-border" ws)
+        }
+        if (any && same) {
+            if (HtmlToEvg.isPaintableColor(c0)) {
+                el.setAttribute("border" ((CssParser.fmt((itemAt bws 0))) + "px solid " + c0))
             }
         }
         def radius:string (HtmlToEvg.prop(st "border-radius" ""))
@@ -1762,13 +1791,112 @@ class HtmlToEvg {
 
     fn applyBackground:void (el:EVGElement st:[string:string]) {
         def bg:string (HtmlToEvg.prop(st "background-color" ""))
+        def painted:boolean false
         if (HtmlToEvg.isPaintableColor(bg)) {
             el.setAttribute("background-color" bg)
-            return
+            painted = true
         }
         def gc:string (HtmlToEvg.prop(st "evg-gradient-color" ""))
         if (HtmlToEvg.isPaintableColor(gc)) {
-            el.setAttribute("background-color" gc)
+            if (painted == false) {
+                el.setAttribute("background-color" gc)
+            }
+            this.applyGradient(el (HtmlToEvg.prop(st "evg-gradient" "")))
+        }
+    }
+
+    ; A `linear-gradient(…)` as EVG's two-colour gradient: the first and the
+    ; last colour stop, down the box or across it. A diagonal is taken as the
+    ; axis it is closer to; a radial or conic one stays its first colour.
+    fn applyGradient:void (el:EVGElement value:string) {
+        def lower:string (to_lowercase value)
+        def at:int (indexOf lower "linear-gradient(")
+        if (at < 0) {
+            return
+        }
+        def open:int (indexOfFrom value "(" at)
+        ; the arguments end at the bracket that closes this one
+        def depth:int 0
+        def close:int (strlen value)
+        def ci:int open
+        while (ci < (strlen value)) {
+            def ch:int (charAt value ci)
+            if (ch == 40) {
+                depth = (depth + 1)
+            }
+            if (ch == 41) {
+                depth = (depth - 1)
+                if (depth == 0) {
+                    close = ci
+                    break
+                }
+            }
+            ci = (ci + 1)
+        }
+        def args:[string] (CssParser.splitTop((substring value (open + 1) close) 44))
+        def colors:[string]
+        def dir:int 0
+        def reverse:boolean false
+        for args a:string i {
+            def ta:string (to_lowercase (trim a))
+            if ((i == 0) && ((startsWith ta "to ") || ((endsWith ta "deg") || (endsWith ta "turn")))) {
+                if (startsWith ta "to ") {
+                    def h:boolean (((indexOf ta "right") >= 0) || ((indexOf ta "left") >= 0))
+                    def v:boolean (((indexOf ta "top") >= 0) || ((indexOf ta "bottom") >= 0))
+                    if (h && (v == false)) {
+                        dir = 1
+                        reverse = ((indexOf ta "left") >= 0)
+                    } {
+                        reverse = ((indexOf ta "top") >= 0)
+                    }
+                } {
+                    def deg:double (CssParser.num(ta))
+                    if (endsWith ta "turn") {
+                        deg = (deg * 360.0)
+                    }
+                    while (deg < 0.0) {
+                        deg = (deg + 360.0)
+                    }
+                    while (deg >= 360.0) {
+                        deg = (deg - 360.0)
+                    }
+                    if ((deg >= 45.0) && (deg < 135.0)) {
+                        dir = 1
+                    }
+                    if ((deg >= 135.0) && (deg < 225.0)) {
+                        dir = 0
+                    }
+                    if ((deg >= 225.0) && (deg < 315.0)) {
+                        dir = 1
+                        reverse = true
+                    }
+                    if ((deg >= 315.0) || (deg < 45.0)) {
+                        reverse = true
+                    }
+                }
+            } {
+                def parts:[string] (CssCascade.splitValues(a))
+                for parts p:string j {
+                    if (CssCascade.looksLikeColor(p)) {
+                        push colors p
+                    }
+                }
+            }
+        }
+        def n:int (array_length colors)
+        if (n < 2) {
+            return
+        }
+        def c0:string (itemAt colors 0)
+        def c1:string (itemAt colors (n - 1))
+        if reverse {
+            c0 = (itemAt colors (n - 1))
+            c1 = (itemAt colors 0)
+        }
+        if ((HtmlToEvg.isPaintableColor(c0)) && (HtmlToEvg.isPaintableColor(c1))) {
+            el.setAttribute("gradient-from" c0)
+            el.setAttribute("gradient-to" c1)
+            el.setAttribute("gradient-dir" (to_string dir))
         }
     }
 
@@ -1829,45 +1957,6 @@ class HtmlToEvg {
             return 20.0
         }
         return px
-    }
-
-    ; A border on the top or bottom only — a separator line — is drawn as a
-    ; thin block, since EVG's border is all-round.
-    fn edgeBorders:void (el:EVGElement st:[string:string]) {
-        def top:double (this.borderWidth(st "top"))
-        def bottom:double (this.borderWidth(st "bottom"))
-        def left:double (this.borderWidth(st "left"))
-        def right:double (this.borderWidth(st "right"))
-        if (((top > 0.0) && (bottom > 0.0)) && ((left > 0.0) && (right > 0.0))) {
-            return
-        }
-        if (bottom > 0.0) {
-            def c:string (HtmlToEvg.prop(st "border-bottom-color" "#000000"))
-            if (HtmlToEvg.isPaintableColor(c)) {
-                def rule (EVGElement.createDiv())
-                rule.setAttribute("height" ((CssParser.fmt(bottom)) + "px"))
-                rule.setAttribute("width" "100%")
-                rule.setAttribute("background-color" c)
-                rule.setAttribute("margin-top" "4px")
-                el.addChild(rule)
-            }
-        }
-        if (top > 0.0) {
-            def c2:string (HtmlToEvg.prop(st "border-top-color" "#000000"))
-            if (HtmlToEvg.isPaintableColor(c2)) {
-                def rule2 (EVGElement.createDiv())
-                rule2.setAttribute("height" ((CssParser.fmt(top)) + "px"))
-                rule2.setAttribute("width" "100%")
-                rule2.setAttribute("background-color" c2)
-                rule2.setAttribute("margin-bottom" "4px")
-                def kids:[EVGElement]
-                push kids rule2
-                for el.children k:EVGElement ki {
-                    push kids k
-                }
-                el.children = kids
-            }
-        }
     }
 
     fn applyMargins:void (el:EVGElement st:[string:string]) {
@@ -2014,80 +2103,90 @@ class HtmlToEvg {
         }
     }
 
-    ; Grids EVG can lay out: fixed track lists, `fr`, `repeat(N, …)`,
-    ; `minmax`. `auto-fill` / `auto-fit` become a wrapping row instead.
+    ; Grids go to EVG's own grid: track lists with `fr`, `repeat()` (also
+    ; `auto-fill` / `auto-fit`), `minmax`, `min-content` / `max-content`,
+    ; named lines and `subgrid`. Lengths in em, rem, vw and vh are given as
+    ; pixels. A template with `calc()` or `var()` becomes a wrapping row.
     fn applyGridContainer:boolean (el:EVGElement st:[string:string]) {
-        def cols:string (HtmlToEvg.prop(st "grid-template-columns" ""))
+        def cols:string (trim (HtmlToEvg.prop(st "grid-template-columns" "")))
         def lower:string (to_lowercase cols)
-        if ((strlen cols) == 0) {
+        def areas:string (trim (HtmlToEvg.prop(st "grid-template-areas" "")))
+        if ((areas == "none") || ((indexOf areas "var(") >= 0)) {
+            areas = ""
+        }
+        if (((strlen cols) == 0) && ((strlen areas) == 0)) {
             this.gridAsWrap(el st)
             return true
         }
-        if (((indexOf lower "auto-fill") >= 0) || ((indexOf lower "auto-fit") >= 0)) {
-            ; `repeat(auto-fill, minmax(260px, 1fr))`: as many columns as fit
-            ; the width this page is being laid out at
-            def minCol:double (this.autoTrackMin(lower (HtmlToEvg.fontPx(st))))
-            if (minCol > 0.0) {
-                def gap:double (CssCascade.pxOf((HtmlToEvg.prop(st "column-gap" "0px")) (HtmlToEvg.fontPx(st)) contentWidth))
-                if (gap < 0.0) {
-                    gap = 0.0
-                }
-                def n:int (to_int ((contentWidth + gap) / (minCol + gap)))
-                if (n < 1) {
-                    n = 1
-                }
-                if (n > 12) {
-                    n = 12
-                }
-                el.setAttribute("display" "grid")
-                el.setAttribute("grid-template-columns" ("repeat(" + (to_string n) + ", 1fr)"))
-                this.applyGaps(el st)
-                return true
-            }
+        if (((indexOf lower "calc(") >= 0) || ((indexOf lower "var(") >= 0)) {
             this.gridAsWrap(el st)
             return true
         }
-        if ((indexOf lower "calc(") >= 0) {
-            this.gridAsWrap(el st)
-            return true
-        }
-        if (((indexOf lower "[") >= 0) || (((indexOf lower "min-content") >= 0) || ((indexOf lower "max-content") >= 0))) {
-            this.gridAsWrap(el st)
-            return true
-        }
-        if (((indexOf lower "subgrid") >= 0) || ((indexOf lower "var(") >= 0)) {
-            this.gridAsWrap(el st)
-            return true
-        }
+        def em:double (HtmlToEvg.fontPx(st))
         el.setAttribute("display" "grid")
-        el.setAttribute("grid-template-columns" (replace cols "auto" "1fr"))
+        if (((strlen cols) > 0) && (lower != "none")) {
+            el.setAttribute("grid-template-columns" (this.trackPx(cols em)))
+        }
+        if ((strlen areas) > 0) {
+            el.setAttribute("grid-template-areas" areas)
+        }
+        def names:[string] ([] _:string ( "grid-template-rows" "grid-auto-rows" "grid-auto-columns" ))
+        for names nm:string ni {
+            def tv:string (trim (HtmlToEvg.prop(st nm "")))
+            def lt:string (to_lowercase tv)
+            if (((strlen tv) > 0) && ((lt != "none") && ((lt != "auto") && (((indexOf lt "calc(") < 0) && ((indexOf lt "var(") < 0))))) {
+                el.setAttribute(nm (this.trackPx(tv em)))
+            }
+        }
+        def ji:string (trim (to_lowercase (HtmlToEvg.prop(st "justify-items" ""))))
+        if ((ji == "start") || ((ji == "end") || ((ji == "center") || (ji == "stretch")))) {
+            el.setAttribute("justify-items" ji)
+        }
+        def flow:string (trim (HtmlToEvg.prop(st "grid-auto-flow" "")))
+        if ((strlen flow) > 0) {
+            el.setAttribute("grid-auto-flow" flow)
+        }
         this.applyGaps(el st)
         return true
     }
 
-    ; The smallest track of an auto-repeat: `minmax(260px, 1fr)` or `200px`.
-    fn autoTrackMin:double (cols:string em:double) {
-        def comma:int (indexOf cols ",")
-        if (comma < 0) {
-            return 0.0
-        }
-        def rest:string (trim (substring cols (comma + 1) (strlen cols)))
-        if (startsWith rest "minmax(") {
-            rest = (substring rest 7 (strlen rest))
-        }
-        def end:int 0
-        while (end < (strlen rest)) {
-            def ch:int (charAt rest end)
-            if ((ch == 44) || ((ch == 41) || (ch == 32))) {
-                break
+    ; A track list with its em, rem, vw and vh lengths as pixels.
+    fn trackPx:string (spec:string em:double) {
+        def out:string ""
+        def n:int (strlen spec)
+        def i:int 0
+        while (i < n) {
+            def ch:int (charAt spec i)
+            def startsNum:boolean (((ch >= 48) && (ch <= 57)) || (ch == 46))
+            if (startsNum && (i > 0)) {
+                def prev:int (charAt spec (i - 1))
+                if (((prev >= 97) && (prev <= 122)) || ((prev == 45) || (prev == 95))) {
+                    startsNum = false
+                }
             }
-            end = (end + 1)
+            if startsNum {
+                def j:int i
+                while ((j < n) && ((((charAt spec j) >= 48) && ((charAt spec j) <= 57)) || ((charAt spec j) == 46))) {
+                    j = (j + 1)
+                }
+                def k:int j
+                while ((k < n) && (((charAt spec k) >= 97) && ((charAt spec k) <= 122))) {
+                    k = (k + 1)
+                }
+                def unit:string (substring spec j k)
+                def tok:string (substring spec i k)
+                if ((unit == "em") || ((unit == "rem") || ((unit == "vw") || (unit == "vh")))) {
+                    out = (out + (CssParser.fmt((CssCascade.pxOf(tok em contentWidth)))) + "px")
+                } {
+                    out = (out + tok)
+                }
+                i = k
+            } {
+                out = (out + (substring spec i (i + 1)))
+                i = (i + 1)
+            }
         }
-        def v:double (CssCascade.pxOf((substring rest 0 end) em contentWidth))
-        if (v > contentWidth) {
-            return contentWidth
-        }
-        return v
+        return out
     }
 
     fn gridAsWrap:void (el:EVGElement st:[string:string]) {
@@ -2154,6 +2253,14 @@ class HtmlToEvg {
         if ((strlen gr) > 0) {
             item.setAttribute("grid-row" gr)
         }
+        def js:string (trim (to_lowercase (HtmlToEvg.prop(st "justify-self" ""))))
+        if ((js == "start") || ((js == "end") || ((js == "center") || (js == "stretch")))) {
+            item.setAttribute("justify-self" js)
+        }
+        def ga:string (HtmlToEvg.gridLines((HtmlToEvg.prop(st "grid-area" ""))))
+        if ((strlen ga) > 0) {
+            item.setAttribute("grid-area" ga)
+        }
     }
 
     ; `3/4`, `1.5` or `16 / 9` as width over height; 0 for `auto` or nothing.
@@ -2177,36 +2284,29 @@ class HtmlToEvg {
         return (w / h)
     }
 
-    ; `grid-column` in the forms EVG places: `span 2 / span 2` (Tailwind's
-    ; col-span-2) and `span 2 / auto` are `span 2`; line numbers pass as they
-    ; are. Negative lines and names are left to the auto-placement.
+    ; `grid-column` / `grid-row` go to EVG's grid placement as they are:
+    ; line numbers (also negative), spans and named lines.
     sfn gridLines:string (v:string) {
-        def t:string (trim (to_lowercase v))
-        if (((strlen t) == 0) || (t == "auto")) {
+        def t:string (trim v)
+        def lower:string (to_lowercase t)
+        if (((strlen t) == 0) || ((lower == "auto") || ((indexOf lower "var(") >= 0))) {
             return ""
         }
-        def sides:[string] (strsplit t "/")
-        def a:string (trim (itemAt sides 0))
-        def b:string "auto"
-        if ((array_length sides) > 1) {
-            b = (trim (itemAt sides 1))
+        return t
+    }
+
+    fn stretchesInGrid:boolean (parent:[string:string] item:[string:string] box:EVGElement) {
+        if (box.aspectRatio > 0.0) {
+            return false
         }
-        if (startsWith a "span") {
-            if ((startsWith b "span") || (b == "auto")) {
-                return a
-            }
-            return ""
+        if ((box.elementType > 1) || (box.marginAutoLeft || box.marginAutoRight)) {
+            return false
         }
-        if (((CssParser.num(a)) < 1.0) || ((indexOf b "-") >= 0)) {
-            return ""
+        def j:string (to_lowercase (HtmlToEvg.prop(item "justify-self" "auto")))
+        if ((j == "auto") || (j == "normal")) {
+            j = (to_lowercase (HtmlToEvg.prop(parent "justify-items" "stretch")))
         }
-        if ((b == "auto") || ((CssParser.num(b)) < 1.0)) {
-            if (startsWith b "span") {
-                return (a + " / " + b)
-            }
-            return a
-        }
-        return (a + " / " + b)
+        return ((j == "stretch") || ((j == "normal") || (j == "legacy")))
     }
 
     fn stretchesItems:boolean (parent:[string:string] item:[string:string]) {
@@ -2336,6 +2436,13 @@ class HtmlToEvg {
     fn textStyle:void (s:EVGElement st:[string:string]) {
         def size:double (HtmlToEvg.fontPx(st))
         s.setAttribute("font-size" ((CssParser.fmt(size)) + "px"))
+        def ls:string (HtmlToEvg.prop(st "letter-spacing" "normal"))
+        if (ls != "normal") {
+            def lsv:double (CssCascade.pxOf(ls size 0.0))
+            if ((lsv != 0.0) && ((lsv > -5.0) && (lsv < 40.0))) {
+                s.setAttribute("letter-spacing" ((CssParser.fmt(lsv)) + "px"))
+            }
+        }
         def weight:string (HtmlToEvg.prop(st "font-weight" "normal"))
         if ((weight == "bold") || ((weight == "bolder") || ((CssParser.num(weight)) >= 600.0))) {
             s.setAttribute("font-weight" "bold")

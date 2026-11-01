@@ -656,6 +656,7 @@ class CssCascade {
             def gc2:string (CssCascade.gradientColor(value))
             if ((strlen gc2) > 0) {
                 set st "evg-gradient-color" gc2
+                set st "evg-gradient" value
             }
             if (colorSet == false) {
                 if ((value == "none") || ((value == "transparent") || (startsWith value "url("))) {
@@ -775,6 +776,7 @@ class CssCascade {
             def gc:string (CssCascade.gradientColor(value))
             if ((strlen gc) > 0) {
                 set st "evg-gradient-color" gc
+                set st "evg-gradient" value
             }
             return
         }
@@ -1033,7 +1035,7 @@ class CssCascade {
     }
 
     sfn inheritedProps:[string] () {
-        return ([] _:string ( "color" "font-family" "font-style" "font-weight" "line-height" "text-align" "text-transform" "white-space" "visibility" "list-style-type" "text-decoration-line" "word-break" "overflow-wrap" ))
+        return ([] _:string ( "color" "font-family" "font-style" "font-weight" "line-height" "text-align" "text-transform" "white-space" "visibility" "list-style-type" "text-decoration-line" "word-break" "overflow-wrap" "letter-spacing" ))
     }
 
     sfn isKnown:boolean (name:string) {
@@ -1043,7 +1045,7 @@ class CssCascade {
         if ((startsWith name "min-") || ((startsWith name "max-") || (startsWith name "list-style"))) {
             return true
         }
-        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "grid-template-rows" "grid-template-areas" "grid-column" "grid-row" "aspect-ratio" "word-break" "overflow-wrap" "order" "left" "top" "right" "bottom" "inset" "z-index" "pointer-events" "clear" ))
+        def list:[string] ([] _:string ( "background-image" "-webkit-line-clamp" "line-clamp" "overflow-x" "overflow-y" "display" "visibility" "color" "background" "background-color" "line-height" "text-align" "text-transform" "text-decoration" "text-decoration-line" "white-space" "width" "height" "justify-content" "align-items" "align-self" "align-content" "gap" "row-gap" "column-gap" "opacity" "position" "float" "vertical-align" "box-sizing" "overflow" "grid-template-columns" "grid-template-rows" "grid-template-areas" "grid-column" "grid-row" "aspect-ratio" "word-break" "overflow-wrap" "order" "left" "top" "right" "bottom" "inset" "z-index" "pointer-events" "clear" "letter-spacing" "grid-area" "grid-auto-rows" "grid-auto-columns" "grid-auto-flow" "justify-items" "justify-self" ))
         for list k:string i {
             if (k == name) {
                 return true

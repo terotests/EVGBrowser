@@ -1,0 +1,28 @@
+<!doctype html><html><head><title>CSS-ominaisuudet – EVG Browserin testisivu</title><style>
+body{font-family:sans-serif;margin:16px;background:#f6f6f6}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.card{background:#fff;border-top:4px solid #2a6;border-left:1px solid #ccc;border-right:1px solid #ccc;border-bottom:2px dashed #c33;padding:8px}
+.pic{aspect-ratio:16/9;background:linear-gradient(to right,#8cf,#36a);border-radius:6px}
+.pic2{aspect-ratio:16/9;background-image:linear-gradient(#fd8,#e53);border-radius:6px}
+.wrap{position:relative;display:grid;grid-template-columns:100px 1fr;gap:8px;margin-top:20px;background:#fff;padding:8px}
+.abs{position:absolute;grid-column:2;grid-row:1/3;right:0;top:0;width:60px;height:40px;background:#fc0}
+.spaced{letter-spacing:4px}
+.sub{display:grid;grid-template-columns:subgrid;grid-column:1/3}
+.areas{display:grid;grid-template-columns:120px 1fr;grid-template-areas:"nav head" "nav main";gap:6px;margin-top:20px}
+.areas>*{background:#dde;padding:6px}
+.n{grid-area:nav}.h{grid-area:head}.m{grid-area:main}
+.named{display:grid;grid-template-columns:[full-start] 1rem [main-start] 1fr [main-end] 1rem [full-end];margin-top:20px;background:#fff}
+.named>div{grid-column:main-start/main-end;background:#cfe}
+.named>.full{grid-column:full-start/full-end;background:#fcc}
+.sep{border-bottom:2px solid #36a;padding-bottom:4px}
+</style></head><body>
+<h1 class="spaced sep">Uudet EVG-ominaisuudet</h1>
+<div class="grid">
+<div class="card"><div class="pic"></div><p>Kortti 1</p></div>
+<div class="card"><div class="pic2"></div><p>Kortti 2, pidempi teksti joka rivittyy</p></div>
+<div class="card"><div class="pic"></div><p>Kortti 3</p></div>
+</div>
+<div class="wrap"><div>A</div><div>B</div><div class="sub"><div>C1</div><div>C2 subgrid</div></div><div class="abs">abs</div></div>
+<div class="areas"><div class="n">nav</div><div class="h">head</div><div class="m">main</div></div>
+<div class="named"><div>main-start / main-end</div><div class="full">full-start / full-end</div></div>
+</body></html>
