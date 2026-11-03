@@ -41,9 +41,22 @@ CXX="${CXX:-$(command -v clang++ || command -v g++)}"
 mkdir -p "$OUT/cpp"
 echo "==> 1/2 Ranger -> C++"
 cd "$ROOT"
-LOG="$(node --stack-size=8000 "$RGRC" -l=cpp native/sdl/SdlEntry.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
-if grep -q "FAIL" <<<"$LOG"; then
-  echo "$LOG" >&2
+# The compiler recurses deeply; --stack-size must stay under the thread's
+# real stack or node crashes without a word (macOS: 8 MB by default). Ask
+# for a bigger one where the shell allows it.
+ulimit -s 65520 2>/dev/null || ulimit -s unlimited 2>/dev/null || true
+STACK_KB=8000
+if [ "$(ulimit -s)" = "unlimited" ] || [ "$(ulimit -s)" -ge 60000 ]; then
+  STACK_KB=48000
+fi
+set +e
+LOG="$(node --stack-size=$STACK_KB "$RGRC" -l=cpp native/sdl/SdlEntry.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
+STATUS=$?
+set -e
+if [ $STATUS -ne 0 ] || grep -q "FAIL" <<<"$LOG"; then
+  echo "$LOG" | tail -40 >&2
+  echo "error: Ranger -> C++ failed (exit $STATUS, stack ${STACK_KB} KB)." >&2
+  echo "       If it is an old package, run npm install first." >&2
   exit 1
 fi
 
