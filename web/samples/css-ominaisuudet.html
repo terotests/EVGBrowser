@@ -14,6 +14,9 @@ body{font-family:sans-serif;margin:16px;background:#f6f6f6}
 .named{display:grid;grid-template-columns:[full-start] 1rem [main-start] 1fr [main-end] 1rem [full-end];margin-top:20px;background:#fff}
 .named>div{grid-column:main-start/main-end;background:#cfe}
 .named>.full{grid-column:full-start/full-end;background:#fcc}
+.rainbow{height:24px;margin-top:20px;background:linear-gradient(90deg,#e33,#fb3 25%,#3b5 50%,#39f 75%,#a3e)}
+.dash{margin-top:20px;padding:8px;border:2px dashed #36a;background:#fff}
+.dot{margin-top:8px;padding:8px;border-left:4px dotted #c33;background:#fff}
 .sep{border-bottom:2px solid #36a;padding-bottom:4px}
 </style></head><body>
 <h1 class="spaced sep">Uudet EVG-ominaisuudet</h1>
@@ -25,4 +28,8 @@ body{font-family:sans-serif;margin:16px;background:#f6f6f6}
 <div class="wrap"><div>A</div><div>B</div><div class="sub"><div>C1</div><div>C2 subgrid</div></div><div class="abs">abs</div></div>
 <div class="areas"><div class="n">nav</div><div class="h">head</div><div class="m">main</div></div>
 <div class="named"><div>main-start / main-end</div><div class="full">full-start / full-end</div></div>
+<div class="rainbow"></div>
+<div class="dash">Katkoviivareuna</div>
+<div class="dot">Pistereuna vasemmalla</div>
+<p>Ennen tätä on iframe, jonka paikalle ei tule ilmoitusta:</p><iframe src="https://example.com/"></iframe><p>Iframen jälkeen.</p>
 </body></html>

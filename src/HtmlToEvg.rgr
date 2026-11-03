@@ -1273,23 +1273,12 @@ class HtmlToEvg {
         return (this.mediaNotice(c))
     }
 
+    ; Video, audio, iframes, objects and canvases are not shown, and leave
+    ; nothing in their place: a notice box where each one was broke up the
+    ; page's own content.
     fn mediaNotice:EVGElement (c:HNode) {
         blockedMedia = (blockedMedia + 1)
-        def box (EVGElement.createDiv())
-        box.setAttribute("padding" "8px 12px")
-        box.setAttribute("margin-bottom" "8px")
-        box.setAttribute("background-color" "#eef1f6")
-        box.setAttribute("border-radius" "8px")
-        def label (EVGElement.createSpan())
-        label.setAttribute("font-size" "14px")
-        label.setAttribute("color" "#4a5568")
-        if ((c.tag == "video") || (c.tag == "audio")) {
-            label.textContent = "Video ja ääni eivät ole tässä selaimessa käytössä."
-        } {
-            label.textContent = "Upotettu sisältö on piilotettu."
-        }
-        box.addChild(label)
-        return box
+        return (EVGElement.createDiv())
     }
 
     fn imageSource:string (c:HNode) {
@@ -1733,7 +1722,15 @@ class HtmlToEvg {
                 same = false
             }
         }
-        def folded:boolean (any && (same == false))
+        ; a dotted or dashed border is painted side by side too
+        def dashed:boolean false
+        for sides sd:string kd {
+            def ds:string (to_lowercase (HtmlToEvg.prop(st ("border-" + sd + "-style") "none")))
+            if (((ds == "dotted") || (ds == "dashed")) && ((itemAt bws kd) > 0.0)) {
+                dashed = true
+            }
+        }
+        def folded:boolean (any && ((same == false) || dashed))
         for sides s:string i {
             def pv:string (HtmlToEvg.prop(st ("padding-" + s) ""))
             def pp:double (CssCascade.pxOf(pv em contentWidth))
@@ -1755,10 +1752,18 @@ class HtmlToEvg {
                 push wl (CssParser.fmt(bv))
             }
             def ws:string (join wl " ")
-            el.setAttribute("side-borders" (ws + "|" + (join bcs "|")))
+            def sl:[string]
+            for sides s3:string k3 {
+                def bs:string (to_lowercase (HtmlToEvg.prop(st ("border-" + s3 + "-style") "solid")))
+                if ((bs != "dotted") && (bs != "dashed")) {
+                    bs = "solid"
+                }
+                push sl bs
+            }
+            el.setAttribute("side-borders" (ws + "|" + (join bcs "|") + "|" + (join sl " ")))
             el.setAttribute("folded-border" ws)
         }
-        if (any && same) {
+        if (any && (folded == false)) {
             if (HtmlToEvg.isPaintableColor(c0)) {
                 el.setAttribute("border" ((CssParser.fmt((itemAt bws 0))) + "px solid " + c0))
             }
@@ -1886,6 +1891,19 @@ class HtmlToEvg {
         def n:int (array_length colors)
         if (n < 2) {
             return
+        }
+        if (n > 2) {
+            ; many stops: EVG reads the gradient itself and paints it as bands
+            def allOk:boolean true
+            for colors cc:string ck {
+                if ((HtmlToEvg.isPaintableColor(cc)) == false) {
+                    allOk = false
+                }
+            }
+            if (allOk && ((indexOf lower "calc(") < 0)) {
+                el.setAttribute("background-gradient" (substring value at (close + 1)))
+                return
+            }
         }
         def c0:string (itemAt colors 0)
         def c1:string (itemAt colors (n - 1))

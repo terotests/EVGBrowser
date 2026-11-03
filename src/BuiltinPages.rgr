@@ -167,7 +167,7 @@ class BuiltinPages {
         b = (b + "<h2 id=\"taulukko\">Taulukko</h2><table><tr><th>Eläin</th><th>Jalkoja</th><th>Ääni</th></tr>")
         b = (b + "<tr><td>Kissa</td><td>4</td><td>miau</td></tr><tr><td>Kana</td><td>2</td><td>kot kot</td></tr><tr><td>Hämähäkki</td><td>8</td><td>–</td></tr></table>")
         b = (b + "<h2>Haku</h2><form action=\"https://fi.wikipedia.org/w/index.php\" method=\"get\"><input type=\"search\" name=\"search\" placeholder=\"Hae Wikipediasta\"> <button type=\"submit\">Hae</button></form>")
-        b = (b + "<h2>Video</h2><video src=\"x.mp4\"></video><p class=\"note\">Videot näytetään ilmoituksena, eikä niitä ladata.</p>")
+        b = (b + "<h2>Video</h2><video src=\"x.mp4\"></video><p class=\"note\">Videoita ei näytetä eikä ladata.</p>")
         return (BuiltinPages.shell("Esittelysivu" css b))
     }
 }
