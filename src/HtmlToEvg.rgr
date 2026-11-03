@@ -2317,7 +2317,10 @@ class HtmlToEvg {
         if (box.aspectRatio > 0.0) {
             return false
         }
-        if ((box.elementType > 1) || (box.marginAutoLeft || box.marginAutoRight)) {
+        if (box.elementType > 1) {
+            return false
+        }
+        if (((HtmlToEvg.prop(item "margin-left" "")) == "auto") || ((HtmlToEvg.prop(item "margin-right" "")) == "auto")) {
             return false
         }
         def j:string (to_lowercase (HtmlToEvg.prop(item "justify-self" "auto")))
