@@ -40,12 +40,12 @@
 #   SLIQTLY_URL, SLIQTLY_TOKEN   REST-varavaihtoehto (/api/v1/decks), jos kantaa ei löydy
 #
 #   GIT_REPOS                välilyönnillä erotettu lista repoja
-#   GIT_SCAN_DIRS=$HOME      hakemistot joista .git-hakemistot etsitään (jos GIT_REPOS tyhjä)
-#   GIT_SCAN_DEPTH=4
-#   GIT_AUTHOR               oletus: git config --global user.email; useita: "a@x\|b@y"
+#   GIT_SCAN_DIRS=/work/src  hakemistot joista kaikki repot etsitään (jos GIT_REPOS tyhjä)
+#   GIT_SCAN_DEPTH=5
+#   GIT_AUTHOR               oletus: globaali + jokaisen repon oma user.email; useita: "a@x\|b@y"
 #   GIT_REFLOG=1             lisää reflog-tapahtumat (checkout, rebase, commit --amend ...)
 #
-#   WORK_DIRS=$HOME/src      files-lähteen hakemistot (välilyönnillä erotettu)
+#   WORK_DIRS=/work/src      files-lähteen hakemistot (välilyönnillä erotettu)
 #   FILES_EXCLUDE            regex polkuihin joita ei lasketa
 #
 # Vaatii: bash, GNU date, python3. Valinnaiset: last, journalctl, curl, git.
@@ -131,7 +131,7 @@ src_jenkins() {
   for _ in $(seq 2 "$depth"); do tree="name,builds[$inner],jobs[$tree]"; done
   local auth=()
   [ -n "${JENKINS_USER:-}" ] && auth=(-u "$JENKINS_USER:${JENKINS_TOKEN:-}")
-  curl -fsS --max-time 60 "${auth[@]}" -G "${JENKINS_URL%/}/api/json" \
+  curl -fsS --connect-timeout 5 --max-time 60 "${auth[@]}" -G "${JENKINS_URL%/}/api/json" \
        --data-urlencode "tree=jobs[$tree]" -o "$TMP/jenkins.json" 2>"$TMP/jenkins.err" \
     || { log jenkins "haku epäonnistui: $(head -c 200 "$TMP/jenkins.err")"; return; }
   JBU="${JENKINS_BUILD_USER:-}" python3 - "$TMP/jenkins.json" <<'PY' | emit jenkins
@@ -308,28 +308,47 @@ PY
 # ------------------------------------------------------------- git
 src_git() {
   command -v git >/dev/null || { log git "git puuttuu"; return; }
-  local author="${GIT_AUTHOR:-$(git config --global user.email 2>/dev/null)}" repos="${GIT_REPOS:-}"
-  if [ -z "$repos" ]; then
-    for d in ${GIT_SCAN_DIRS:-$HOME}; do
-      repos="$repos $(find "$d" -maxdepth "${GIT_SCAN_DEPTH:-4}" -name .git \( -type d -o -type f \) \
-                -not -path '*/node_modules/*' -prune 2>/dev/null | sed 's|/\.git$||' | tr '\n' ' ')"
+  local list="$TMP/git_repos.txt" r d
+  : > "$list"
+  if [ -n "${GIT_REPOS:-}" ]; then
+    for r in $GIT_REPOS; do echo "$r" >> "$list"; done
+  else
+    for d in ${GIT_SCAN_DIRS:-/work/src}; do
+      [ -d "$d" ] || { log git "$d puuttuu"; continue; }
+      # .git voi olla hakemisto tai (worktree/submodule) tiedosto; node_modules ohitetaan
+      find "$d" -maxdepth "${GIT_SCAN_DEPTH:-5}" \( -name node_modules -prune \) -o \
+           -name .git -print -prune 2>/dev/null | sed 's|/\.git$||' >> "$list"
     done
   fi
-  local n=0
-  for r in $repos; do
-    [ -e "$r/.git" ] || [ -d "$r/objects" ] || continue
-    n=$((n+1)); local name; name=$(basename "$r")
+  sort -u -o "$list" "$list"
+  # author: GIT_AUTHOR tai kaikkien löytyneiden repojen user.email-arvot + globaali
+  local author="${GIT_AUTHOR:-}"
+  if [ -z "$author" ]; then
+    author=$( { git config --global user.email
+                while IFS= read -r r; do git -C "$r" config user.email; done < "$list"; } 2>/dev/null \
+              | sort -u | grep -v '^$' | paste -sd'|' -)
+    author=${author//|/\\|}
+  fi
+  local n=0 c name
+  while IFS= read -r r; do
+    git -C "$r" rev-parse --git-dir >/dev/null 2>&1 || continue
+    n=$((n+1)); local base="${GIT_SCAN_DIRS:-/work/src}"; name=${r#"${base%% *}/"}; [ "$name" = "$r" ] && name=$(basename "$r")
+    # --since/--until on committer-aika; emit suodattaa author-ajan (%at) vielä välille
     git -C "$r" log --all --no-merges ${author:+--author="$author"} \
-        --since="@$START_EPOCH" --until="@$END_EPOCH" --format="%at%x09$name commit %h %s" 2>/dev/null \
-      | cut -c1-160 > "$TMP/git_c.tsv"
-    emit git < "$TMP/git_c.tsv"
-    awk -F'\t' -v n="$name" '{ sub(n" commit [0-9a-f]+ ", "", $2); printf "%s\tgit\t%s: %s\n", $1, n, $2 }' "$TMP/git_c.tsv" >> "$NOTES"
+        --since="@$((START_EPOCH - 86400*30))" --format="%at%x09%h%x09%s" 2>/dev/null \
+      | awk -F'\t' -v a="$START_EPOCH" -v b="$END_EPOCH" '$1>=a && $1<b' | cut -c1-200 > "$TMP/git_c.tsv"
+    c=$(wc -l < "$TMP/git_c.tsv")
+    if [ "$c" -gt 0 ]; then
+      log git "  $name: $c committia"
+      awk -F'\t' -v n="$name" '{ printf "%s\t%s commit %s %s\n", $1, n, $2, $3 }' "$TMP/git_c.tsv" | emit git
+      awk -F'\t' -v n="$name" '{ printf "%s\tgit\t%s: %s\n", $1, n, $3 }' "$TMP/git_c.tsv" >> "$NOTES"
+    fi
     if [ "${GIT_REFLOG:-1}" = 1 ]; then
-      # reflog on paikallinen eli kertoo omasta toiminnasta tällä koneella
+      # reflog on paikallinen eli kertoo omasta toiminnasta tällä koneella (checkout, pull, rebase...)
       git -C "$r" reflog --all --date=unix --format="%gd%x09%gs" 2>/dev/null \
         | sed -nE "s/^[^@]*@\{([0-9]+)\}\t(.*)$/\1\t$name reflog \2/p" | cut -c1-120 | emit git
     fi
-  done
+  done < "$list"
   log git "$n repoa, author='${author:-*}', $(count_src git) tapahtumaa"
 }
 
@@ -347,7 +366,7 @@ src_shell() {
 # ------------------------------------------------------------- files
 src_files() {
   local ex="${FILES_EXCLUDE:-/(node_modules|\.git|\.cache|dist|build|target|__pycache__|\.venv|venv|\.next|coverage)/}"
-  for d in ${WORK_DIRS:-$HOME/src}; do
+  for d in ${WORK_DIRS:-/work/src}; do
     [ -d "$d" ] || { log files "$d puuttuu"; continue; }
     find "$d" -type f -newermt "$FROM" ! -newermt "$(date -d "$TO +1 day" +%F)" -printf '%T@\t%p\n' 2>/dev/null \
       | grep -Ev "$ex" | emit files
