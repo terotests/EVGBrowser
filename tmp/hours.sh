@@ -19,6 +19,7 @@
 # Käyttö:
 #   ./hours.sh                       # 2026-11-01..2026-11-10
 #   ./hours.sh --from 2026-11-01 --to 2026-11-10 --csv out.csv -v
+#   ./hours.sh --no-timeline          # ilman aikajanaa (tapahtumat minuutin tarkkuudella)
 #   SOURCES="git jenkins" ./hours.sh
 #
 # Asetukset ympäristömuuttujilla (oletukset alla):
@@ -61,6 +62,7 @@ USER_NAME="${USER_NAME:-${USER:-$(id -un)}}"
 VERBOSE=0
 CSV=""
 DUMP=""
+TIMELINE="${TIMELINE:-1}"
 
 usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 while [ $# -gt 0 ]; do
@@ -71,7 +73,8 @@ while [ $# -gt 0 ]; do
     --pad) PAD_MIN="$2"; shift 2;;
     --sources) SOURCES="$2"; shift 2;;
     --csv) CSV="$2"; shift 2;;
-    --dump) DUMP="$2"; shift 2;;     # kirjoittaa raakatapahtumat tiedostoon
+    --dump) DUMP="$2"; shift 2;;
+    --no-timeline) TIMELINE=0; shift;;     # kirjoittaa raakatapahtumat tiedostoon
     -v|--verbose) VERBOSE=1; shift;;
     -h|--help) usage;;
     *) echo "Tuntematon argumentti: $1" >&2; exit 2;;
@@ -251,7 +254,7 @@ if os.path.exists(f"{d}/sliqtly.db"):
             t = ts(at); fr = o.get("from") or {}
             if not t or o.get("deleted"): continue
             who = fr.get("name") or fr.get("user") or "?"
-            ev(t, f"chat {rooms.get(room, room)}: {who}")
+            ev(t, f"chat [{rooms.get(room, room)}] {who}: {clean(o.get('text'))[:90]}")
             if fr.get("kind") == "bot": continue
             if chat_from and chat_from not in who.lower(): continue
             txt = clean(o.get("text"))
@@ -383,6 +386,7 @@ done
 
 GAP_MIN="$GAP_MIN" PAD_MIN="$PAD_MIN" MIN_EV="$MIN_EVENTS_DAY" CSV="$CSV" \
 FROM="$FROM" TO="$TO" SOURCES="$SOURCES" VERBOSE="$VERBOSE" NOTES_MAX="${NOTES_MAX:-25}" \
+TIMELINE="$TIMELINE" WORK_DIRS="${WORK_DIRS:-/work/src}" \
 python3 - "$EVENTS" "$NOTES" <<'PY'
 import os, sys, csv
 from datetime import datetime, date, timedelta
@@ -397,7 +401,7 @@ for line in open(sys.argv[1]):
     p = line.rstrip("\n").split("\t", 2)
     if len(p) < 2: continue
     t = int(p[0]); d = datetime.fromtimestamp(t).date()
-    days[d].append((t, p[1]))
+    days[d].append((t, p[1], p[2] if len(p) > 2 else ""))
 
 def hm(sec): sec = int(round(sec / 60)); return f"{sec // 60}:{sec % 60:02d}"
 rows = []
@@ -407,13 +411,13 @@ while d <= end:
     if len(ev) < min_ev:
         rows.append(dict(day=d, n=0)); d += timedelta(days=1); continue
     sessions, s0, prev = [], ev[0][0], ev[0][0]
-    for t, _ in ev[1:]:
+    for t, *_ in ev[1:]:
         if t - prev > gap: sessions.append((s0, prev)); s0 = t
         prev = t
     sessions.append((s0, prev))
     active = sum(b - a + pad for a, b in sessions)
     cnt = defaultdict(int)
-    for _, s in ev: cnt[s] += 1
+    for _, s, _d in ev: cnt[s] += 1
     rows.append(dict(day=d, n=len(ev), first=ev[0][0], last=ev[-1][0],
                      span=ev[-1][0] - ev[0][0], active=active, sessions=sessions, cnt=cnt))
     d += timedelta(days=1)
@@ -453,6 +457,44 @@ if notes and nmax > 0:
         for t, s, txt in items[:nmax]:
             print(f"  {fmt(t)} [{s}] {txt}")
         if len(items) > nmax: print(f"  ... +{len(items) - nmax} lisää (NOTES_MAX)")
+# Aikajana: jokainen tapahtuma jaksoittain. Peräkkäiset samanlaiset tapahtumat
+# (sama lähde ja kuvaus, tiedostoilla sama hakemisto) yhdistetään yhdelle riville.
+if os.environ["TIMELINE"] == "1":
+    import os.path
+    roots = [r.rstrip("/") + "/" for r in os.environ["WORK_DIRS"].split()]
+    def key(src, desc):
+        if src == "files":
+            for r in roots:
+                if desc.startswith(r): desc = desc[len(r):]; break
+            return ("files", "muokattu: " + (os.path.dirname(desc) or "."), os.path.basename(desc))
+        return (src, desc, None)
+    print("\n" + "=" * 70 + "\nAikajana (mitä tehtiin milloinkin)\n" + "=" * 70)
+    for r in rows:
+        if not r["n"]: continue
+        ev = sorted(days[r["day"]])
+        print(f"\n{r['day']} {wd[r['day'].weekday()]}   arvio {hm(r['active'])}")
+        for a, b in r["sessions"]:
+            print(f"  -- jakso {fmt(a)}-{fmt(b)} ({hm(b - a + pad)}) --")
+            run = None
+            def flush(run):
+                if not run: return
+                t0, t1, (src, desc, _), n, files = run
+                when = fmt(t0) if fmt(t0) == fmt(t1) else f"{fmt(t0)}-{fmt(t1)}"
+                extra = ""
+                if src == "files":
+                    shown = sorted(set(files))
+                    extra = ": " + ", ".join(shown[:4]) + (f" +{len(shown) - 4}" if len(shown) > 4 else "")
+                elif n > 1: extra = f" (x{n})"
+                print(f"  {when:<11} [{src}] {desc[:110]}{extra}")
+            for t, src, desc in ev:
+                if t < a or t > b: continue
+                k = key(src, desc)
+                if run and run[2][:2] == k[:2]:
+                    run[1] = t; run[3] += 1
+                    if k[2]: run[4].append(k[2])
+                else:
+                    flush(run); run = [t, t, k, 1, [k[2]] if k[2] else []]
+            flush(run)
 print("\nArvio = yhtenäisten aktiivisuusjaksojen summa; Span = päivän ensimmäinen..viimeinen tapahtuma (yläraja).")
 if os.environ["CSV"]:
     with open(os.environ["CSV"], "w", newline="") as f:
