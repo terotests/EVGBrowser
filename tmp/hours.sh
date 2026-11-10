@@ -64,6 +64,21 @@ VERBOSE=0
 CSV=""
 DUMP=""
 TIMELINE="${TIMELINE:-1}"
+# Kiinteät merkinnät (tiedossa olevat työt, lisätään laskettujen päälle).
+# Muoto: PÄIVÄ|HH:MM-HH:MM|kuvaus  tai  PÄIVÄ|tunnit h|kuvaus
+# Kellonajalliset yhdistetään laskettuihin 30 min jaksoihin (ei tuplalaskentaa),
+# pelkät tuntimäärät lisätään päivän arvioon sellaisenaan.
+# Korvaa tiedostolla: MANUAL_FILE=omat.txt, tai tyhjennä: MANUAL_FILE=/dev/null
+DEFAULT_MANUAL='
+2026-11-04|08:30-11:30|Building a new build, bug investigation
+2026-11-05|09:00-13:00|Reviewing new merge requests
+2026-11-06|09:00-13:00|At the office: IPC refactor work estimate
+2026-11-07|4h|Build preparation, continued IPC refactor work estimate
+2026-11-08|1h|Building the build
+2026-11-09|3.5h|Project updates, status, reading updates
+2026-11-09|3h|Night: building a new build
+'
+if [ -n "${MANUAL_FILE:-}" ]; then MANUAL=$(cat "$MANUAL_FILE"); else MANUAL="${MANUAL-$DEFAULT_MANUAL}"; fi
 HTML="${HTML-hours-report.html}"
 
 usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
@@ -391,7 +406,7 @@ done
 
 GAP_MIN="$GAP_MIN" PAD_MIN="$PAD_MIN" MIN_EV="$MIN_EVENTS_DAY" CSV="$CSV" \
 FROM="$FROM" TO="$TO" SOURCES="$SOURCES" VERBOSE="$VERBOSE" NOTES_MAX="${NOTES_MAX:-25}" \
-TIMELINE="$TIMELINE" HTML="$HTML" WORK_DIRS="${WORK_DIRS:-/work/src}" \
+MANUAL="$MANUAL" SLOT_MIN="${SLOT_MIN:-30}" TIMELINE="$TIMELINE" HTML="$HTML" WORK_DIRS="${WORK_DIRS:-/work/src}" \
 python3 - "$EVENTS" "$NOTES" <<'PY'
 import os, sys, csv
 from datetime import datetime, date, timedelta
@@ -409,41 +424,79 @@ for line in open(sys.argv[1]):
     days[d].append((t, p[1], p[2] if len(p) > 2 else ""))
 
 def hm(sec): sec = int(round(sec / 60)); return f"{sec // 60}:{sec % 60:02d}"
+SLOT = int(os.environ.get("SLOT_MIN", "30")) * 60
+def midnight(d): return datetime(d.year, d.month, d.day).timestamp()
+# Kiinteät (käsin tiedossa olevat) merkinnät: "PVM|HH:MM-HH:MM tai N h|kuvaus"
+manual = defaultdict(list)   # päivä -> [(alku_ts|None, loppu_ts|None, tunnit, kuvaus)]
+for ln in os.environ.get("MANUAL", "").splitlines():
+    ln = ln.split("#", 1)[0].strip() if not ln.strip().startswith("20") else ln.strip()
+    if not ln: continue
+    try:
+        dstr, when, desc = [x.strip() for x in ln.split("|", 2)]
+        md = date.fromisoformat(dstr); m0 = midnight(md)
+        if "-" in when and ":" in when:
+            a_, b_ = when.split("-")
+            ta = m0 + int(a_.split(":")[0]) * 3600 + int(a_.split(":")[1]) * 60
+            tb = m0 + int(b_.split(":")[0]) * 3600 + int(b_.split(":")[1]) * 60
+            if tb <= ta: tb += 86400
+            manual[md].append((ta, tb, (tb - ta) / 3600, desc))
+        else:
+            manual[md].append((None, None, float(when.lower().rstrip("h ").replace(",", ".")), desc))
+    except Exception as e:
+        print(f"Kiinteä merkintä ohitettu ({e}): {ln}", file=sys.stderr)
 rows = []
 d, end = date.fromisoformat(os.environ["FROM"]), date.fromisoformat(os.environ["TO"])
 while d <= end:
     ev = sorted(days.get(d, []))
-    if len(ev) < min_ev:
+    if len(ev) < min_ev: ev = []
+    man = manual.get(d, [])
+    if not ev and not man:
         rows.append(dict(day=d, n=0)); d += timedelta(days=1); continue
-    sessions, s0, prev = [], ev[0][0], ev[0][0]
-    for t, *_ in ev[1:]:
-        if t - prev > gap: sessions.append((s0, prev)); s0 = t
-        prev = t
-    sessions.append((s0, prev))
-    active = sum(b - a + pad for a, b in sessions)
+    m0 = midnight(d)
+    sessions = []
+    if ev:
+        s0 = prev = ev[0][0]
+        for t, *_ in ev[1:]:
+            if t - prev > gap: sessions.append((s0, prev)); s0 = t
+            prev = t
+        sessions.append((s0, prev))
+    # 30 min tarkkuus: jokainen kellon puolituntinen, jossa on yksikin tapahtuma, = 30 min
+    slots = {int((t - m0) // SLOT) for t, *_ in ev}
+    mslots = set()
+    for ta, tb, _, _ in man:
+        if ta is not None:
+            mslots |= set(range(int((ta - m0) // SLOT), int((tb - m0 - 1) // SLOT) + 1))
+    untimed = sum(h_ for ta, _, h_, _ in man if ta is None) * 3600
+    comp = len(slots) * SLOT
+    est = len(slots | mslots) * SLOT + untimed       # päällekkäisiä puolitunteja ei lasketa kahdesti
+    times = [t for t, *_ in ev] + [x for ta, tb, _, _ in man if ta is not None for x in (ta, tb)]
     cnt = defaultdict(int)
-    for _, s, _d in ev: cnt[s] += 1
-    rows.append(dict(day=d, n=len(ev), first=ev[0][0], last=ev[-1][0],
-                     span=ev[-1][0] - ev[0][0], active=active, sessions=sessions, cnt=cnt))
+    for _, s_, _d in ev: cnt[s_] += 1
+    if man: cnt["manual"] = len(man)
+    rows.append(dict(day=d, n=len(ev) + len(man), first=min(times) if times else None,
+                     last=max(times) if times else None,
+                     span=(max(times) - min(times)) if times else 0, active=est, comp=comp,
+                     fixed=est - comp, slots=slots, mslots=mslots, man=man, sessions=sessions, cnt=cnt))
     d += timedelta(days=1)
 
 wd = ["ma", "ti", "ke", "to", "pe", "la", "su"]
-fmt = lambda t: datetime.fromtimestamp(t).strftime("%H:%M")
-print(f"Työaika-arvio {os.environ['FROM']} .. {os.environ['TO']}  (gap {int(gap/60)} min, pad {int(pad/60)} min)\n")
-head = f"{'Päivä':<14}{'Alku':>6}{'Loppu':>7}{'Span':>7}{'Arvio':>7}{'Jaksot':>7}  " + " ".join(f"{s[:7]:>7}" for s in sources)
+fmt = lambda t: datetime.fromtimestamp(t).strftime("%H:%M") if t is not None else "-"
+if manual and "manual" not in sources: sources.append("manual")
+print(f"Työaika-arvio {os.environ['FROM']} .. {os.environ['TO']}  ({SLOT//60} min tarkkuus; kiinteät merkinnät lisätty)\n")
+head = f"{'Päivä':<14}{'Alku':>6}{'Loppu':>7}{'Span':>7}{'Lask.':>7}{'Kiint.':>7}{'Arvio':>7}  " + " ".join(f"{s[:7]:>7}" for s in sources)
 print(head); print("-" * len(head))
-tot_a = tot_s = 0
+tot_a = tot_s = tot_c = tot_f = 0
 for r in rows:
     lab = f"{r['day']} {wd[r['day'].weekday()]}"
     if not r["n"]:
         print(f"{lab:<14}{'-':>6}"); continue
-    tot_a += r["active"]; tot_s += r["span"]
-    print(f"{lab:<14}{fmt(r['first']):>6}{fmt(r['last']):>7}{hm(r['span']):>7}{hm(r['active']):>7}{len(r['sessions']):>7}  "
+    tot_a += r["active"]; tot_s += r["span"]; tot_c += r["comp"]; tot_f += r["fixed"]
+    print(f"{lab:<14}{fmt(r['first']):>6}{fmt(r['last']):>7}{hm(r['span']):>7}{hm(r['comp']):>7}{('+' + hm(r['fixed'])) if r['fixed'] else '':>7}{hm(r['active']):>7}  "
           + " ".join(f"{r['cnt'].get(s, 0):>7}" for s in sources))
     if verbose:
         print("              jaksot: " + ", ".join(f"{fmt(a)}-{fmt(b)}" for a, b in r["sessions"]))
 print("-" * len(head))
-print(f"{'Yhteensä':<14}{'':>6}{'':>7}{hm(tot_s):>7}{hm(tot_a):>7}")
+print(f"{'Yhteensä':<14}{'':>6}{'':>7}{hm(tot_s):>7}{hm(tot_c):>7}{'+' + hm(tot_f):>7}{hm(tot_a):>7}")
 notes = defaultdict(list)
 for line in open(sys.argv[2]):
     p = line.rstrip("\n").split("\t", 2)
@@ -452,6 +505,13 @@ for line in open(sys.argv[2]):
 nmax = int(os.environ["NOTES_MAX"])
 start_d = date.fromisoformat(os.environ["FROM"])
 # "Tehty": duplikaatit pois
+for md, items in manual.items():
+    for ta, tb, h_, desc in items:
+        t = ta if ta is not None else midnight(md)
+        lab_ = f"{fmt(ta)}-{fmt(tb)}" if ta is not None else f"{h_:g} h"
+        notes[md].append((int(t), "manual", f"{desc} ({lab_})"))
+def tlab(t, s, txt):   # kellonajaton kiinteä merkintä: ei kellonaikaa
+    return "  -  " if s == "manual" and txt.endswith(" h)") else fmt(t)
 done = {}
 for day in sorted(notes):
     if not (start_d <= day <= end): continue
@@ -496,13 +556,16 @@ for r in rows:
                 run = [t, t, k, 1, [k[2]] if k[2] else []]
         if run: items.append(item(run))
         out.append((a, b, items))
+    if r.get("man"):
+        out.insert(0, (None, None, [((f"{fmt(ta)}-{fmt(tb)}" if ta is not None else f"{h_:g} h"), "manual", desc)
+                                     for ta, tb, h_, desc in r["man"]]))
     tl[r["day"]] = out
 
 if done and nmax > 0:
     print("\nTehty (git-commitit, Sliqtly-muutokset ja chat):")
     for day, items in done.items():
         print(f"\n{day} {wd[day.weekday()]}")
-        for t, s, txt in items[:nmax]: print(f"  {fmt(t)} [{s}] {txt}")
+        for t, s, txt in items[:nmax]: print(f"  {tlab(t, s, txt)} [{s}] {txt}")
         if len(items) > nmax: print(f"  ... +{len(items) - nmax} lisää (NOTES_MAX)")
 if os.environ["TIMELINE"] == "1":
     print("\n" + "=" * 70 + "\nAikajana (mitä tehtiin milloinkin)\n" + "=" * 70)
@@ -510,15 +573,14 @@ if os.environ["TIMELINE"] == "1":
         if not r["n"]: continue
         print(f"\n{r['day']} {wd[r['day'].weekday()]}   arvio {hm(r['active'])}")
         for a, b, items in tl[r["day"]]:
-            print(f"  -- jakso {fmt(a)}-{fmt(b)} ({hm(b - a + pad)}) --")
+            print("  -- kiinteät merkinnät --" if a is None else f"  -- jakso {fmt(a)}-{fmt(b)} --")
             for when, src, txt in items: print(f"  {when:<11} [{src}] {txt}")
 
 # ---------------------------------------------------------------- HTML
 if os.environ.get("HTML"):
     from html import escape as E
-    def midnight(d): return datetime(d.year, d.month, d.day).timestamp()
     srcs_used = [s for s in sources if any(r.get("cnt", {}).get(s) for r in rows)]
-    maxh = max([r.get("span", 0) for r in rows] + [3600]) / 3600
+    maxh = max([r.get("active", 0) for r in rows] + [3600]) / 3600
     h = []
     h.append(f"""<!doctype html><html lang="fi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -537,7 +599,7 @@ td:first-child,th:first-child{{text-align:left}}tr.we td{{background:var(--wk)}}
 .wrap{{overflow-x:auto}}details{{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:10px 0;padding:0 14px}}
 summary{{cursor:pointer;padding:10px 0;font-weight:600}}summary span{{font-weight:400}}
 .strip{{position:relative;height:18px;background:var(--line);border-radius:4px;margin:4px 0 12px}}
-.strip i{{position:absolute;top:0;bottom:0;background:var(--acc);border-radius:3px;min-width:2px}}
+.strip i{{position:absolute;top:0;bottom:0;background:var(--acc);border-radius:2px;min-width:2px;outline:1px solid var(--card)}}.strip i.m{{background:var(--acc2)}}
 .ticks{{display:flex;justify-content:space-between;font-size:11px;color:var(--mut)}}
 .sess{{margin:10px 0 4px;font-weight:600;font-size:13px}}ul{{list-style:none;padding:0;margin:0 0 12px}}li{{display:grid;grid-template-columns:90px 70px 1fr;gap:8px;padding:2px 0;border-bottom:1px dashed var(--line)}}
 li code{{font:12px ui-monospace,monospace;color:var(--mut)}}.tag{{font-size:11px;padding:1px 6px;border-radius:9px;background:var(--line);justify-self:start}}
@@ -545,53 +607,55 @@ h3{{font-size:14px;margin:14px 0 6px}}
 @media (max-width:600px){{li{{grid-template-columns:70px 1fr}}li .tag{{display:none}}}}
 </style></head><body><main>
 <h1>Työaika-arvio {E(os.environ['FROM'])} – {E(os.environ['TO'])}</h1>
-<div class="mut">Luotu {datetime.now().strftime('%Y-%m-%d %H:%M')}. Jakso = tapahtumat alle {int(gap/60)} min välein, + {int(pad/60)} min / jakso. Span = päivän ensimmäinen–viimeinen tapahtuma (yläraja).</div>
+<div class="mut">Luotu {datetime.now().strftime('%Y-%m-%d %H:%M')}. Laskettu = kellon {SLOT//60} min jaksot, joissa on yksikin tapahtuma ({SLOT//60} min / jakso). Kiinteät = käsin tiedossa olevat merkinnät; kellonajalliset yhdistetään laskettuihin jaksoihin (päällekkäisyyttä ei lasketa kahdesti), pelkät tuntimäärät lisätään päälle. Span = päivän ensimmäinen–viimeinen tapahtuma.</div>
 <div class="cards"><div class="card"><span class="mut">Arvio yhteensä</span><b>{hm(tot_a)} h</b></div>
-<div class="card"><span class="mut">Span yhteensä</span><b>{hm(tot_s)} h</b></div>
+<div class="card"><span class="mut">Laskettu</span><b>{hm(tot_c)} h</b></div>
+<div class="card"><span class="mut">Kiinteät lisäys</span><b>+{hm(tot_f)} h</b></div>
 <div class="card"><span class="mut">Työpäiviä</span><b>{sum(1 for r in rows if r['n'])}</b></div></div>
-<h2>Päivät</h2><div class="wrap"><table><tr><th>Päivä</th><th>Alku</th><th>Loppu</th><th>Span</th><th>Arvio</th><th></th><th>Jaksot</th>""")
+<h2>Päivät</h2><div class="wrap"><table><tr><th>Päivä</th><th>Alku</th><th>Loppu</th><th>Span</th><th>Laskettu</th><th>Kiinteät</th><th>Arvio</th><th></th>""")
     h.append("".join(f"<th>{E(s)}</th>" for s in srcs_used) + "</tr>")
     for r in rows:
         we = ' class="we"' if r["day"].weekday() >= 5 else ""
         lab = f"{r['day']} {wd[r['day'].weekday()]}"
         if not r["n"]:
-            h.append(f"<tr{we}><td>{lab}</td>" + "<td>–</td>" * (6 + len(srcs_used)) + "</tr>"); continue
-        bar = (f'<div class="bar"><i class="s" style="width:{r["span"]/3600/maxh*100:.1f}%"></i>'
-               f'<i class="a" style="width:{min(r["active"],max(r["span"],r["active"]))/3600/maxh*100:.1f}%"></i></div>')
+            h.append(f"<tr{we}><td>{lab}</td>" + "<td>–</td>" * (7 + len(srcs_used)) + "</tr>"); continue
+        bar = (f'<div class="bar"><i class="s" style="width:{r["active"]/3600/maxh*100:.1f}%"></i>'
+               f'<i class="a" style="width:{r["comp"]/3600/maxh*100:.1f}%"></i></div>')
         h.append(f'<tr{we}><td><a href="#d{r["day"]}">{lab}</a></td><td>{fmt(r["first"])}</td><td>{fmt(r["last"])}</td>'
-                 f'<td>{hm(r["span"])}</td><td><b>{hm(r["active"])}</b></td><td>{bar}</td><td>{len(r["sessions"])}</td>'
+                 f'<td>{hm(r["span"])}</td><td>{hm(r["comp"])}</td><td>{("+" + hm(r["fixed"])) if r["fixed"] else ""}</td><td><b>{hm(r["active"])}</b></td><td>{bar}</td>'
                  + "".join(f"<td>{r['cnt'].get(s, 0) or ''}</td>" for s in srcs_used) + "</tr>")
-    h.append(f'<tr><td><b>Yhteensä</b></td><td></td><td></td><td>{hm(tot_s)}</td><td><b>{hm(tot_a)}</b></td><td></td><td></td>'
+    h.append(f'<tr><td><b>Yhteensä</b></td><td></td><td></td><td>{hm(tot_s)}</td><td>{hm(tot_c)}</td><td>+{hm(tot_f)}</td><td><b>{hm(tot_a)}</b></td><td></td>'
              + "<td></td>" * len(srcs_used) + "</tr></table></div>")
     h.append("<h2>Päiväkohtaiset tiedot</h2>")
     for r in rows:
         if not r["n"]: continue
         d = r["day"]; m0 = midnight(d)
         h.append(f'<details id="d{d}" open><summary>{d} {wd[d.weekday()]} <span class="mut">· arvio {hm(r["active"])} · '
-                 f'{fmt(r["first"])}–{fmt(r["last"])} · {len(r["sessions"])} jaksoa</span></summary>')
+                 f'laskettu {hm(r["comp"])}{" + kiinteät " + hm(r["fixed"]) if r["fixed"] else ""} · {fmt(r["first"])}–{fmt(r["last"])}</span></summary>')
         h.append('<div class="strip">' + "".join(
-            f'<i title="{fmt(a)}–{fmt(b)}" style="left:{(a-m0)/864:.2f}%;width:{(b-a+pad)/864:.2f}%"></i>' for a, b in r["sessions"])
+            f'<i class="m" title="kiinteä" style="left:{k*SLOT/864:.2f}%;width:{SLOT/864:.2f}%"></i>' for k in sorted(r["mslots"] - r["slots"]))
+            + "".join(f'<i title="{fmt(m0+k*SLOT)}–{fmt(m0+(k+1)*SLOT)}" style="left:{k*SLOT/864:.2f}%;width:{SLOT/864:.2f}%"></i>' for k in sorted(r["slots"]))
             + '</div><div class="ticks">' + "".join(f"<span>{x:02d}</span>" for x in range(0, 25, 3)) + "</div>")
         if done.get(d) and nmax > 0:
             h.append("<h3>Tehty</h3><ul>" + "".join(
-                f'<li><code>{fmt(t)}</code><span class="tag">{E(s)}</span><span>{E(txt)}</span></li>' for t, s, txt in done[d])
+                f'<li><code>{tlab(t, s, txt)}</code><span class="tag">{E(s)}</span><span>{E(txt)}</span></li>' for t, s, txt in done[d])
                 + "</ul>")
         h.append("<h3>Aikajana</h3>")
         for a, b, items in tl[d]:
-            h.append(f'<div class="sess">{fmt(a)}–{fmt(b)} <span class="mut">({hm(b - a + pad)})</span></div><ul>' + "".join(
+            h.append((f'<div class="sess">Kiinteät merkinnät</div><ul>' if a is None else f'<div class="sess">{fmt(a)}–{fmt(b)}</div><ul>') + "".join(
                 f'<li><code>{E(w)}</code><span class="tag">{E(s)}</span><span>{E(txt)}</span></li>' for w, s, txt in items) + "</ul>")
         h.append("</details>")
     h.append("</main></body></html>")
     open(os.environ["HTML"], "w").write("\n".join(h))
     print(f"HTML-raportti: {os.environ['HTML']}")
-print("\nArvio = yhtenäisten aktiivisuusjaksojen summa; Span = päivän ensimmäinen..viimeinen tapahtuma (yläraja).")
+print(f"\nLask. = {SLOT//60} min kellojaksot joissa aktiivisuutta; Kiint. = kiinteiden merkintöjen lisäys (kellonajalliset yhdistetty laskettuihin, tuntimäärät päälle).")
 if os.environ["CSV"]:
     with open(os.environ["CSV"], "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["date", "first", "last", "span_h", "estimate_h", "sessions"] + sources)
+        w.writerow(["date", "first", "last", "span_h", "computed_h", "fixed_h", "estimate_h"] + sources)
         for r in rows:
-            if not r["n"]: w.writerow([r["day"]] + [""] * 5 + [0] * len(sources)); continue
-            w.writerow([r["day"], fmt(r["first"]), fmt(r["last"]), round(r["span"] / 3600, 2),
-                        round(r["active"] / 3600, 2), len(r["sessions"])] + [r["cnt"].get(s, 0) for s in sources])
+            if not r["n"]: w.writerow([r["day"]] + [""] * 6 + [0] * len(sources)); continue
+            w.writerow([r["day"], fmt(r["first"]), fmt(r["last"]), round(r["span"] / 3600, 2), r["comp"] / 3600,
+                        r["fixed"] / 3600, r["active"] / 3600] + [r["cnt"].get(s, 0) for s in sources])
     print(f"CSV: {os.environ['CSV']}")
 PY
