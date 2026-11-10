@@ -69,15 +69,22 @@ TIMELINE="${TIMELINE:-1}"
 # Kellonajalliset yhdistetään laskettuihin 30 min jaksoihin (ei tuplalaskentaa),
 # pelkät tuntimäärät lisätään päivän arvioon sellaisenaan.
 # Korvaa tiedostolla: MANUAL_FILE=omat.txt, tai tyhjennä: MANUAL_FILE=/dev/null
+# Repo on julkinen, joten tähän vain yleiset kuvaukset. Nimet ym. omaan tiedostoon:
+# hours-manual.txt (nykyhakemisto) tai ~/.config/hours/manual.txt luetaan automaattisesti.
 DEFAULT_MANUAL='
-2026-11-04|08:30-11:30|Building a new build, bug investigation
-2026-11-05|09:00-13:00|Reviewing new merge requests
-2026-11-06|09:00-13:00|At the office: IPC refactor work estimate
+2026-11-04|08:30-11:30|Morning status check and larger team meeting; building a new build, bug investigation
+2026-11-05|09:00-13:00|At the office: reviewing new merge requests
+2026-11-05|14:00-15:00|At the office: internal communication with the customer
+2026-11-05|15:00-17:00|At the office: build work, bug fixing, project communication
+2026-11-06|09:00-13:00|IPC refactor work estimate
 2026-11-07|4h|Build preparation, continued IPC refactor work estimate
 2026-11-08|1h|Building the build
 2026-11-09|3.5h|Project updates, status, reading updates
 2026-11-09|3h|Night: building a new build
 '
+for f in ./hours-manual.txt "$HOME/.config/hours/manual.txt"; do
+  [ -z "${MANUAL_FILE:-}" ] && [ -r "$f" ] && MANUAL_FILE="$f"
+done
 if [ -n "${MANUAL_FILE:-}" ]; then MANUAL=$(cat "$MANUAL_FILE"); else MANUAL="${MANUAL-$DEFAULT_MANUAL}"; fi
 HTML="${HTML-hours-report.html}"
 
@@ -375,6 +382,48 @@ src_git() {
   log git "$n repoa, author='${author:-*}', $(count_src git) tapahtumaa"
 }
 
+# ------------------------------------------------------------- network (toimisto vai etä?)
+# Ei lasketa aktiivisuudeksi, vaan näytetään päivittäin mitä verkkoja käytettiin.
+# NetworkManagerin loki: "policy: set 'Yhteys' (enp0s31f6) as default ...", DHCP-osoitteet,
+# WiFi-verkon nimi. Liitäntä e* = kaapeli (enx* usein USB-C-telakka), w* = WiFi.
+#   NETWORK=0      ohittaa
+#   OFFICE_MATCH   regex, joka tunnistaa toimistoverkon (yhteyden nimi, SSID, liitäntä tai
+#                  IP-alku), esim. OFFICE_MATCH='enx|Corp-WLAN|^10\.20\.'
+net_collect() {
+  NET="$TMP/net.tsv"; : > "$NET"
+  [ "${NETWORK:-1}" = 1 ] || return
+  local since="$FROM 00:00:00" until; until="$(date -d "$TO +1 day" +%F) 00:00:00"
+  { journalctl -u NetworkManager --since "$since" --until "$until" -o short-unix --no-pager -q 2>/dev/null
+    # vanhemmat/ryhmättömät: syslog (adm-ryhmä)
+    for f in /var/log/syslog /var/log/syslog.1; do
+      [ -r "$f" ] && grep -a NetworkManager "$f" | while IFS= read -r l; do
+        t=$(date -d "$(echo "$l" | cut -c1-32 | grep -oE '^[0-9]{4}-[0-9-]{5}T[0-9:.+-]+|^[A-Z][a-z]{2} [ 0-9]{2} [0-9:]{8}')" +%s 2>/dev/null) && echo "$t $l"
+      done
+    done; } > "$TMP/nm.log"
+  if [ ! -s "$TMP/nm.log" ] && [ "$(id -u)" != 0 ] && command -v sudo >/dev/null; then
+    log network "NetworkManager-loki tyhjä ilman rootia, kokeillaan sudolla"
+    sudo journalctl -u NetworkManager --since "$since" --until "$until" -o short-unix --no-pager -q > "$TMP/nm.log" 2>/dev/null
+  fi
+  python3 - "$TMP/nm.log" "$START_EPOCH" "$END_EPOCH" > "$NET" <<'PY'
+import re, sys
+a, b = int(sys.argv[2]), int(sys.argv[3])
+for l in open(sys.argv[1], errors="replace"):
+    m = re.match(r"(\d+)(?:\.\d+)?\s", l)
+    if not m: continue
+    t = int(m.group(1))
+    if not a <= t < b: continue
+    m = re.search(r"policy: set '([^']+)' \(([^)]+)\) as default for IPv4", l)
+    if m: print(f"{t}\t{m.group(2)}\tconn\t{m.group(1)}"); continue
+    m = re.search(r"dhcp4 \(([^)]+)\):.*(?:ip_address => '|address=)([0-9.]+)", l)
+    if m: print(f"{t}\t{m.group(1)}\tip\t{m.group(2)}"); continue
+    m = re.search(r"device \(([^)]+)\):.*(?:Connected to wireless network|SSID) ['\"]?([^'\"]+)", l)
+    if m: print(f"{t}\t{m.group(1)}\tssid\t{m.group(2).strip()}"); continue
+    m = re.search(r"device \(([^)]+)\): Activation: successful", l)
+    if m: print(f"{t}\t{m.group(1)}\tup\t")
+PY
+  log network "$(wc -l < "$NET") verkkotapahtumaa"
+}
+
 # ------------------------------------------------------------- shell history
 src_shell() {
   # zsh EXTENDED_HISTORY: ": 1699999999:0;komento"
@@ -402,12 +451,13 @@ for s in $SOURCES; do
   else echo "Tuntematon lähde: $s" >&2; fi
 done
 
+net_collect
 [ -n "$DUMP" ] && sort -n "$EVENTS" > "$DUMP"
 
 GAP_MIN="$GAP_MIN" PAD_MIN="$PAD_MIN" MIN_EV="$MIN_EVENTS_DAY" CSV="$CSV" \
 FROM="$FROM" TO="$TO" SOURCES="$SOURCES" VERBOSE="$VERBOSE" NOTES_MAX="${NOTES_MAX:-25}" \
 MANUAL="$MANUAL" SLOT_MIN="${SLOT_MIN:-30}" TIMELINE="$TIMELINE" HTML="$HTML" WORK_DIRS="${WORK_DIRS:-/work/src}" \
-python3 - "$EVENTS" "$NOTES" <<'PY'
+OFFICE_MATCH="${OFFICE_MATCH:-}" python3 - "$EVENTS" "$NOTES" "$NET" <<'PY'
 import os, sys, csv
 from datetime import datetime, date, timedelta
 from collections import defaultdict
@@ -444,6 +494,29 @@ for ln in os.environ.get("MANUAL", "").splitlines():
             manual[md].append((None, None, float(when.lower().rstrip("h ").replace(",", ".")), desc))
     except Exception as e:
         print(f"Kiinteä merkintä ohitettu ({e}): {ln}", file=sys.stderr)
+import re as _re
+net = defaultdict(dict)   # päivä -> {(liitäntä, yhteys/SSID): [ensim., viim., ipt]}
+_ip = {}
+for ln in open(sys.argv[3]):
+    p = ln.rstrip("\n").split("\t")
+    if len(p) < 4: continue
+    t, iface, kind, val = int(p[0]), p[1], p[2], p[3]
+    d_ = datetime.fromtimestamp(t).date()
+    k = (iface, val if kind in ("conn", "ssid") else "")
+    if kind == "ip": _ip[(d_, iface)] = val; k = (iface, "")
+    e = net[d_].setdefault(k, [t, t]); e[1] = max(e[1], t); e[0] = min(e[0], t)
+office_re = _re.compile(os.environ["OFFICE_MATCH"]) if os.environ.get("OFFICE_MATCH") else None
+def net_summary(d_):
+    out, office = [], False
+    names = {i for (i, v) in net.get(d_, {}) if v}
+    for (iface, val), (t0, t1) in sorted(net.get(d_, {}).items(), key=lambda x: x[1][0]):
+        if not val and iface in names: continue
+        typ = "kaapeli" if iface.startswith("e") else "WiFi" if iface.startswith("w") else iface
+        ip = _ip.get((d_, iface), "")
+        txt = f"{typ} {iface}" + (f" '{val}'" if val else "") + (f" {ip}" if ip else "") + f" {datetime.fromtimestamp(t0).strftime('%H:%M')}"
+        if office_re and any(office_re.search(x) for x in (iface, val, ip) if x): office = True; txt += " [toimisto]"
+        out.append(txt)
+    return out, office
 rows = []
 d, end = date.fromisoformat(os.environ["FROM"]), date.fromisoformat(os.environ["TO"])
 while d <= end:
@@ -493,6 +566,8 @@ for r in rows:
     tot_a += r["active"]; tot_s += r["span"]; tot_c += r["comp"]; tot_f += r["fixed"]
     print(f"{lab:<14}{fmt(r['first']):>6}{fmt(r['last']):>7}{hm(r['span']):>7}{hm(r['comp']):>7}{('+' + hm(r['fixed'])) if r['fixed'] else '':>7}{hm(r['active']):>7}  "
           + " ".join(f"{r['cnt'].get(s, 0):>7}" for s in sources))
+    nl, _o = net_summary(r["day"])
+    if nl: print("              verkko: " + "; ".join(nl))
     if verbose:
         print("              jaksot: " + ", ".join(f"{fmt(a)}-{fmt(b)}" for a, b in r["sessions"]))
 print("-" * len(head))
@@ -632,6 +707,8 @@ h3{{font-size:14px;margin:14px 0 6px}}
         d = r["day"]; m0 = midnight(d)
         h.append(f'<details id="d{d}" open><summary>{d} {wd[d.weekday()]} <span class="mut">· arvio {hm(r["active"])} · '
                  f'laskettu {hm(r["comp"])}{" + kiinteät " + hm(r["fixed"]) if r["fixed"] else ""} · {fmt(r["first"])}–{fmt(r["last"])}</span></summary>')
+        nl, off = net_summary(d)
+        if nl: h.append(f'<div class="mut" style="margin:4px 0">Verkko{" (toimisto)" if off else ""}: ' + E("; ".join(nl)) + "</div>")
         h.append('<div class="strip">' + "".join(
             f'<i class="m" title="kiinteä" style="left:{k*SLOT/864:.2f}%;width:{SLOT/864:.2f}%"></i>' for k in sorted(r["mslots"] - r["slots"]))
             + "".join(f'<i title="{fmt(m0+k*SLOT)}–{fmt(m0+(k+1)*SLOT)}" style="left:{k*SLOT/864:.2f}%;width:{SLOT/864:.2f}%"></i>' for k in sorted(r["slots"]))
