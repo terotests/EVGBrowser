@@ -19,6 +19,7 @@
 # Käyttö:
 #   ./hours.sh                       # 2026-11-01..2026-11-10
 #   ./hours.sh --from 2026-11-01 --to 2026-11-10 --csv out.csv -v
+#   ./hours.sh --html raportti.html   # HTML-raportti (oletus hours-report.html, --no-html pois)
 #   ./hours.sh --no-timeline          # ilman aikajanaa (tapahtumat minuutin tarkkuudella)
 #   SOURCES="git jenkins" ./hours.sh
 #
@@ -63,6 +64,7 @@ VERBOSE=0
 CSV=""
 DUMP=""
 TIMELINE="${TIMELINE:-1}"
+HTML="${HTML-hours-report.html}"
 
 usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 while [ $# -gt 0 ]; do
@@ -74,7 +76,9 @@ while [ $# -gt 0 ]; do
     --sources) SOURCES="$2"; shift 2;;
     --csv) CSV="$2"; shift 2;;
     --dump) DUMP="$2"; shift 2;;
-    --no-timeline) TIMELINE=0; shift;;     # kirjoittaa raakatapahtumat tiedostoon
+    --no-timeline) TIMELINE=0; shift;;
+    --html) HTML="$2"; shift 2;;
+    --no-html) HTML=""; shift;;     # kirjoittaa raakatapahtumat tiedostoon
     -v|--verbose) VERBOSE=1; shift;;
     -h|--help) usage;;
     *) echo "Tuntematon argumentti: $1" >&2; exit 2;;
@@ -349,7 +353,8 @@ src_git() {
     if [ "${GIT_REFLOG:-1}" = 1 ]; then
       # reflog on paikallinen eli kertoo omasta toiminnasta tällä koneella (checkout, pull, rebase...)
       git -C "$r" reflog --all --date=unix --format="%gd%x09%gs" 2>/dev/null \
-        | sed -nE "s/^[^@]*@\{([0-9]+)\}\t(.*)$/\1\t$name reflog \2/p" | cut -c1-120 | emit git
+        | sed -nE 's/^[^@]*@\{([0-9]+)\}\t(.*)$/\1\t\2/p' \
+        | sort -u | awk -F'\t' -v n="$name" '$2 !~ /^commit/ { printf "%s\t%s reflog %s\n", $1, n, $2 }' | cut -c1-140 | emit git
     fi
   done < "$list"
   log git "$n repoa, author='${author:-*}', $(count_src git) tapahtumaa"
@@ -386,7 +391,7 @@ done
 
 GAP_MIN="$GAP_MIN" PAD_MIN="$PAD_MIN" MIN_EV="$MIN_EVENTS_DAY" CSV="$CSV" \
 FROM="$FROM" TO="$TO" SOURCES="$SOURCES" VERBOSE="$VERBOSE" NOTES_MAX="${NOTES_MAX:-25}" \
-TIMELINE="$TIMELINE" WORK_DIRS="${WORK_DIRS:-/work/src}" \
+TIMELINE="$TIMELINE" HTML="$HTML" WORK_DIRS="${WORK_DIRS:-/work/src}" \
 python3 - "$EVENTS" "$NOTES" <<'PY'
 import os, sys, csv
 from datetime import datetime, date, timedelta
@@ -445,56 +450,140 @@ for line in open(sys.argv[2]):
     if len(p) == 3 and p[0].isdigit():
         notes[datetime.fromtimestamp(int(p[0])).date()].append((int(p[0]), p[1], p[2]))
 nmax = int(os.environ["NOTES_MAX"])
-if notes and nmax > 0:
-    print("\nTehty (git-commitit, Sliqtly-muutokset ja chat):")
-    for day in sorted(notes):
-        if not (date.fromisoformat(os.environ["FROM"]) <= day <= end): continue
-        print(f"\n{day} {wd[day.weekday()]}")
-        seen, items = set(), []
-        for t, s, txt in sorted(notes[day]):
-            if (s, txt) in seen: continue
-            seen.add((s, txt)); items.append((t, s, txt))
-        for t, s, txt in items[:nmax]:
-            print(f"  {fmt(t)} [{s}] {txt}")
-        if len(items) > nmax: print(f"  ... +{len(items) - nmax} lisää (NOTES_MAX)")
+start_d = date.fromisoformat(os.environ["FROM"])
+# "Tehty": duplikaatit pois
+done = {}
+for day in sorted(notes):
+    if not (start_d <= day <= end): continue
+    seen, items = set(), []
+    for t, s, txt in sorted(notes[day]):
+        if (s, txt) in seen: continue
+        seen.add((s, txt)); items.append((t, s, txt))
+    done[day] = items
 # Aikajana: jokainen tapahtuma jaksoittain. Peräkkäiset samanlaiset tapahtumat
 # (sama lähde ja kuvaus, tiedostoilla sama hakemisto) yhdistetään yhdelle riville.
+import os.path
+roots = [x.rstrip("/") + "/" for x in os.environ["WORK_DIRS"].split()]
+def key(src, desc):
+    if src == "files":
+        for x in roots:
+            if desc.startswith(x): desc = desc[len(x):]; break
+        return ("files", "muokattu: " + (os.path.dirname(desc) or "."), os.path.basename(desc))
+    return (src, desc, None)
+def item(run):
+    t0, t1, (src, desc, _), n, files = run
+    when = fmt(t0) if fmt(t0) == fmt(t1) else f"{fmt(t0)}-{fmt(t1)}"
+    extra = ""
+    if src == "files":
+        shown = sorted(set(files))
+        extra = ": " + ", ".join(shown[:4]) + (f" +{len(shown) - 4}" if len(shown) > 4 else "")
+    elif n > 1: extra = f" (x{n})"
+    return (when, src, desc[:140] + extra)
+tl = {}
+for r in rows:
+    if not r["n"]: continue
+    ev = sorted(days[r["day"]]); out = []
+    for a, b in r["sessions"]:
+        items, run = [], None
+        for t, src, desc in ev:
+            if t < a or t > b: continue
+            k = key(src, desc)
+            if run and run[2][:2] == k[:2]:
+                run[1] = t; run[3] += 1
+                if k[2]: run[4].append(k[2])
+            else:
+                if run: items.append(item(run))
+                run = [t, t, k, 1, [k[2]] if k[2] else []]
+        if run: items.append(item(run))
+        out.append((a, b, items))
+    tl[r["day"]] = out
+
+if done and nmax > 0:
+    print("\nTehty (git-commitit, Sliqtly-muutokset ja chat):")
+    for day, items in done.items():
+        print(f"\n{day} {wd[day.weekday()]}")
+        for t, s, txt in items[:nmax]: print(f"  {fmt(t)} [{s}] {txt}")
+        if len(items) > nmax: print(f"  ... +{len(items) - nmax} lisää (NOTES_MAX)")
 if os.environ["TIMELINE"] == "1":
-    import os.path
-    roots = [r.rstrip("/") + "/" for r in os.environ["WORK_DIRS"].split()]
-    def key(src, desc):
-        if src == "files":
-            for r in roots:
-                if desc.startswith(r): desc = desc[len(r):]; break
-            return ("files", "muokattu: " + (os.path.dirname(desc) or "."), os.path.basename(desc))
-        return (src, desc, None)
     print("\n" + "=" * 70 + "\nAikajana (mitä tehtiin milloinkin)\n" + "=" * 70)
     for r in rows:
         if not r["n"]: continue
-        ev = sorted(days[r["day"]])
         print(f"\n{r['day']} {wd[r['day'].weekday()]}   arvio {hm(r['active'])}")
-        for a, b in r["sessions"]:
+        for a, b, items in tl[r["day"]]:
             print(f"  -- jakso {fmt(a)}-{fmt(b)} ({hm(b - a + pad)}) --")
-            run = None
-            def flush(run):
-                if not run: return
-                t0, t1, (src, desc, _), n, files = run
-                when = fmt(t0) if fmt(t0) == fmt(t1) else f"{fmt(t0)}-{fmt(t1)}"
-                extra = ""
-                if src == "files":
-                    shown = sorted(set(files))
-                    extra = ": " + ", ".join(shown[:4]) + (f" +{len(shown) - 4}" if len(shown) > 4 else "")
-                elif n > 1: extra = f" (x{n})"
-                print(f"  {when:<11} [{src}] {desc[:110]}{extra}")
-            for t, src, desc in ev:
-                if t < a or t > b: continue
-                k = key(src, desc)
-                if run and run[2][:2] == k[:2]:
-                    run[1] = t; run[3] += 1
-                    if k[2]: run[4].append(k[2])
-                else:
-                    flush(run); run = [t, t, k, 1, [k[2]] if k[2] else []]
-            flush(run)
+            for when, src, txt in items: print(f"  {when:<11} [{src}] {txt}")
+
+# ---------------------------------------------------------------- HTML
+if os.environ.get("HTML"):
+    from html import escape as E
+    def midnight(d): return datetime(d.year, d.month, d.day).timestamp()
+    srcs_used = [s for s in sources if any(r.get("cnt", {}).get(s) for r in rows)]
+    maxh = max([r.get("span", 0) for r in rows] + [3600]) / 3600
+    h = []
+    h.append(f"""<!doctype html><html lang="fi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Työaika-arvio {E(os.environ['FROM'])} – {E(os.environ['TO'])}</title>
+<style>
+:root{{--bg:#fafaf9;--fg:#1c1917;--mut:#78716c;--line:#e7e5e4;--card:#fff;--acc:#2563eb;--acc2:#bfdbfe;--wk:#f5f5f4}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#1c1917;--fg:#f5f5f4;--mut:#a8a29e;--line:#44403c;--card:#292524;--acc:#60a5fa;--acc2:#1e3a8a;--wk:#231f1d}}}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif}}
+main{{max-width:1100px;margin:0 auto;padding:24px 16px}}h1{{font-size:22px;margin:0 0 4px}}h2{{font-size:17px;margin:32px 0 10px}}
+.mut{{color:var(--mut)}}.cards{{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}}
+.card{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:150px}}
+.card b{{display:block;font-size:24px}}table{{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}}
+th,td{{padding:6px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}}th{{font-weight:600;color:var(--mut);font-size:12px}}
+td:first-child,th:first-child{{text-align:left}}tr.we td{{background:var(--wk)}}.bar{{position:relative;height:10px;width:160px;background:var(--line);border-radius:5px}}
+.bar i{{position:absolute;left:0;top:0;bottom:0;border-radius:5px}}.bar .s{{background:var(--acc2)}}.bar .a{{background:var(--acc)}}
+.wrap{{overflow-x:auto}}details{{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:10px 0;padding:0 14px}}
+summary{{cursor:pointer;padding:10px 0;font-weight:600}}summary span{{font-weight:400}}
+.strip{{position:relative;height:18px;background:var(--line);border-radius:4px;margin:4px 0 12px}}
+.strip i{{position:absolute;top:0;bottom:0;background:var(--acc);border-radius:3px;min-width:2px}}
+.ticks{{display:flex;justify-content:space-between;font-size:11px;color:var(--mut)}}
+.sess{{margin:10px 0 4px;font-weight:600;font-size:13px}}ul{{list-style:none;padding:0;margin:0 0 12px}}li{{display:grid;grid-template-columns:90px 70px 1fr;gap:8px;padding:2px 0;border-bottom:1px dashed var(--line)}}
+li code{{font:12px ui-monospace,monospace;color:var(--mut)}}.tag{{font-size:11px;padding:1px 6px;border-radius:9px;background:var(--line);justify-self:start}}
+h3{{font-size:14px;margin:14px 0 6px}}
+@media (max-width:600px){{li{{grid-template-columns:70px 1fr}}li .tag{{display:none}}}}
+</style></head><body><main>
+<h1>Työaika-arvio {E(os.environ['FROM'])} – {E(os.environ['TO'])}</h1>
+<div class="mut">Luotu {datetime.now().strftime('%Y-%m-%d %H:%M')}. Jakso = tapahtumat alle {int(gap/60)} min välein, + {int(pad/60)} min / jakso. Span = päivän ensimmäinen–viimeinen tapahtuma (yläraja).</div>
+<div class="cards"><div class="card"><span class="mut">Arvio yhteensä</span><b>{hm(tot_a)} h</b></div>
+<div class="card"><span class="mut">Span yhteensä</span><b>{hm(tot_s)} h</b></div>
+<div class="card"><span class="mut">Työpäiviä</span><b>{sum(1 for r in rows if r['n'])}</b></div></div>
+<h2>Päivät</h2><div class="wrap"><table><tr><th>Päivä</th><th>Alku</th><th>Loppu</th><th>Span</th><th>Arvio</th><th></th><th>Jaksot</th>""")
+    h.append("".join(f"<th>{E(s)}</th>" for s in srcs_used) + "</tr>")
+    for r in rows:
+        we = ' class="we"' if r["day"].weekday() >= 5 else ""
+        lab = f"{r['day']} {wd[r['day'].weekday()]}"
+        if not r["n"]:
+            h.append(f"<tr{we}><td>{lab}</td>" + "<td>–</td>" * (6 + len(srcs_used)) + "</tr>"); continue
+        bar = (f'<div class="bar"><i class="s" style="width:{r["span"]/3600/maxh*100:.1f}%"></i>'
+               f'<i class="a" style="width:{min(r["active"],max(r["span"],r["active"]))/3600/maxh*100:.1f}%"></i></div>')
+        h.append(f'<tr{we}><td><a href="#d{r["day"]}">{lab}</a></td><td>{fmt(r["first"])}</td><td>{fmt(r["last"])}</td>'
+                 f'<td>{hm(r["span"])}</td><td><b>{hm(r["active"])}</b></td><td>{bar}</td><td>{len(r["sessions"])}</td>'
+                 + "".join(f"<td>{r['cnt'].get(s, 0) or ''}</td>" for s in srcs_used) + "</tr>")
+    h.append(f'<tr><td><b>Yhteensä</b></td><td></td><td></td><td>{hm(tot_s)}</td><td><b>{hm(tot_a)}</b></td><td></td><td></td>'
+             + "<td></td>" * len(srcs_used) + "</tr></table></div>")
+    h.append("<h2>Päiväkohtaiset tiedot</h2>")
+    for r in rows:
+        if not r["n"]: continue
+        d = r["day"]; m0 = midnight(d)
+        h.append(f'<details id="d{d}" open><summary>{d} {wd[d.weekday()]} <span class="mut">· arvio {hm(r["active"])} · '
+                 f'{fmt(r["first"])}–{fmt(r["last"])} · {len(r["sessions"])} jaksoa</span></summary>')
+        h.append('<div class="strip">' + "".join(
+            f'<i title="{fmt(a)}–{fmt(b)}" style="left:{(a-m0)/864:.2f}%;width:{(b-a+pad)/864:.2f}%"></i>' for a, b in r["sessions"])
+            + '</div><div class="ticks">' + "".join(f"<span>{x:02d}</span>" for x in range(0, 25, 3)) + "</div>")
+        if done.get(d) and nmax > 0:
+            h.append("<h3>Tehty</h3><ul>" + "".join(
+                f'<li><code>{fmt(t)}</code><span class="tag">{E(s)}</span><span>{E(txt)}</span></li>' for t, s, txt in done[d])
+                + "</ul>")
+        h.append("<h3>Aikajana</h3>")
+        for a, b, items in tl[d]:
+            h.append(f'<div class="sess">{fmt(a)}–{fmt(b)} <span class="mut">({hm(b - a + pad)})</span></div><ul>' + "".join(
+                f'<li><code>{E(w)}</code><span class="tag">{E(s)}</span><span>{E(txt)}</span></li>' for w, s, txt in items) + "</ul>")
+        h.append("</details>")
+    h.append("</main></body></html>")
+    open(os.environ["HTML"], "w").write("\n".join(h))
+    print(f"HTML-raportti: {os.environ['HTML']}")
 print("\nArvio = yhtenäisten aktiivisuusjaksojen summa; Span = päivän ensimmäinen..viimeinen tapahtuma (yläraja).")
 if os.environ["CSV"]:
     with open(os.environ["CSV"], "w", newline="") as f:
