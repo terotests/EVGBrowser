@@ -20,6 +20,15 @@
 ;   the page    a scroll viewport holding the converted document, styled
 ;               inline by HtmlToEvg because it is the web's
 ;
+; A page with scripts is shown that way first; once its script realm runs
+; (RangerDOM: webapi.js on CEr), the realm keeps the page and the browser
+; draws what the realm's DOM is: its render tree (every box with its
+; computed style) becomes EVG elements in RangerDOM's view (DomPage,
+; DomView), laid out here, and the boxes go back to the page. Only what
+; changed comes over, and the parts of the page that did not change keep
+; their elements and their layout. Clicks, the pointer, the wheel, keys and
+; fields' text go to the page as its events.
+;
 ; Scrolling moves the page tree with `EVGLayout.scrollOnlyFrom`, which does
 ; not lay anything out again; only the display list is rebuilt, and that is
 ; culled to the viewport.
@@ -41,6 +50,8 @@ Import "SafetyPolicy.rgr"
 Import "HtmlToEvg.rgr"
 Import "BrImageMeasurer.rgr"
 Import "RealmWire.rgr"
+; RangerDOM's view: the realm's render tree as EVG elements
+Import "../vendor/ranger/rangerdom/view/src/lib.rs"
 
 class BrRequest {
     def id:int 0
@@ -132,6 +143,18 @@ class BrowserApp extends EvgApp {
     def pointY:double 0.0
     def renderCount:int 0
     def lastRenderMs:double 0.0
+    ; --- the realm's page (RangerDOM's view) ---
+    ; domMode: the page shown is the realm's render tree (dom), not the
+    ; converted document
+    def dom:DomPage (new DomPage())
+    def domMode:boolean false
+    ; for the next step: the boxes laid out ({"boxes": ...} part), the
+    ; viewport's new size, the whole page asked for (the kept one is lost)
+    def domBoxes:string ""
+    def domResized:boolean false
+    def domWhole:boolean false
+    ; the page's node the pointer is over (move events go when it changes)
+    def domHover:string ""
 
     Constructor () {
         def h:[BrHistoryEntry]
@@ -159,7 +182,14 @@ class BrowserApp extends EvgApp {
         pageH = h
         frameDirty = true
         if (changed && hasPage) {
-            this.renderPage(true)
+            if domMode {
+                dom.setSize(pageW (this.pageHeight()))
+                dom.rebuild()
+                this.domViewport()
+                domResized = true
+            } {
+                this.renderPage(true)
+            }
         }
     }
 
@@ -561,6 +591,12 @@ class BrowserApp extends EvgApp {
         realmDue = -1.0
         clear realmErrors
         clear realmLog
+        dom = (new DomPage())
+        domMode = false
+        domBoxes = ""
+        domResized = false
+        domWhole = false
+        domHover = ""
     }
 
     fn maybeRealm:void () {
@@ -585,7 +621,7 @@ class BrowserApp extends EvgApp {
         if ((realmState != "live") || realmBusy) {
             return false
         }
-        if (((array_length realmEvents) > 0) || (realmResourceCount > 0)) {
+        if (((array_length realmEvents) > 0) || ((realmResourceCount > 0) || (((strlen domBoxes) > 0) || (domResized || domWhole)))) {
             return true
         }
         return ((realmDue >= 0.0) && (realmElapsed >= realmDue))
@@ -617,6 +653,22 @@ class BrowserApp extends EvgApp {
                 out = (RealmWire.put(out su))
                 out = (RealmWire.put(out (itemAt page.scriptTexts i)))
             }
+            ; the page's fetched style sheets (its <style> elements are in
+            ; the HTML)
+            def sheetCount:int 0
+            for page.sheets sh:BrSheet si {
+                if ((sh.inline == false) && sh.arrived) {
+                    sheetCount = (sheetCount + 1)
+                }
+            }
+            out = (RealmWire.put(out (to_string sheetCount)))
+            for page.sheets sh2:BrSheet sj {
+                if ((sh2.inline == false) && sh2.arrived) {
+                    out = (RealmWire.put(out sh2.url))
+                    out = (RealmWire.put(out sh2.text))
+                }
+            }
+            dom.setSize(pageW (this.pageHeight()))
             realmElapsed = 0.0
             return out
         }
@@ -625,7 +677,15 @@ class BrowserApp extends EvgApp {
         step = (RealmWire.put(step (to_string realmElapsed)))
         step = (RealmWire.put(step (to_string realmResourceCount)))
         step = (step + realmResources)
-        step = (RealmWire.put(step ""))
+        step = (RealmWire.put(step (this.domLayoutJson())))
+        if domWhole {
+            step = (RealmWire.put(step "1"))
+        } {
+            step = (RealmWire.put(step ""))
+        }
+        domBoxes = ""
+        domResized = false
+        domWhole = false
         clear realmEvents
         realmResources = ""
         realmResourceCount = 0
@@ -643,15 +703,15 @@ class BrowserApp extends EvgApp {
             this.realmFailed(job "the realm did not answer")
             return
         }
-        def snap:string (w.next())
+        def render:string (w.next())
         def msgs:string (w.next())
         def due:double (w.nextDouble())
         def title:string (w.next())
         realmSummary = (w.next())
         realmState = "live"
         realmDue = due
-        if ((strlen snap) > 0) {
-            this.showSnapshot(snap)
+        if ((strlen render) > 0) {
+            this.showRender(render)
         }
         if ((strlen title) > 0) {
             page.title = title
@@ -673,7 +733,107 @@ class BrowserApp extends EvgApp {
         }
     }
 
-    ; The page as the realm has it now.
+    ; The page as the realm has it now: its render tree (all of it, or what
+    ; changed), drawn with RangerDOM's view.
+    fn showRender:void (json:string) {
+        dom.setSize(pageW (this.pageHeight()))
+        def r:int (dom.take(json))
+        if (r < 0) {
+            ; it named what this side no longer keeps: the whole page next
+            domWhole = true
+            return
+        }
+        if ((r == 0) && domMode) {
+            return
+        }
+        if (domMode == false) {
+            ; the converted document's fields and focus are gone
+            focusedFieldId = ""
+        }
+        domMode = true
+        this.domViewport()
+        renderCount = (renderCount + 1)
+    }
+
+    ; The realm's page laid out in the page's place; its boxes go back to
+    ; the page with the next step, and its pictures are fetched.
+    fn domViewport:void () {
+        def ph:double (this.pageHeight())
+        def vp (EVGElement.createDiv())
+        vp.id = "page"
+        vp.setAttribute("width" ((CssParser.fmt(pageW)) + "px"))
+        vp.setAttribute("height" ((CssParser.fmt(ph)) + "px"))
+        vp.setAttribute("overflow" "hidden")
+        vp.setAttribute("background-color" "#ffffff")
+        vp.addChild((dom.view()))
+        viewport = vp
+        pageLayout = (this.newPageLayout())
+        pageLayout.setPageSize(pageW ph)
+        pageLayout.layout(viewport)
+        def boxes:string (dom.settle())
+        if ((strlen boxes) > 0) {
+            domBoxes = boxes
+        }
+        listDirty = true
+        fling.halt()
+        if policy.showImages {
+            def wanted:[string] (dom.wanted())
+            for wanted wu:string wi {
+                if ((this.isRequested(wu)) == false) {
+                    this.request("image" wu)
+                }
+            }
+        }
+    }
+
+    ; What the next step tells the page of its layout ("" for nothing).
+    fn domLayoutJson:string () {
+        def parts:[string]
+        if domResized {
+            push parts ("\"viewport\":[" + (CssParser.fmt(pageW)) + "," + (CssParser.fmt((this.pageHeight()))) + "]")
+        }
+        if ((strlen domBoxes) > 0) {
+            push parts ("\"boxes\":" + domBoxes)
+        }
+        if ((array_length parts) == 0) {
+            return ""
+        }
+        return ("{" + (join parts ",") + "}")
+    }
+
+    ; The page's node an element of the view is ("" for none).
+    fn domNode:string (id:string) {
+        return (DomPage.nodeOf(id))
+    }
+
+    ; The page scrolls itself: the wheel (and a drag, a fling, a key) goes
+    ; to the element under the pointer.
+    fn domWheel:boolean (dy:double) {
+        if (this.realmLive() == false) {
+            return false
+        }
+        def at:string (",\"x\":" + (CssParser.fmt(pointX)) + ",\"y\":" + (CssParser.fmt(pointY)))
+        def node:string domHover
+        if ((strlen node) > 0) {
+            this.realmEvent(("{\"type\":\"wheel\",\"target\":" + node + ",\"dy\":" + (CssParser.fmt(dy)) + at + "}"))
+        } {
+            this.realmEvent(("{\"type\":\"wheel\",\"dy\":" + (CssParser.fmt(dy)) + at + "}"))
+        }
+        return true
+    }
+
+    fn domKey:void (k:string shift:boolean ctrl:boolean) {
+        def mods:string ""
+        if shift {
+            mods = (mods + ",\"shift\":true")
+        }
+        if ctrl {
+            mods = (mods + ",\"ctrl\":true")
+        }
+        this.realmEvent(("{\"type\":\"key\",\"key\":\"" + (BrowserApp.jsonEscape(k)) + "\"" + mods + "}"))
+    }
+
+    ; The page as the realm has it now, as HTML (an older realm's answer).
     fn showSnapshot:void (html:string) {
         def keepField:string ""
         def keepValue:string ""
@@ -834,11 +994,13 @@ class BrowserApp extends EvgApp {
 
     fn imageLoaded:void (url:string w:double h:double) {
         page.setImageSize(url w h)
+        dom.setImageSize(url w h)
         imagesDirty = true
     }
 
     fn imageFailed:void (url:string) {
         page.setImageFailed(url)
+        dom.setImageSize(url 0.0 0.0)
         imagesDirty = true
     }
 
@@ -986,12 +1148,18 @@ class BrowserApp extends EvgApp {
     }
 
     fn scrollTo:void (y:double) {
+        if domMode {
+            return
+        }
         viewport.scrollTop = y
         pageLayout.scrollOnlyFrom(viewport)
         listDirty = true
     }
 
     fn scrollBy:boolean (dy:double) {
+        if domMode {
+            return (this.domWheel(dy))
+        }
         def before:double viewport.scrollTop
         viewport.scrollTop = (viewport.scrollTop + dy)
         pageLayout.scrollOnlyFrom(viewport)
@@ -1062,7 +1230,12 @@ class BrowserApp extends EvgApp {
                 imagesDirty = false
                 imageRebuildMs = 0.0
                 if hasPage {
-                    this.reconvert()
+                    if domMode {
+                        dom.rebuild()
+                        this.domViewport()
+                    } {
+                        this.reconvert()
+                    }
                     moved = true
                 }
             }
@@ -1100,6 +1273,18 @@ class BrowserApp extends EvgApp {
         }
         hovered = id
         frameDirty = true
+        if (domMode && (this.realmLive())) {
+            def node:string (this.domNode(id))
+            if (node != domHover) {
+                domHover = node
+                def at:string (",\"x\":" + (CssParser.fmt(pointX)) + ",\"y\":" + (CssParser.fmt(pointY)))
+                if ((strlen node) > 0) {
+                    this.realmEvent(("{\"type\":\"move\",\"target\":" + node + at + "}"))
+                } {
+                    this.realmEvent(("{\"type\":\"move\"" + at + "}"))
+                }
+            }
+        }
     }
 
     fn hoveredId:string () {
@@ -1116,6 +1301,9 @@ class BrowserApp extends EvgApp {
 
     ; The link a pointer is over, for the status line.
     fn hoverUrl:string () {
+        if domMode {
+            return (dom.hrefAt((this.domNode(hovered))))
+        }
         if (has page.converter.linkById hovered) {
             return (unwrap (get page.converter.linkById hovered))
         }
@@ -1138,6 +1326,17 @@ class BrowserApp extends EvgApp {
         if (id == "btn-home") {
             this.navigate("about:home")
             return true
+        }
+        if (domMode && (this.realmLive())) {
+            ; the realm's page: the click goes to its element, a link's or
+            ; a form's default comes back as a message
+            def node:string (this.domNode(id))
+            if ((strlen node) > 0) {
+                domHover = node
+                this.realmClick(node)
+                return true
+            }
+            return false
         }
         if (this.realmLive()) {
             ; the page's scripts decide: the click goes to the element, and
@@ -1187,6 +1386,9 @@ class BrowserApp extends EvgApp {
         if (tid == "addr") {
             return true
         }
+        if domMode {
+            return ((strlen (dom.fieldKind((this.domNode(tid))))) > 0)
+        }
         if (has page.converter.fieldById tid) {
             def f:BrField (unwrap (get page.converter.fieldById tid))
             return ((f.kind == "text") || ((f.kind == "search") || ((f.kind == "url") || ((f.kind == "tel") || ((f.kind == "number") || (f.kind == "textarea"))))))
@@ -1218,6 +1420,22 @@ class BrowserApp extends EvgApp {
         }
         def old:string focusedFieldId
         focusedFieldId = ""
+        if domMode {
+            ; the page's field: pressed and focused there too
+            def node:string (this.domNode(id))
+            if (((strlen node) > 0) && ((strlen (dom.fieldKind(node))) > 0)) {
+                focusedFieldId = id
+                if ((old != id) && (this.realmLive())) {
+                    this.realmClick(node)
+                    this.realmEvent(("{\"type\":\"focus\",\"target\":" + node + "}"))
+                }
+            } {
+                if (((strlen old) > 0) && (this.realmLive())) {
+                    this.realmEvent("{\"type\":\"focus\"}")
+                }
+            }
+            return
+        }
         if (has page.converter.fieldById id) {
             focusedFieldId = id
             if ((old != id) && (this.realmLive())) {
@@ -1262,6 +1480,9 @@ class BrowserApp extends EvgApp {
         if (tid == "addr") {
             return addrText
         }
+        if domMode {
+            return (dom.attrOf((this.domNode(tid)) "value"))
+        }
         if (has page.converter.fieldById tid) {
             def f:BrField (unwrap (get page.converter.fieldById tid))
             return f.value
@@ -1276,6 +1497,13 @@ class BrowserApp extends EvgApp {
             addrText = text
             addrFresh = false
             frameDirty = true
+            return
+        }
+        if domMode {
+            def node:string (this.domNode(tid))
+            if (((strlen node) > 0) && (this.realmLive())) {
+                this.realmEvent(("{\"type\":\"set\",\"target\":" + node + ",\"value\":\"" + (BrowserApp.jsonEscape(text)) + "\"}"))
+            }
             return
         }
         if (has page.converter.fieldById tid) {
@@ -1298,6 +1526,13 @@ class BrowserApp extends EvgApp {
             addrText = (addrText + text)
             frameDirty = true
             return true
+        }
+        if domMode {
+            if ((strlen focusedFieldId) > 0) {
+                this.realmEvent(("{\"type\":\"text\",\"text\":\"" + (BrowserApp.jsonEscape(text)) + "\"}"))
+                return true
+            }
+            return false
         }
         if (has page.converter.fieldById focusedFieldId) {
             def f:BrField (unwrap (get page.converter.fieldById focusedFieldId))
@@ -1337,6 +1572,27 @@ class BrowserApp extends EvgApp {
                 return true
             }
             return false
+        }
+        if (domMode && (this.realmLive())) {
+            if ((k == "l") && ctrl) {
+                this.setFocus("addr")
+                return true
+            }
+            if ((k == "r") && ctrl) {
+                this.reload()
+                return true
+            }
+            if (((strlen focusedFieldId) > 0) && (k == "Escape")) {
+                this.setFocus("")
+                return true
+            }
+            if (((strlen focusedFieldId) == 0) && ((k == "Backspace") || ((k == "ArrowLeft") && ctrl))) {
+                this.back()
+                return true
+            }
+            ; the page's own keys (and its scrolling ones)
+            this.domKey(k shift ctrl)
+            return true
         }
         if ((strlen focusedFieldId) > 0) {
             if (has page.converter.fieldById focusedFieldId) {

@@ -17,15 +17,23 @@ import { ROOT, RGRC, requireToolchain } from "./ranger.mjs";
 requireToolchain();
 const cpp = process.argv.includes("--cpp");
 
+// (the checks with the realm and RangerDOM's view in them take more than
+// node's default heap to compile; a compile that dies must fail the check,
+// not leave the last build's output to be run)
 function compile(args) {
-  let log = "";
+  const d = args.find((a) => a.startsWith("-d=")).slice(3);
+  const o = args.find((a) => a.startsWith("-o=")).slice(3);
+  const out = path.join(ROOT, d, o);
+  fs.rmSync(out, { force: true });
+  let log = "", failed = false;
   try {
-    log = execFileSync(process.execPath, [RGRC, ...args], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    log = execFileSync(process.execPath, ["--max-old-space-size=8192", "--stack-size=8000", RGRC, ...args], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
   } catch (e) {
     log = String(e.stdout || "") + String(e.stderr || "");
+    failed = true;
   }
-  if (log.includes("Compilation FAILED") || log.includes("[FAIL]")) {
-    process.stderr.write(log + "\n");
+  if (failed || log.includes("Compilation FAILED") || log.includes("[FAIL]") || !fs.existsSync(out)) {
+    process.stderr.write(log.split("\n").filter((l) => !l.includes("api docs")).slice(-60).join("\n") + "\n");
     process.exit(1);
   }
 }

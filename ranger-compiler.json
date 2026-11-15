@@ -1,0 +1,5 @@
+{
+  "git": "https://github.com/terotests/Ranger.git",
+  "rev": "a520c5ff873b4cea4fe2a3801df0354f5cc17ebe",
+  "sparse": ["dist", "compiler", "lib"]
+}
