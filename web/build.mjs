@@ -34,6 +34,23 @@ requireToolchain();
 fs.mkdirSync(STAGE, { recursive: true });
 fs.mkdirSync(OUT, { recursive: true });
 
+// Ranger's JavaScript for a Rust `s.as_bytes()[i]` encodes the whole string
+// again on each read (r_cb_enc.encode), so CEr's lexer is quadratic in a
+// script's length: RangerDOM's webapi.js alone took over 10 s to load in the
+// realm. Until the compiler keeps the bytes, the encoder keeps its last
+// sixteen long answers and the short ones (strings do not change; the
+// answers are only read). The same patch as RangerDOM's playground build.
+const ENCODER_CACHE = `if (typeof r_cb_enc !== "undefined" && r_cb_enc && typeof r_cb_enc.encode === "function") {
+  const raw = r_cb_enc.encode.bind(r_cb_enc), kept = new Map(), small = new Map();
+  r_cb_enc.encode = function (s) {
+    if (s.length <= 4) { let w = small.get(s); if (w === undefined) { w = raw(s); if (small.size < 4096) small.set(s, w); } return w; }
+    if (s.length < 256) return raw(s);
+    let v = kept.get(s);
+    if (v === undefined) { v = raw(s); if (kept.size >= 16) kept.delete(kept.keys().next().value); kept.set(s, v); }
+    return v;
+  };
+}`;
+
 // Ranger -> one script, checked to load without Node's `require`, wrapped so
 // only the names in `exportsJs` reach the global scope.
 function bundle(entry, outName, globalName, exportsJs, probe) {
@@ -41,7 +58,7 @@ function bundle(entry, outName, globalName, exportsJs, probe) {
   try {
     log = execFileSync(
       process.execPath,
-      ["--stack-size=8000", RGRC, "-es6", entry, `-d=${path.relative(ROOT, STAGE)}`, `-o=${outName}`, "-nodecli"],
+      ["--max-old-space-size=8192", "--stack-size=8000", RGRC, "-es6", entry, `-d=${path.relative(ROOT, STAGE)}`, `-o=${outName}`, "-nodecli"],
       { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 }
     );
   } catch (e) {
@@ -57,7 +74,7 @@ function bundle(entry, outName, globalName, exportsJs, probe) {
   const found = (0, eval)(code + ";" + probe);
   globalThis.require = previous;
   if (!/^function(\|function)*$/.test(found)) throw new Error(`${outName} is missing its browser exports (${found})`);
-  const scoped = `// GENERATED from ${entry} by web/build.mjs — do not edit.\n(function () {\n${code}\n;globalThis.${globalName} = ${exportsJs};\n})();\n`;
+  const scoped = `// GENERATED from ${entry} by web/build.mjs — do not edit.\n(function () {\n${code}\n;${ENCODER_CACHE}\nglobalThis.${globalName} = ${exportsJs};\n})();\n`;
   fs.writeFileSync(path.join(OUT, outName), scoped);
   return scoped.length;
 }

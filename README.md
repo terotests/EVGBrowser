@@ -18,8 +18,11 @@ HTML ──► HtmlParser ──► CssCascade ──► HtmlToEvg ──► EVG
 
 ## Running it
 
-It needs Node 20+ and nothing next to this repository. `npm install` brings
-the Ranger compiler (the npm package `ranger-compiler`) and fetches the Ranger
+It needs Node 20+ and nothing next to this repository. The Ranger compiler
+is the Ranger repository at the commit `ranger-compiler.json` names, fetched
+into `.deps/ranger` the first time a build needs it (RangerDOM's view is Rust
+that Ranger reads, which the npm release of the compiler cannot yet).
+`npm install` fetches the Ranger
 packages the source uses into `vendor/ranger/` (`rgrc install -vendor`), at
 the revisions pinned in `ranger.json` / `ranger.lock`: `evg` and `image`
 from [terotests/evg](https://github.com/terotests/evg), `rangerdom` from
@@ -118,7 +121,10 @@ To publish: merge to `main`, then set *Settings → Pages → Source* to
   browser applies its own rules (the allowlist; GET only, text only for
   `fetch`). No storage outlives the page, no dialogs, no windows. A request
   the realm takes longer than 8 s to answer stops it, and the page stays as
-  it was. `?js=0` / `--no-js` turn scripts off.
+  it was. `?js=0` / `--no-js` turn scripts off. A page with scripts is
+  drawn by RangerDOM's view once its realm runs (see below), and that view
+  draws `position: fixed` boxes; the overlay rule below holds for pages
+  without scripts.
 - **No video, audio, iframes, plugins or canvas.** They are replaced by a short
   notice.
 - **No overlays.** `position: fixed` boxes (cookie banners, chat bubbles,
@@ -177,24 +183,35 @@ Things EVG does not have, and how they are handled:
 ```
 browser                                     realm (Worker / child process)
   page + external scripts       start ──►    RangerDOM: parse, run the scripts
-  clicks, typing, time passed   step  ──►    events to their elements, timers
-  parse, style, lay out again   ◄── answer   the page as HTML when it changed,
+  clicks, wheel, keys, time     step  ──►    events to their elements, timers
+  + the boxes laid out                        (getBoundingClientRect, hit tests)
+  DomPage: build, lay out       ◄── answer   the render tree, what changed
   navigate / fetch (its rules)  ◄──          messages: open, fetch, console
 ```
 
-The realm keeps the page as long as it is shown, so a React or other
-single-page app works: every element of a scripted page carries `data-rd`,
-the converter makes each one a click target, and a click goes to the
-innermost element under the pointer and bubbles to the page's handlers.
-Text typed in a field is set on the page's element (its `input` and
-`change` events fire), Enter goes to it as a key. Module scripts run as
-classic ones, so a bundle that imports nothing runs.
+The page is shown first as the server sent it (the browser's own parser,
+cascade and HtmlToEvg). Once the realm has run its scripts, the realm keeps
+the page as long as it is shown, and the browser draws what the realm's DOM
+is: webapi.js's render tree (every box with its computed style: CSS
+transitions, `:has()`, custom properties, SVG backgrounds and the rest of
+RangerDOM's cascade) becomes EVG elements in RangerDOM's view (`DomPage`,
+`DomView` from `vendor/ranger/rangerdom/view`), laid out here; the boxes go
+back to the page. Only what changed comes over (`__renderDelta`), and the
+parts of the page that did not change keep their elements and their layout
+(`DomMemo`, `keepLayout`), so a frame costs what changed. Pictures the page
+shows are fetched by the browser under its rules and drawn by their URL.
+
+A click goes to the page's element under the pointer (and bubbles to its
+handlers), as do the pointer's moves (hover styles), the wheel and drags
+(the page scrolls itself), and keys. A text field takes the keyboard: its
+text is set on the page's element (`input` and `change` fire). Module
+scripts run as classic ones, so a bundle that imports nothing runs.
 
 | File | Role |
 | --- | --- |
 | `src/RealmWire.rgr` | the requests and answers as text; the host carries them unread |
 | `src/js/PageRealm.rgr` | the realm's side: RangerDOM's `DomRealm` behind the requests |
-| `src/BrPage.rgr` | `applySnapshot`: the page as the realm has it |
+| `src/BrowserApp.rgr` | `showRender` / `domViewport`: the realm's render tree through `DomPage`; input to the page |
 | `web/realm-worker.js` | the Worker; `evg_realm.js` is loaded only when a page has scripts |
 | `native/sdl/evg_browser_sdl.cpp` | `RealmProcess`: `evg-browser --realm`, one per page, killed on timeout |
 

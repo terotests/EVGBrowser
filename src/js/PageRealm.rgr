@@ -17,10 +17,12 @@
 ; Requests (RealmWire fields):
 ;
 ;   start  url html width height n (scriptUrl scriptText)×n
+;          m (sheetUrl sheetText)×m
 ;   step   events (JSON objects, one per line) elapsedMs
-;          n (id status contentType text)×n  layoutJson
+;          n (id status contentType text)×n  layoutJson  whole ("1": the
+;          browser lost the page it keeps; else "")
 ;
-; The answer: "ok" snapshot (the page as HTML, "" when it did not change)
+; The answer: "ok" render (the render tree, "" when it did not change)
 ; messages (lines: open\turl\ttarget, fetch\tid\turl, error\ttext,
 ; console\tlevel\ttext) dueIn (ms, -1 for no timer) title summary.
 ; ==============================================================================
@@ -31,6 +33,8 @@ Import "../RealmWire.rgr"
 class PageRealm {
     def realm:DomRealm (new DomRealm())
     def started:boolean false
+    ; the page's generation the last render was of
+    def lastGen:string ""
 
     fn handle:string (request:string) {
         def w (new RealmWire(request))
@@ -50,7 +54,18 @@ class PageRealm {
                 i = (i + 1)
             }
             realm.start(html url width height)
+            def sn:int (w.nextInt())
+            def si:int 0
+            while (si < sn) {
+                def shu:string (w.next())
+                def sht:string (w.next())
+                realm.addStyle(sht shu)
+                si = (si + 1)
+            }
+            ; the browser keeps the render tree: only what changed comes
+            realm.exec("__deltaRender(true)")
             realm.runScripts()
+            lastGen = ""
             started = true
         }
         if ((kind == "step") && started) {
@@ -70,6 +85,9 @@ class PageRealm {
             if ((strlen layout) > 0) {
                 realm.layout(layout)
             }
+            if ((w.next()) == "1") {
+                lastGen = "whole"
+            }
             def lines:[string] (strsplit events "\n")
             for lines ev:string j {
                 if ((strlen (trim ev)) > 0) {
@@ -82,11 +100,17 @@ class PageRealm {
             return (RealmWire.put("" "no realm"))
         }
         def out:string (RealmWire.put("" "ok"))
-        def snap:string ""
-        if (realm.changed()) {
-            snap = (realm.snapshot())
+        def render:string ""
+        def gen:string (realm.eval("String(__generation())"))
+        if (gen != lastGen) {
+            if (lastGen == "whole") {
+                render = (realm.eval("__renderDelta(1)"))
+            } {
+                render = (realm.eval("__renderDelta()"))
+            }
+            lastGen = gen
         }
-        out = (RealmWire.put(out snap))
+        out = (RealmWire.put(out render))
         out = (RealmWire.put(out (this.messages())))
         out = (RealmWire.put(out (to_string (realm.dueIn()))))
         out = (RealmWire.put(out (realm.title())))

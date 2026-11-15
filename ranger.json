@@ -6,17 +6,17 @@
   "dependencies": {
     "evg": {
       "git": "https://github.com/terotests/evg.git",
-      "rev": "1e4b2c1443fb489e7e64cb090c83af15fb7f1135",
+      "rev": "9fe59d00710f64a036f545a8eec2747c5f265768",
       "subdir": "storm"
     },
     "image": {
       "git": "https://github.com/terotests/evg.git",
-      "rev": "1e4b2c1443fb489e7e64cb090c83af15fb7f1135",
+      "rev": "9fe59d00710f64a036f545a8eec2747c5f265768",
       "subdir": "image"
     },
     "rangerdom": {
       "git": "https://github.com/terotests/RangerDOM.git",
-      "rev": "2c6f9e1c9ff8fdb99347ab26b338ea528a16f533"
+      "rev": "d7aa98091c408f360530cf07b14d40cb682aae7c"
     }
   }
 }

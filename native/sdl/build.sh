@@ -50,7 +50,7 @@ if [ "$(ulimit -s)" = "unlimited" ] || [ "$(ulimit -s)" -ge 60000 ]; then
   STACK_KB=48000
 fi
 set +e
-LOG="$(node --stack-size=$STACK_KB "$RGRC" -l=cpp native/sdl/SdlEntry.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
+LOG="$(node --max-old-space-size=8192 --stack-size=$STACK_KB "$RGRC" -l=cpp native/sdl/SdlEntry.rgr -d=build/cpp -o=evg_browser.cpp 2>&1)"
 STATUS=$?
 set -e
 if [ $STATUS -ne 0 ] || grep -q "FAIL" <<<"$LOG"; then
