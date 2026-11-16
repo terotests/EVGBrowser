@@ -107,9 +107,12 @@ function syncTitle() {
 // alive: the browser writes requests (the page to start, then the user's
 // events and the time that passed), the worker answers, and this carries
 // both unread. A new page starts a new realm; a request that takes longer
-// than REALM_LIMIT_MS ends the worker, and the page stays as it was.
+// than its limit ends the worker, and the page stays as it was. Starting
+// runs all of the page's scripts (a React bundle of 700 KB takes 10-15 s
+// on CEr), so it gets a longer limit than the steps after it.
 
 const REALM_LIMIT_MS = 8000;
+const REALM_START_LIMIT_MS = 45000;
 let realmWorker = null;
 let realmTimer = 0;
 let realmBusy = -1;
@@ -154,7 +157,7 @@ function runRealm() {
     app.realmFailed(job, "aikaraja");
     window.__realm = { job, ok: false, error: "timeout" };
     dirty = true;
-  }, REALM_LIMIT_MS);
+  }, start ? REALM_START_LIMIT_MS : REALM_LIMIT_MS);
   realmWorker.postMessage({ job, start, request });
 }
 
