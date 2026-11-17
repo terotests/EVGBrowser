@@ -180,6 +180,37 @@ class BrowserCheck {
         this.check("aspect-ratio frame" (((this.yOf(root "alla")) > 400.0) && ((this.yOf(root "alla")) < 440.0)))
     }
 
+    ; Tabs: a second tab loads while the first is shown, each keeps its
+    ; page and history; the icon is asked for last and falls back to
+    ; /favicon.ico.
+    fn tabChecks:void () {
+        def app (new BrowserApp())
+        app.setPageSize(1024.0 768.0)
+        app.navigate("https://yle.fi/uutiset")
+        def r1:string (app.nextRequest())
+        def id1:int (unwrap (str2int (itemAt (strsplit r1 "\t") 0)))
+        app.deliver(id1 200 "https://yle.fi/uutiset" "text/html" "<html><head><title>Yksi</title><link rel='shortcut icon' href='/kuva.png'></head><body><p>a</p></body></html>")
+        this.check("icon asked last" (endsWith (app.nextRequest()) "\timage\thttps://yle.fi/kuva.png"))
+        app.imageFailed("https://yle.fi/kuva.png")
+        this.check("icon falls back" (endsWith (app.nextRequest()) "\timage\thttps://yle.fi/favicon.ico"))
+        app.imageLoaded("https://yle.fi/favicon.ico" 16.0 16.0)
+        this.check("icon in the tab" ((indexOf (app.frameJson()) "yle.fi/favicon.ico") >= 0))
+        app.newTab("https://yle.fi/urheilu")
+        this.check("two tabs" (((app.tabCount()) == 2) && ((app.activeTabIndex()) == 1)))
+        def r2:string (app.nextRequest())
+        def id2:int (unwrap (str2int (itemAt (strsplit r2 "\t") 0)))
+        app.selectTab(0)
+        this.check("first tab back" ((app.pageTitle()) == "Yksi"))
+        ; the second tab's page arrives while the first is shown
+        app.deliver(id2 200 "https://yle.fi/urheilu" "text/html" "<html><head><title>Kaksi</title></head><body><p>b</p></body></html>")
+        this.check("shown tab kept" ((app.pageTitle()) == "Yksi"))
+        this.check("other tab named" ((indexOf (app.frameJson()) "Kaksi") >= 0))
+        app.selectTab(1)
+        this.check("other tab loaded" (((app.pageTitle()) == "Kaksi") && ((app.currentUrl()) == "https://yle.fi/urheilu")))
+        app.closeTab(1)
+        this.check("tab closed" (((app.tabCount()) == 1) && ((app.pageTitle()) == "Yksi")))
+    }
+
     fn formCheck:void () {
         def app (new BrowserApp())
         app.setPageSize(900.0 700.0)
@@ -266,6 +297,7 @@ class BrowserCheck {
         this.check("bare host" ((BrowserApp.addressFor("yle.fi")) == "https://yle.fi/"))
         this.cascadeChecks()
         this.formCheck()
+        this.tabChecks()
         this.layoutChecks()
         this.warpChecks()
         print ("passed " + (to_string passes) + ", failed " + (to_string fails))

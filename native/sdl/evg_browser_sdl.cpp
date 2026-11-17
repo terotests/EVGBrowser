@@ -52,6 +52,7 @@
 extern char** environ;
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -647,6 +648,46 @@ struct Image {
 // A picture's bytes as a texture: JPEG, PNG, GIF (first frame), BMP through
 // stb_image; WebP through Ranger's WebPDecoder; SVG through nanosvg, rasterised at its
 // own size (at most 2048 on a side). AVIF is not decoded or asked for.
+static Image decodeImage(SDL_Renderer* ren, const std::string& bytes);
+
+static Image decodeIco(SDL_Renderer* ren, const std::string& bytes) {
+  auto u8 = [&](size_t i) -> unsigned { return i < bytes.size() ? (unsigned char)bytes[i] : 0u; };
+  auto u16 = [&](size_t i) -> unsigned { return u8(i) | (u8(i + 1) << 8); };
+  auto u32 = [&](size_t i) -> unsigned { return u16(i) | (u16(i + 2) << 16); };
+  unsigned count = u16(4);
+  int best = -1, bestScore = 1 << 30;
+  for (unsigned k = 0; k < count && 6 + k * 16 + 16 <= bytes.size(); k++) {
+    size_t e = 6 + k * 16;
+    int size = u8(e) == 0 ? 256 : (int)u8(e);
+    // nearest to 32, a bigger one before a smaller one as far off
+    int score = size >= 32 ? (size - 32) * 2 : (32 - size) * 3;
+    if (score < bestScore) { bestScore = score; best = (int)k; }
+  }
+  if (best < 0) return Image{};
+  size_t e = 6 + (size_t)best * 16;
+  size_t len = u32(e + 8), off = u32(e + 12);
+  if (off >= bytes.size() || len == 0) return Image{};
+  if (off + len > bytes.size()) len = bytes.size() - off;
+  std::string data = bytes.substr(off, len);
+  if (data.size() > 8 && data.compare(1, 3, "PNG") == 0) return decodeImage(ren, data);
+  if (data.size() < 40) return Image{};
+  // BITMAPINFOHEADER: the height counts the AND mask too
+  int32_t hh = (int32_t)(u8(off + 8) | (u8(off + 9) << 8) | (u8(off + 10) << 16) | (u8(off + 11) << 24));
+  hh /= 2;
+  data[8] = (char)(hh & 0xff); data[9] = (char)((hh >> 8) & 0xff);
+  data[10] = (char)((hh >> 16) & 0xff); data[11] = (char)((hh >> 24) & 0xff);
+  unsigned hdr = u32(off), bpp = u16(off + 14), colors = u32(off + 32);
+  if (colors == 0 && bpp <= 8) colors = 1u << bpp;
+  unsigned pixOff = 14 + hdr + colors * 4;
+  std::string bmp = "BM";
+  unsigned total = 14 + (unsigned)data.size();
+  for (int i = 0; i < 4; i++) bmp.push_back((char)((total >> (8 * i)) & 0xff));
+  bmp.append(4, '\0');
+  for (int i = 0; i < 4; i++) bmp.push_back((char)((pixOff >> (8 * i)) & 0xff));
+  bmp += data;
+  return decodeImage(ren, bmp);
+}
+
 static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
   Image im;
   int w = 0, h = 0;
@@ -677,6 +718,10 @@ static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
     h = img->height;
     rgba = std::move(img->pixels);
     if ((size_t)w * h * 4 != rgba.size()) return im;
+  } else if (bytes.size() > 22 && bytes.compare(0, 4, std::string("\0\0\1\0", 4)) == 0) {
+    // a favicon.ico: the entry nearest 32 px; a PNG inside is decoded as
+    // one, a bitmap is given the BMP file header it lacks
+    return decodeIco(ren, bytes);
   } else {
     int n = 0;
     unsigned char* px = stbi_load_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &n, 4);
@@ -754,8 +799,9 @@ class Painter {
         case 3: text(*c); break;
         case 4: pushClip(*c); break;
         case 5: popClip(); break;
+        case 6: fill(*c); break;
         case 7: stroke(*c); break;
-        default: break;  // paths: a browser page without SVG has none
+        default: break;
       }
     }
     SDL_RenderSetClipRect(ren, nullptr);
@@ -867,6 +913,80 @@ class Painter {
       v.push_back(SDL_Vertex{inner[j], col, {0, 0}});
     }
     SDL_RenderGeometry(ren, nullptr, v.data(), (int)v.size(), nullptr, 0);
+  }
+
+  // A filled path (the toolbar's icons, a page's inline SVG): its rings
+  // rasterised here, nonzero or even-odd, with 4 x 4 samples a pixel, into
+  // an alpha texture tinted like text runs. Cached by geometry and scale.
+  void fill(const EVGDrawCmd& c) {
+    if (c.pts.size() < 6 || c.w <= 0 || c.h <= 0 || offscreen(c)) return;
+    double minX = 1e18, minY = 1e18, maxX = -1e18, maxY = -1e18;
+    for (size_t i = 0; i + 1 < c.pts.size(); i += 2) {
+      minX = std::min(minX, c.pts[i]); maxX = std::max(maxX, c.pts[i]);
+      minY = std::min(minY, c.pts[i + 1]); maxY = std::max(maxY, c.pts[i + 1]);
+    }
+    int ox = (int)std::floor(minX * s), oy = (int)std::floor(minY * s);
+    int w = (int)std::ceil(maxX * s) - ox + 1, h = (int)std::ceil(maxY * s) - oy + 1;
+    if (w <= 0 || h <= 0 || (double)w * h > 4e6) return;
+    std::string key = "P|" + std::to_string(s) + "|" + std::to_string(c.evenOdd) + "|" +
+                      std::to_string(minX * s - ox) + "," + std::to_string(minY * s - oy) + "|";
+    for (size_t i = 0; i < c.pts.size(); i++) key += std::to_string((int)std::lround((c.pts[i] - (i % 2 ? minY : minX)) * 64)) + ",";
+    for (auto e : c.ringEnds) key += std::to_string((int)e) + ";";
+    SDL_Texture* tex = nullptr;
+    auto it = textCache.find(key);
+    if (it != textCache.end()) {
+      tex = it->second.tex;
+    } else {
+      struct Edge { double x0, y0, x1, y1; int dir; };
+      std::vector<Edge> edges;
+      size_t start = 0;
+      std::vector<size_t> ends;
+      for (auto e : c.ringEnds) ends.push_back((size_t)e);
+      if (ends.empty()) ends.push_back(c.pts.size());
+      for (size_t r = 0; r < ends.size(); r++) {
+        size_t end = ends[r];  // where the ring ends in pts, counted in numbers
+        if (end > c.pts.size()) end = c.pts.size();
+        size_t n = end > start ? (end - start) / 2 : 0;
+        for (size_t k = 0; k < n; k++) {
+          size_t a = start + k * 2, b = start + ((k + 1) % n) * 2;
+          double x0 = c.pts[a] * s - ox, y0 = c.pts[a + 1] * s - oy, x1 = c.pts[b] * s - ox, y1 = c.pts[b + 1] * s - oy;
+          if (y0 == y1) continue;
+          if (y0 < y1) edges.push_back({x0, y0, x1, y1, 1});
+          else edges.push_back({x1, y1, x0, y0, -1});
+        }
+        start = end;
+      }
+      const int SS = 4;
+      std::vector<int> cover((size_t)w * h, 0);
+      std::vector<std::pair<double, int>> xs;
+      for (int sy = 0; sy < h * SS; sy++) {
+        double y = (sy + 0.5) / SS;
+        xs.clear();
+        for (auto& e : edges)
+          if (y >= e.y0 && y < e.y1) xs.push_back({e.x0 + (y - e.y0) * (e.x1 - e.x0) / (e.y1 - e.y0), e.dir});
+        std::sort(xs.begin(), xs.end());
+        int wind = 0;
+        for (size_t k = 0; k + 1 < xs.size(); k++) {
+          wind += xs[k].second;
+          bool in = c.evenOdd ? (wind & 1) != 0 : wind != 0;
+          if (!in) continue;
+          int a = (int)std::ceil(xs[k].first * SS - 0.5), b = (int)std::ceil(xs[k + 1].first * SS - 0.5);
+          for (int sx = std::max(a, 0); sx < std::min(b, w * SS); sx++) cover[(size_t)(sy / SS) * w + sx / SS]++;
+        }
+      }
+      tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h);
+      if (!tex) return;
+      std::vector<Uint32> px32((size_t)w * h);
+      for (size_t k = 0; k < px32.size(); k++) px32[k] = ((Uint32)std::min(255, cover[k] * 255 / (SS * SS)) << 24) | 0x00FFFFFFu;
+      SDL_UpdateTexture(tex, nullptr, px32.data(), w * 4);
+      SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+      textCache[key] = Tex{tex, w, h, 0};
+    }
+    SDL_Color col = color(c.r, c.g, c.b, c.a);
+    SDL_SetTextureColorMod(tex, col.r, col.g, col.b);
+    SDL_SetTextureAlphaMod(tex, col.a);
+    SDL_Rect dst{ox, oy, w, h};
+    SDL_RenderCopy(ren, tex, nullptr, &dst);
   }
 
   void stroke(const EVGDrawCmd& c) {
@@ -1322,6 +1442,7 @@ static std::string keyName(SDL_Keycode k) {
 
 struct Options {
   std::string url = "about:home";
+  std::vector<std::string> more;  // further addresses, each in a tab of its own
   int width = 1100, height = 800;
   std::string screenshot;
   std::string allow;
@@ -1334,6 +1455,7 @@ struct Options {
 
 static Options parseArgs(int argc, char** argv) {
   Options o;
+  bool urlGiven = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -1348,7 +1470,7 @@ static Options parseArgs(int argc, char** argv) {
     else if (a == "--settle") o.settleMs = std::atoi(next().c_str());
     else if (a == "--help" || a == "-h") {
       std::printf(
-          "evg-browser [url] [options]\n"
+          "evg-browser [url ...] [options]   (each address in a tab)\n"
           "  --width W --height H     window size\n"
           "  --allow a.fi,b.org       also allow these sites (and their subdomains)\n"
           "  --open, --unsafe         any site: switch the allowlist off (EVG_OPEN=1 too)\n"
@@ -1357,7 +1479,12 @@ static Options parseArgs(int argc, char** argv) {
           "  --screenshot out.png     render headless once the page has loaded, then exit\n"
           "  --settle MS              how long to wait for quiet before the screenshot\n");
       std::exit(0);
-    } else o.url = a;
+    } else if (o.url == "about:home" && !urlGiven) {
+      o.url = a;
+      urlGiven = true;
+    } else {
+      o.more.push_back(a);
+    }
   }
   return o;
 }
@@ -1430,6 +1557,8 @@ static int run(int argc, char** argv) {
   if (opt.open || std::getenv("EVG_OPEN")) app->setAllowlistEnabled(false);
   if (!opt.allow.empty()) app->setAllowedSites(app->allowedSitesText() + "," + opt.allow);
   host->startAt(winW, winH, false, opt.url);
+  for (auto& u : opt.more) app->newTab(u);
+  if (!opt.more.empty()) app->selectTab(0);
 
   Net net(6);
   SDL_Cursor* arrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);

@@ -68,13 +68,14 @@ brew install sdl2
 npm run sdl                         # -> build/evg-browser
 build/evg-browser                   # about:home
 build/evg-browser https://yle.fi/uutiset
+build/evg-browser https://yle.fi/uutiset https://www.hs.fi   # each address in a tab
 build/evg-browser --allow example.org,kids.example   # a parent adds sites
 build/evg-browser --open https://www.hs.fi           # no allowlist at all (or --unsafe)
 build/evg-browser about:demo --screenshot demo.png    # render headless, then exit
 ```
 
 Mouse, wheel, drag-to-scroll, the mouse's back/forward buttons, Alt+←/→,
-Ctrl+L (address field), Ctrl+R, Ctrl+V in fields, Ctrl+Q. Only `http` and
+Ctrl+L (address field), Ctrl+R, Ctrl+T / Ctrl+W / Ctrl+Tab (tabs), Ctrl+V in fields, Ctrl+Q. Only `http` and
 `https` are fetched, also after redirects; responses are capped at 8 MB;
 pages in Latin-1 are converted to UTF-8. Fonts are looked for in the usual
 Linux, macOS and Windows places, or in `EVG_FONT_DIR` (`sans.ttf`,
