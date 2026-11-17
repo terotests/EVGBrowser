@@ -69,6 +69,79 @@ class BrHistoryEntry {
     def scrollTop:double 0.0
 }
 
+; One tab's page, history, requests and realm while another tab is shown.
+class BrTab {
+    def addrText:string ""
+    def addrFocused:boolean false
+    def addrFresh:boolean false
+    def statusText:string ""
+    def page:BrPage (new BrPage())
+    def hasPage:boolean false
+    def viewport:EVGElement (EVGElement.createDiv())
+    def pageLayout:EVGLayout (new EVGLayout())
+    def pageList:EVGDisplayList (new EVGDisplayList())
+    def pageDirty:boolean true
+    def listDirty:boolean true
+    def fling:EVGFling (new EVGFling())
+    def focusedFieldId:string ""
+    def pendingFragment:string ""
+    def history:[BrHistoryEntry]
+    def historyIndex:int -1
+    def navId:int 0
+    def loading:boolean false
+    def loadingUrl:string ""
+    def requests:[BrRequest]
+    def open:[BrRequest]
+    def sheetWaitMs:double 0.0
+    def imagesDirty:boolean false
+    def imageRebuildMs:double 0.0
+    def lastError:string ""
+    def realmState:string ""
+    def realmJob:int 0
+    def realmSummary:string ""
+    def realmBusy:boolean false
+    def realmStarting:boolean false
+    def realmEvents:[string]
+    def realmResources:string ""
+    def realmResourceCount:int 0
+    def realmElapsed:double 0.0
+    def realmDue:double -1.0
+    def realmErrors:[string]
+    def realmLog:[string]
+    def pointX:double 0.0
+    def pointY:double 0.0
+    def renderCount:int 0
+    def lastRenderMs:double 0.0
+    def dom:DomPage (new DomPage())
+    def domMode:boolean false
+    def domBoxes:string ""
+    def domResized:boolean false
+    def domWhole:boolean false
+    def domHover:string ""
+    def favUrl:string ""
+    def favNext:string ""
+    def favState:string ""
+    ; the icon is asked for once nothing else of the page waits
+    def favPending:boolean false
+    def layW:double 0.0
+    def layH:double 0.0
+
+    Constructor () {
+        def l_history:[BrHistoryEntry]
+        history = l_history
+        def l_requests:[BrRequest]
+        requests = l_requests
+        def l_open:[BrRequest]
+        open = l_open
+        def l_realmEvents:[string]
+        realmEvents = l_realmEvents
+        def l_realmErrors:[string]
+        realmErrors = l_realmErrors
+        def l_realmLog:[string]
+        realmLog = l_realmLog
+    }
+}
+
 class BrowserApp extends EvgApp {
     def policy:SafetyPolicy (new SafetyPolicy())
     ; where the host keeps the sample pages that ship with it, "" for none
@@ -155,6 +228,26 @@ class BrowserApp extends EvgApp {
     def domWhole:boolean false
     ; the page's node the pointer is over (move events go when it changes)
     def domHover:string ""
+    ; --- the tab's icon ---
+    ; favState "" none (about: pages), "loading", "ok" (the host has the
+    ; picture at favUrl), "failed"; favNext is the next to try
+    def favUrl:string ""
+    def favNext:string ""
+    def favState:string ""
+    ; the icon is asked for once nothing else of the page waits
+    def favPending:boolean false
+    ; the window size the tab's page was laid out for
+    def layW:double 0.0
+    def layH:double 0.0
+
+    ; --- the tabs ---
+    ; The fields above from addrText on are the shown tab's. A tab that is
+    ; not shown keeps them in its BrTab; switching swaps them (swapIn).
+    def tabs:[BrTab]
+    def activeTab:int 0
+    ; navigation numbers are unique over all tabs, so that an answer (or a
+    ; realm's) for one tab is never taken for another's
+    def navSeq:int 0
 
     Constructor () {
         def h:[BrHistoryEntry]
@@ -172,6 +265,328 @@ class BrowserApp extends EvgApp {
         def sc:[string:string]
         sheetCache = sc
         frameSheet.parse((BrowserApp.frameCss()))
+        def tl:[BrTab]
+        tabs = tl
+        push tabs (new BrTab())
+    }
+
+    ; --- tabs -----------------------------------------------------------------
+
+    fn saveTab:void (t:BrTab) {
+        t.addrText = addrText
+        t.addrFocused = addrFocused
+        t.addrFresh = addrFresh
+        t.statusText = statusText
+        t.page = page
+        t.hasPage = hasPage
+        t.viewport = viewport
+        t.pageLayout = pageLayout
+        t.pageList = pageList
+        t.pageDirty = pageDirty
+        t.listDirty = listDirty
+        t.fling = fling
+        t.focusedFieldId = focusedFieldId
+        t.pendingFragment = pendingFragment
+        t.history = history
+        t.historyIndex = historyIndex
+        t.navId = navId
+        t.loading = loading
+        t.loadingUrl = loadingUrl
+        t.requests = requests
+        t.open = open
+        t.sheetWaitMs = sheetWaitMs
+        t.imagesDirty = imagesDirty
+        t.imageRebuildMs = imageRebuildMs
+        t.lastError = lastError
+        t.realmState = realmState
+        t.realmJob = realmJob
+        t.realmSummary = realmSummary
+        t.realmBusy = realmBusy
+        t.realmStarting = realmStarting
+        t.realmEvents = realmEvents
+        t.realmResources = realmResources
+        t.realmResourceCount = realmResourceCount
+        t.realmElapsed = realmElapsed
+        t.realmDue = realmDue
+        t.realmErrors = realmErrors
+        t.realmLog = realmLog
+        t.pointX = pointX
+        t.pointY = pointY
+        t.renderCount = renderCount
+        t.lastRenderMs = lastRenderMs
+        t.dom = dom
+        t.domMode = domMode
+        t.domBoxes = domBoxes
+        t.domResized = domResized
+        t.domWhole = domWhole
+        t.domHover = domHover
+        t.favUrl = favUrl
+        t.favNext = favNext
+        t.favState = favState
+        t.favPending = favPending
+        t.layW = layW
+        t.layH = layH
+    }
+
+    fn loadTab:void (t:BrTab) {
+        addrText = t.addrText
+        addrFocused = t.addrFocused
+        addrFresh = t.addrFresh
+        statusText = t.statusText
+        page = t.page
+        hasPage = t.hasPage
+        viewport = t.viewport
+        pageLayout = t.pageLayout
+        pageList = t.pageList
+        pageDirty = t.pageDirty
+        listDirty = t.listDirty
+        fling = t.fling
+        focusedFieldId = t.focusedFieldId
+        pendingFragment = t.pendingFragment
+        history = t.history
+        historyIndex = t.historyIndex
+        navId = t.navId
+        loading = t.loading
+        loadingUrl = t.loadingUrl
+        requests = t.requests
+        open = t.open
+        sheetWaitMs = t.sheetWaitMs
+        imagesDirty = t.imagesDirty
+        imageRebuildMs = t.imageRebuildMs
+        lastError = t.lastError
+        realmState = t.realmState
+        realmJob = t.realmJob
+        realmSummary = t.realmSummary
+        realmBusy = t.realmBusy
+        realmStarting = t.realmStarting
+        realmEvents = t.realmEvents
+        realmResources = t.realmResources
+        realmResourceCount = t.realmResourceCount
+        realmElapsed = t.realmElapsed
+        realmDue = t.realmDue
+        realmErrors = t.realmErrors
+        realmLog = t.realmLog
+        pointX = t.pointX
+        pointY = t.pointY
+        renderCount = t.renderCount
+        lastRenderMs = t.lastRenderMs
+        dom = t.dom
+        domMode = t.domMode
+        domBoxes = t.domBoxes
+        domResized = t.domResized
+        domWhole = t.domWhole
+        domHover = t.domHover
+        favUrl = t.favUrl
+        favNext = t.favNext
+        favState = t.favState
+        favPending = t.favPending
+        layW = t.layW
+        layH = t.layH
+    }
+
+    ; Make tab i the one the fields are, without anything else: for answers
+    ; that belong to a tab not shown (they are delivered into it and it is
+    ; swapped back).
+    fn swapIn:void (i:int) {
+        if (i == activeTab) {
+            return
+        }
+        this.saveTab((itemAt tabs activeTab))
+        activeTab = i
+        this.loadTab((itemAt tabs i))
+    }
+
+    fn tabCount:int () {
+        return (array_length tabs)
+    }
+
+    fn activeTabIndex:int () {
+        return activeTab
+    }
+
+    ; Show tab i.
+    fn selectTab:void (i:int) {
+        if ((i < 0) || (i >= (array_length tabs))) {
+            return
+        }
+        if (i == activeTab) {
+            return
+        }
+        layW = pageW
+        layH = pageH
+        hovered = ""
+        pressedId = ""
+        this.swapIn(i)
+        this.afterSwitch()
+    }
+
+    ; A tab just shown: drawn again, laid out again if the window changed
+    ; meanwhile. The host keeps one realm, the shown tab's: a tab whose
+    ; scripts ran starts them again, on the page as it arrived.
+    fn afterSwitch:void () {
+        frameDirty = true
+        listDirty = true
+        if ((realmState == "running") || (realmState == "live")) {
+            this.resetRealm()
+            navSeq = (navSeq + 1)
+            navId = navSeq
+            if hasPage {
+                this.renderPage(true)
+            }
+            realmState = "ready"
+            realmJob = navId
+            return
+        }
+        if (hasPage && ((layW != pageW) || (layH != pageH))) {
+            if domMode {
+                dom.setSize(pageW (this.pageHeight()))
+                dom.rebuild()
+                this.domViewport()
+                domResized = true
+            } {
+                this.renderPage(true)
+            }
+        }
+    }
+
+    fn newTab:void (url:string) {
+        layW = pageW
+        layH = pageH
+        this.saveTab((itemAt tabs activeTab))
+        def t (new BrTab())
+        push tabs t
+        activeTab = ((array_length tabs) - 1)
+        this.loadTab(t)
+        hovered = ""
+        frameDirty = true
+        listDirty = true
+        this.navigate(url)
+        if (url == "about:home") {
+            this.setFocus("addr")
+        }
+    }
+
+    fn closeTab:void (i:int) {
+        def n:int (array_length tabs)
+        if ((i < 0) || (i >= n)) {
+            return
+        }
+        if (n == 1) {
+            ; the last tab is not closed: it goes home, as a new tab would
+            def h:[BrHistoryEntry]
+            history = h
+            historyIndex = -1
+            favUrl = ""
+            favState = ""
+            favPending = false
+            this.navigate("about:home")
+            return
+        }
+        hovered = ""
+        pressedId = ""
+        if (i == activeTab) {
+            ; the closed tab's fields are dropped, the neighbour's taken
+            remove_index tabs i
+            def next:int i
+            if (next >= (n - 1)) {
+                next = (n - 2)
+            }
+            activeTab = next
+            this.loadTab((itemAt tabs next))
+            this.afterSwitch()
+            return
+        }
+        remove_index tabs i
+        if (i < activeTab) {
+            activeTab = (activeTab - 1)
+        }
+        frameDirty = true
+    }
+
+    ; --- the tab's icon -------------------------------------------------------
+
+    ; What a page's tab shows: its <link rel="icon">, else /favicon.ico.
+    fn startIcon:void (u:BrUrl) {
+        if ((u.isWeb()) == false) {
+            favUrl = ""
+            favNext = ""
+            favState = ""
+            favPending = false
+            return
+        }
+        def root:string (u.scheme + "://" + u.host)
+        if ((strlen u.port) > 0) {
+            root = (root + ":" + u.port)
+        }
+        def fallback:string (root + "/favicon.ico")
+        def first:string fallback
+        def next:string ""
+        if ((strlen page.iconUrl) > 0) {
+            first = page.iconUrl
+            if (first != fallback) {
+                next = fallback
+            }
+        }
+        favNext = next
+        if ((first == favUrl) && (favState == "ok")) {
+            return
+        }
+        favUrl = first
+        favState = "loading"
+        favPending = true
+    }
+
+    fn iconLoaded:void (url:string ok:boolean) {
+        if ((url != favUrl) || (favState != "loading")) {
+            return
+        }
+        this.imageDone(url)
+        frameDirty = true
+        if ok {
+            favState = "ok"
+            return
+        }
+        if ((strlen favNext) > 0) {
+            favUrl = favNext
+            favNext = ""
+            favPending = true
+            return
+        }
+        favState = "failed"
+    }
+
+    ; An icon's answer, for whichever tab asked.
+    fn iconEvent:void (url:string ok:boolean) {
+        def back:int activeTab
+        def i:int 0
+        while (i < (array_length tabs)) {
+            this.swapIn(i)
+            this.iconLoaded(url ok)
+            i = (i + 1)
+        }
+        this.swapIn(back)
+    }
+
+    ; The tab of the request with this id, -1 if none.
+    fn tabOfRequest:int (id:int) {
+        for open r:BrRequest k {
+            if (r.id == id) {
+                return activeTab
+            }
+        }
+        def i:int 0
+        while (i < (array_length tabs)) {
+            if (i != activeTab) {
+                def t:BrTab (itemAt tabs i)
+                for t.open r2:BrRequest k2 {
+                    if (r2.id == id) {
+                        return i
+                    }
+                }
+            }
+            i = (i + 1)
+        }
+        return -1
     }
 
     ; --- the conversation with the host ------------------------------------
@@ -339,7 +754,8 @@ class BrowserApp extends EvgApp {
     }
 
     fn load:void (u:BrUrl) {
-        navId = (navId + 1)
+        navSeq = (navSeq + 1)
+        navId = navSeq
         clear requests
         clear open
         addrText = (u.toString())
@@ -396,12 +812,52 @@ class BrowserApp extends EvgApp {
     ; --- the host's side of the queue ----------------------------------------
 
     fn pendingRequests:int () {
-        return (array_length requests)
+        def n:int (array_length requests)
+        if favPending {
+            n = (n + 1)
+        }
+        def i:int 0
+        while (i < (array_length tabs)) {
+            if (i != activeTab) {
+                def t:BrTab (itemAt tabs i)
+                n = (n + (array_length t.requests))
+            }
+            i = (i + 1)
+        }
+        return n
     }
 
     ; "id<TAB>kind<TAB>url", or "" when there is nothing to fetch.
     fn nextRequest:string () {
+        if (((array_length requests) == 0) && favPending) {
+            favPending = false
+            this.request("image" favUrl)
+        }
         if ((array_length requests) == 0) {
+            ; the shown tab's first, then the others'
+            def i:int 0
+            while (i < (array_length tabs)) {
+                if (i != activeTab) {
+                    def t:BrTab (itemAt tabs i)
+                    if (((array_length t.requests) == 0) && t.favPending) {
+                        t.favPending = false
+                        def fr (new BrRequest())
+                        fr.id = nextRequestId
+                        nextRequestId = (nextRequestId + 1)
+                        fr.kind = "image"
+                        fr.url = t.favUrl
+                        fr.nav = t.navId
+                        push t.requests fr
+                        push t.open fr
+                    }
+                    if ((array_length t.requests) > 0) {
+                        def r2:BrRequest (itemAt t.requests 0)
+                        remove_index t.requests 0
+                        return ((to_string r2.id) + "\t" + r2.kind + "\t" + r2.url)
+                    }
+                }
+                i = (i + 1)
+            }
             return ""
         }
         def r:BrRequest (itemAt requests 0)
@@ -428,6 +884,25 @@ class BrowserApp extends EvgApp {
     ; `finalUrl` is where redirects ended; `body` is the text (an error
     ; message when status is 0).
     fn deliver:void (id:int status:int finalUrl:string contentType:string body:string) {
+        def ti:int (this.tabOfRequest(id))
+        if (ti < 0) {
+            return
+        }
+        if (ti == activeTab) {
+            this.deliverHere(id status finalUrl contentType body)
+            return
+        }
+        ; a tab not shown goes on loading
+        def back:int activeTab
+        this.swapIn(ti)
+        this.deliverHere(id status finalUrl contentType body)
+        layW = pageW
+        layH = pageH
+        this.swapIn(back)
+        frameDirty = true
+    }
+
+    fn deliverHere:void (id:int status:int finalUrl:string contentType:string body:string) {
         def found@(optional):BrRequest (this.takeOpen(id))
         if (null? found) {
             return
@@ -529,6 +1004,7 @@ class BrowserApp extends EvgApp {
         page = (new BrPage())
         page.load(u html policy)
         hasPage = true
+        this.startIcon(u)
         addrText = (u.toString())
         frameDirty = true
         if ((strlen page.title) > 0) {
@@ -995,12 +1471,36 @@ class BrowserApp extends EvgApp {
         page.setImageSize(url w h)
         dom.setImageSize(url w h)
         imagesDirty = true
+        this.otherTabsImage(url w h true)
+        this.iconEvent(url true)
     }
 
     fn imageFailed:void (url:string) {
         page.setImageFailed(url)
         dom.setImageSize(url 0.0 0.0)
         imagesDirty = true
+        this.otherTabsImage(url 0.0 0.0 false)
+        this.iconEvent(url false)
+    }
+
+    ; A picture is the host's for every tab: the ones not shown learn its
+    ; size too, and lay out again when shown.
+    fn otherTabsImage:void (url:string w:double h:double ok:boolean) {
+        def i:int 0
+        while (i < (array_length tabs)) {
+            if (i != activeTab) {
+                def t:BrTab (itemAt tabs i)
+                if ok {
+                    t.page.setImageSize(url w h)
+                    t.dom.setImageSize(url w h)
+                } {
+                    t.page.setImageFailed(url)
+                    t.dom.setImageSize(url 0.0 0.0)
+                }
+                t.imagesDirty = true
+            }
+            i = (i + 1)
+        }
     }
 
     fn requestImages:void () {
@@ -1310,6 +1810,18 @@ class BrowserApp extends EvgApp {
     }
 
     fn press:boolean (id:string) {
+        if (id == "tab-new") {
+            this.newTab("about:home")
+            return true
+        }
+        if (startsWith id "tabx:") {
+            this.closeTab((BrowserApp.intAfter(id 5)))
+            return true
+        }
+        if (startsWith id "tab:") {
+            this.selectTab((BrowserApp.intAfter(id 4)))
+            return true
+        }
         if (id == "btn-back") {
             this.back()
             return true
@@ -1544,7 +2056,35 @@ class BrowserApp extends EvgApp {
         return false
     }
 
+    sfn intAfter:int (s:string from:int) {
+        def v@(optional):int (to_int (substring s from (strlen s)))
+        if (null? v) {
+            return -1
+        }
+        return (unwrap v)
+    }
+
     fn keyWith:boolean (k:string shift:boolean ctrl:boolean) {
+        ; tabs (a browser hosting the web version keeps these keys itself)
+        if ctrl {
+            if ((k == "t") || (k == "T")) {
+                this.newTab("about:home")
+                return true
+            }
+            if ((k == "w") || (k == "W")) {
+                this.closeTab(activeTab)
+                return true
+            }
+            if (k == "Tab") {
+                def n:int (array_length tabs)
+                def step:int 1
+                if shift {
+                    step = (n - 1)
+                }
+                this.selectTab(((activeTab + step) % n))
+                return true
+            }
+        }
         if addrFocused {
             if (k == "Enter") {
                 addrFocused = false
@@ -1744,6 +2284,16 @@ class BrowserApp extends EvgApp {
         if (name == "search") {
             return "M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"
         }
+        if (name == "close") {
+            return "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
+        }
+        if (name == "add") {
+            return "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
+        }
+        if (name == "loading") {
+            ; three quarters of a ring
+            return "M12 2a10 10 0 1 0 10 10h-2.5A7.5 7.5 0 1 1 12 4.5z"
+        }
         ; "globe": a page without an icon of its own
         return "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"
     }
@@ -1760,7 +2310,18 @@ class BrowserApp extends EvgApp {
     sfn frameCss:string () {
         def s:string ".frame { display: flex; flex-direction: column; background-color: #ffffff; }"
         s = (s + ".tabs { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: flex-end; padding: 0px 8px; background-color: #dfe5ef; width: 100%; }")
-        s = (s + ".tab { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; column-gap: 8px; height: 34px; width: 240px; flex-shrink: 1; padding: 0px 14px; background-color: #ffffff; border-top-left-radius: 10px; border-top-right-radius: 10px; }")
+        s = (s + ".tab { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; column-gap: 8px; height: 34px; flex-shrink: 0; padding: 0px 6px 0px 12px; border-top-left-radius: 10px; border-top-right-radius: 10px; cursor: pointer; }")
+        s = (s + ".tab:hover { background-color: #eaeef5; }")
+        s = (s + ".tab-on { background-color: #ffffff; }")
+        s = (s + ".tab-on:hover { background-color: #ffffff; }")
+        s = (s + ".tabx { width: 20px; height: 20px; border-radius: 10px; padding: 4px; flex-shrink: 0; display: flex; flex-direction: row; cursor: pointer; }")
+        s = (s + ".tabx:hover { background-color: #dde2ea; }")
+        s = (s + ".tabx-ico { width: 12px; height: 12px; }")
+        s = (s + ".tab-new { width: 28px; height: 28px; border-radius: 14px; padding: 6px; margin-left: 4px; margin-bottom: 3px; flex-shrink: 0; display: flex; flex-direction: row; cursor: pointer; }")
+        s = (s + ".tab-new:hover { background-color: #ccd3de; }")
+        s = (s + ".tab-new-ico { width: 16px; height: 16px; }")
+        s = (s + ".tab-sep { width: 1px; height: 18px; margin-bottom: 8px; background-color: #b7bfcc; flex-shrink: 0; }")
+        s = (s + ".tab-sep-off { background-color: #dfe5ef; }")
         s = (s + ".tab-t { flex-grow: 1; flex-shrink: 1; width: 10px; font-size: 13px; color: #1f1f1f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }")
         s = (s + ".fav { width: 16px; height: 16px; flex-shrink: 0; }")
         s = (s + ".bar { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 0px 8px; column-gap: 2px; background-color: #ffffff; width: 100%; border-bottom: 1px solid #d3d7de; }")
@@ -1822,23 +2383,108 @@ class BrowserApp extends EvgApp {
         return b
     }
 
-    fn tabTitle:string () {
-        if loading {
-            if ((strlen page.title) == 0) {
-                return "Ladataan…"
-            }
+    sfn titleOf:string (pg:BrPage has:boolean busy:boolean) {
+        if ((strlen pg.title) > 0) {
+            return pg.title
         }
-        if ((strlen page.title) > 0) {
-            return page.title
+        if busy {
+            return "Ladataan…"
         }
-        if hasPage {
-            def h:string page.url.host
+        if has {
+            def h:string pg.url.host
             if ((strlen h) > 0) {
                 return h
             }
-            return (page.url.toString())
+            return (pg.url.toString())
         }
         return "Uusi välilehti"
+    }
+
+    ; One tab in the strip, from what it shows.
+    fn tabEl:EVGElement (i:int w:double title:string busy:boolean fState:string fUrl:string) {
+        def tab (EVGElement.createDiv())
+        tab.id = ("tab:" + (to_string i))
+        tab.className = "tab"
+        if (i == activeTab) {
+            tab.className = "tab tab-on"
+        }
+        if (hovered == tab.id) {
+            tab.isHovered = true
+        }
+        tab.setAttribute("width" ((CssParser.fmt(w)) + "px"))
+        if busy {
+            tab.addChild((BrowserApp.iconEl("loading" "fav" "#0b57d0")))
+        } {
+            if (fState == "ok") {
+                def im (EVGElement.createImg())
+                im.className = "fav"
+                im.setAttribute("src" fUrl)
+                im.setAttribute("width" "16px")
+                im.setAttribute("height" "16px")
+                tab.addChild(im)
+            } {
+                tab.addChild((BrowserApp.iconEl("globe" "fav" "#5f6368")))
+            }
+        }
+        def tt (EVGElement.createSpan())
+        tt.className = "tab-t"
+        tt.textContent = title
+        tab.addChild(tt)
+        ; the close button, where there is room for it
+        if ((w >= 72.0) || (i == activeTab)) {
+            def x (EVGElement.createDiv())
+            x.id = ("tabx:" + (to_string i))
+            x.className = "tabx"
+            if (hovered == x.id) {
+                x.isHovered = true
+            }
+            x.addChild((BrowserApp.iconEl("close" "tabx-ico" "#474747")))
+            tab.addChild(x)
+        }
+        return tab
+    }
+
+    fn buildTabs:EVGElement (th:double) {
+        def tabsEl (EVGElement.createDiv())
+        tabsEl.className = "tabs"
+        tabsEl.setAttribute("height" ((CssParser.fmt(th)) + "px"))
+        def n:int (array_length tabs)
+        def room:double ((pageW - 16.0) - 40.0)
+        def w:double (room / (to_double n))
+        if (w > 240.0) {
+            w = 240.0
+        }
+        if (w < 40.0) {
+            w = 40.0
+        }
+        def i:int 0
+        while (i < n) {
+            if (i > 0) {
+                ; a line between two tabs that are not shown
+                def sep (EVGElement.createDiv())
+                sep.className = "tab-sep"
+                if ((i == activeTab) || ((i - 1) == activeTab)) {
+                    sep.className = "tab-sep tab-sep-off"
+                }
+                tabsEl.addChild(sep)
+            }
+            if (i == activeTab) {
+                tabsEl.addChild((this.tabEl(i w (BrowserApp.titleOf(page hasPage loading)) loading favState favUrl)))
+            } {
+                def t:BrTab (itemAt tabs i)
+                tabsEl.addChild((this.tabEl(i w (BrowserApp.titleOf(t.page t.hasPage t.loading)) t.loading t.favState t.favUrl)))
+            }
+            i = (i + 1)
+        }
+        def plus (EVGElement.createDiv())
+        plus.id = "tab-new"
+        plus.className = "tab-new"
+        if (hovered == "tab-new") {
+            plus.isHovered = true
+        }
+        plus.addChild((BrowserApp.iconEl("add" "tab-new-ico" "#474747")))
+        tabsEl.addChild(plus)
+        return tabsEl
     }
 
     fn buildFrame:void () {
@@ -1848,18 +2494,7 @@ class BrowserApp extends EvgApp {
         root.setAttribute("height" ((CssParser.fmt(pageH)) + "px"))
         def th:double (this.tabsH())
         if (th > 0.0) {
-            def tabs (EVGElement.createDiv())
-            tabs.className = "tabs"
-            tabs.setAttribute("height" ((CssParser.fmt(th)) + "px"))
-            def tab (EVGElement.createDiv())
-            tab.className = "tab"
-            tab.addChild((BrowserApp.iconEl("globe" "fav" "#5f6368")))
-            def tt (EVGElement.createSpan())
-            tt.className = "tab-t"
-            tt.textContent = (this.tabTitle())
-            tab.addChild(tt)
-            tabs.addChild(tab)
-            root.addChild(tabs)
+            root.addChild((this.buildTabs(th)))
         }
         def bar (EVGElement.createDiv())
         bar.className = "bar"

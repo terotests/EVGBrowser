@@ -37,6 +37,9 @@ class BrPage {
     def doc:HNode (HNode.element("#document"))
     def sheets:[BrSheet]
     def title:string ""
+    ; the page's own icon (<link rel="icon">), "" for none
+    def iconUrl:string ""
+    def iconApple:boolean false
     def converter:HtmlToEvg (new HtmlToEvg())
     def images:[string:BrImage]
     def imageOrder:[string]
@@ -169,6 +172,22 @@ class BrPage {
             def rel:string (to_lowercase (n.attr("rel")))
             def media2:string (to_lowercase (n.attr("media")))
             def forScreen:boolean ((((strlen media2) == 0) || ((indexOf media2 "screen") >= 0)) || ((indexOf media2 "all") >= 0))
+            ; the tab's icon: rel="icon" or "shortcut icon" before an
+            ; apple-touch-icon; a mask-icon is a one-colour outline
+            if (((indexOf rel "icon") >= 0) && ((indexOf rel "mask") < 0)) {
+                def ih:string (n.attr("href"))
+                def apple:boolean ((indexOf rel "apple") >= 0)
+                if (((strlen ih) > 0) && (((strlen iconUrl) == 0) || (iconApple && (apple == false)))) {
+                    def iu:BrUrl (baseUrl.resolve(ih))
+                    if ((iu.isWeb()) || (startsWith ih "data:image/")) {
+                        iconUrl = (iu.toString())
+                        if (startsWith ih "data:image/") {
+                            iconUrl = ih
+                        }
+                        iconApple = apple
+                    }
+                }
+            }
             if ((((indexOf rel "stylesheet") >= 0) && ((indexOf rel "alternate") < 0)) && forScreen) {
                 def href:string (n.attr("href"))
                 if ((strlen href) > 0) {

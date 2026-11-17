@@ -648,6 +648,46 @@ struct Image {
 // A picture's bytes as a texture: JPEG, PNG, GIF (first frame), BMP through
 // stb_image; WebP through Ranger's WebPDecoder; SVG through nanosvg, rasterised at its
 // own size (at most 2048 on a side). AVIF is not decoded or asked for.
+static Image decodeImage(SDL_Renderer* ren, const std::string& bytes);
+
+static Image decodeIco(SDL_Renderer* ren, const std::string& bytes) {
+  auto u8 = [&](size_t i) -> unsigned { return i < bytes.size() ? (unsigned char)bytes[i] : 0u; };
+  auto u16 = [&](size_t i) -> unsigned { return u8(i) | (u8(i + 1) << 8); };
+  auto u32 = [&](size_t i) -> unsigned { return u16(i) | (u16(i + 2) << 16); };
+  unsigned count = u16(4);
+  int best = -1, bestScore = 1 << 30;
+  for (unsigned k = 0; k < count && 6 + k * 16 + 16 <= bytes.size(); k++) {
+    size_t e = 6 + k * 16;
+    int size = u8(e) == 0 ? 256 : (int)u8(e);
+    // nearest to 32, a bigger one before a smaller one as far off
+    int score = size >= 32 ? (size - 32) * 2 : (32 - size) * 3;
+    if (score < bestScore) { bestScore = score; best = (int)k; }
+  }
+  if (best < 0) return Image{};
+  size_t e = 6 + (size_t)best * 16;
+  size_t len = u32(e + 8), off = u32(e + 12);
+  if (off >= bytes.size() || len == 0) return Image{};
+  if (off + len > bytes.size()) len = bytes.size() - off;
+  std::string data = bytes.substr(off, len);
+  if (data.size() > 8 && data.compare(1, 3, "PNG") == 0) return decodeImage(ren, data);
+  if (data.size() < 40) return Image{};
+  // BITMAPINFOHEADER: the height counts the AND mask too
+  int32_t hh = (int32_t)(u8(off + 8) | (u8(off + 9) << 8) | (u8(off + 10) << 16) | (u8(off + 11) << 24));
+  hh /= 2;
+  data[8] = (char)(hh & 0xff); data[9] = (char)((hh >> 8) & 0xff);
+  data[10] = (char)((hh >> 16) & 0xff); data[11] = (char)((hh >> 24) & 0xff);
+  unsigned hdr = u32(off), bpp = u16(off + 14), colors = u32(off + 32);
+  if (colors == 0 && bpp <= 8) colors = 1u << bpp;
+  unsigned pixOff = 14 + hdr + colors * 4;
+  std::string bmp = "BM";
+  unsigned total = 14 + (unsigned)data.size();
+  for (int i = 0; i < 4; i++) bmp.push_back((char)((total >> (8 * i)) & 0xff));
+  bmp.append(4, '\0');
+  for (int i = 0; i < 4; i++) bmp.push_back((char)((pixOff >> (8 * i)) & 0xff));
+  bmp += data;
+  return decodeImage(ren, bmp);
+}
+
 static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
   Image im;
   int w = 0, h = 0;
@@ -678,6 +718,10 @@ static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
     h = img->height;
     rgba = std::move(img->pixels);
     if ((size_t)w * h * 4 != rgba.size()) return im;
+  } else if (bytes.size() > 22 && bytes.compare(0, 4, std::string("\0\0\1\0", 4)) == 0) {
+    // a favicon.ico: the entry nearest 32 px; a PNG inside is decoded as
+    // one, a bitmap is given the BMP file header it lacks
+    return decodeIco(ren, bytes);
   } else {
     int n = 0;
     unsigned char* px = stbi_load_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &n, 4);
@@ -1398,6 +1442,7 @@ static std::string keyName(SDL_Keycode k) {
 
 struct Options {
   std::string url = "about:home";
+  std::vector<std::string> more;  // further addresses, each in a tab of its own
   int width = 1100, height = 800;
   std::string screenshot;
   std::string allow;
@@ -1410,6 +1455,7 @@ struct Options {
 
 static Options parseArgs(int argc, char** argv) {
   Options o;
+  bool urlGiven = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -1424,7 +1470,7 @@ static Options parseArgs(int argc, char** argv) {
     else if (a == "--settle") o.settleMs = std::atoi(next().c_str());
     else if (a == "--help" || a == "-h") {
       std::printf(
-          "evg-browser [url] [options]\n"
+          "evg-browser [url ...] [options]   (each address in a tab)\n"
           "  --width W --height H     window size\n"
           "  --allow a.fi,b.org       also allow these sites (and their subdomains)\n"
           "  --open, --unsafe         any site: switch the allowlist off (EVG_OPEN=1 too)\n"
@@ -1433,7 +1479,12 @@ static Options parseArgs(int argc, char** argv) {
           "  --screenshot out.png     render headless once the page has loaded, then exit\n"
           "  --settle MS              how long to wait for quiet before the screenshot\n");
       std::exit(0);
-    } else o.url = a;
+    } else if (o.url == "about:home" && !urlGiven) {
+      o.url = a;
+      urlGiven = true;
+    } else {
+      o.more.push_back(a);
+    }
   }
   return o;
 }
@@ -1506,6 +1557,8 @@ static int run(int argc, char** argv) {
   if (opt.open || std::getenv("EVG_OPEN")) app->setAllowlistEnabled(false);
   if (!opt.allow.empty()) app->setAllowedSites(app->allowedSitesText() + "," + opt.allow);
   host->startAt(winW, winH, false, opt.url);
+  for (auto& u : opt.more) app->newTab(u);
+  if (!opt.more.empty()) app->selectTab(0);
 
   Net net(6);
   SDL_Cursor* arrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
