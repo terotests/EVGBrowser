@@ -27,6 +27,7 @@
 Import "HtmlParser.rgr"
 Import "CssParser.rgr"
 Import "CssCalc.rgr"
+Import "pkg:evg/EVGColor.rgr"
 
 class CssHit {
     def rule:CssRule (new CssRule())
@@ -485,7 +486,78 @@ class CssCascade {
         if ((indexOf v "calc(") >= 0) {
             v = (CssCalc.resolveIn(v viewportWidth viewportHeight))
         }
+        if (((indexOf v "lab(") >= 0) || (((indexOf v "lch(") >= 0) || (((indexOf v "color-mix(") >= 0) || ((indexOf v "hwb(") >= 0)))) {
+            v = (CssCascade.resolveColorFns(v))
+        }
         this.setExpanded(node.style name v)
+    }
+
+    ; `lab()`, `lch()`, `oklab()`, `oklch()`, `hwb()` and `color-mix()` in a
+    ; value (after var() is substituted) as `rgb()`/`rgba()`, which the rest of
+    ; the browser and EVG's painters know. Tailwind v4 writes its palette and
+    ; every opacity modifier (`bg-primary/80`) in these. One that does not
+    ; resolve (`color-mix(in oklab, currentcolor 50%, transparent)`) is left
+    ; as it was.
+    sfn resolveColorFns:string (v:string) {
+        def out:string ""
+        def n:int (strlen v)
+        def i:int 0
+        while (i < n) {
+            def c:int (charAt v i)
+            ; a function name starts at a letter not preceded by a name character
+            def starts:boolean false
+            if ((c >= 97) && (c <= 122)) {
+                starts = true
+                if (i > 0) {
+                    def p:int (charAt v (i - 1))
+                    if (((p >= 97) && (p <= 122)) || (((p >= 65) && (p <= 90)) || (((p >= 48) && (p <= 57)) || (p == 45)))) {
+                        starts = false
+                    }
+                }
+            }
+            if starts {
+                def nameLen:int 0
+                def names:[string] ([] _:string ( "color-mix(" "oklab(" "oklch(" "lab(" "lch(" "hwb(" ))
+                for names nm:string k {
+                    if (nameLen == 0) {
+                        def l:int (strlen nm)
+                        if ((i + l) <= n) {
+                            if ((to_lowercase (substring v i (i + l))) == nm) {
+                                nameLen = l
+                            }
+                        }
+                    }
+                }
+                if (nameLen > 0) {
+                    def j:int (i + nameLen)
+                    def d:int 1
+                    while ((j < n) && (d > 0)) {
+                        def cj:int (charAt v j)
+                        if (cj == 40) {
+                            d = (d + 1)
+                        }
+                        if (cj == 41) {
+                            d = (d - 1)
+                        }
+                        j = (j + 1)
+                    }
+                    if (d == 0) {
+                        def fnText:string (substring v i j)
+                        def col:EVGColor (EVGColor.parse(fnText))
+                        if col.isSet {
+                            out = (out + (col.toCSSString()))
+                        } {
+                            out = (out + fnText)
+                        }
+                        i = j
+                        continue
+                    }
+                }
+            }
+            out = (out + (substring v i (i + 1)))
+            i = (i + 1)
+        }
+        return out
     }
 
     ; `var(--x, fallback)`, looked up on this element and then its ancestors.

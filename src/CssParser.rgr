@@ -185,11 +185,81 @@ class CssParser {
             }
             return
         }
-        if ((name == "supports") || (name == "layer")) {
+        if (name == "layer") {
             this.parseBlockContents(true)
             return
         }
+        if (name == "supports") {
+            if (CssParser.supportsMatches(prelude)) {
+                this.parseBlockContents(true)
+            } {
+                this.skipBlock()
+            }
+            return
+        }
         this.skipBlock()
+    }
+
+    ; `@supports`: `not`, `and`, `or` and parentheses evaluated; a feature test
+    ; is true unless it names something this browser does not do. Before,
+    ; every block applied, and of `@supports (animation-timeline: scroll())`
+    ; and `@supports not (animation-timeline: scroll())` both won.
+    sfn supportsMatches:boolean (prelude:string) {
+        def q:string (trim (to_lowercase prelude))
+        if ((strlen q) == 0) {
+            return true
+        }
+        if (startsWith q "not ") {
+            return ((CssParser.supportsMatches((substring q 4 (strlen q)))) == false)
+        }
+        if (startsWith q "not(") {
+            return ((CssParser.supportsMatches((substring q 3 (strlen q)))) == false)
+        }
+        ; split at a top-level ` and ` / ` or `
+        def n:int (strlen q)
+        def depth:int 0
+        def i:int 0
+        while (i < n) {
+            def c:int (charAt q i)
+            if (c == 40) {
+                depth = (depth + 1)
+            }
+            if (c == 41) {
+                depth = (depth - 1)
+            }
+            if ((depth == 0) && (c == 32)) {
+                def tail:string (substring q (i + 1) n)
+                if (startsWith tail "and ") {
+                    return ((CssParser.supportsMatches((substring q 0 i))) && (CssParser.supportsMatches((substring tail 4 (strlen tail)))))
+                }
+                if (startsWith tail "or ") {
+                    return ((CssParser.supportsMatches((substring q 0 i))) || (CssParser.supportsMatches((substring tail 3 (strlen tail)))))
+                }
+            }
+            i = (i + 1)
+        }
+        ; one test: `(...)`, `selector(...)`, `font-tech(...)`
+        if ((startsWith q "(") && (endsWith q ")")) {
+            def inner:string (trim (substring q 1 (n - 1)))
+            if ((startsWith inner "(") || ((startsWith inner "not") || (((indexOf inner " and ") > 0) || ((indexOf inner " or ") > 0)))) {
+                return (CssParser.supportsMatches(inner))
+            }
+            return (CssParser.featureSupported(inner))
+        }
+        if (startsWith q "selector(") {
+            return ((indexOf q ":has(") < 0)
+        }
+        return false
+    }
+
+    sfn featureSupported:boolean (decl:string) {
+        def unsupported:[string] ([] _:string ( "animation-timeline" "view-timeline" "scroll-timeline" "-apple-" "from white" "from var" "anchor-name" "position-anchor" "field-sizing" "interpolate-size" "text-wrap-style" "corner-shape" "backdrop-filter" "contain-intrinsic" "linear-gradient(in " "content:counter(" "content: counter(" ))
+        for unsupported u:string k {
+            if ((indexOf decl u) >= 0) {
+                return false
+            }
+        }
+        return true
     }
 
     ; pos is just past a `{`: skip to the matching `}`.
@@ -197,6 +267,11 @@ class CssParser {
         def depth:int 1
         while (pos < len) {
             def c:int (charAt src pos)
+            ; `.content-\[\'x\'\]`: an escaped quote opens no string
+            if (c == 92) {
+                pos = (pos + 2)
+                continue
+            }
             if (c == 123) {
                 depth = (depth + 1)
             }
@@ -285,9 +360,18 @@ class CssParser {
         nextOrder = (nextOrder + 1)
         def sels:[string] (CssParser.splitTop(selText 44))
         for sels st:string i {
-            def sel:CssSelector (CssParser.parseSelector((trim st)))
-            if ((array_length sel.parts) > 0) {
-                push rule.selectors sel
+            def alts:[string]
+            def drops:[int]
+            CssParser.expandIs((trim st) 0 alts drops 0)
+            for alts at:string ai {
+                def sel:CssSelector (CssParser.parseSelector(at))
+                if ((array_length sel.parts) > 0) {
+                    sel.specificity = (sel.specificity - (itemAt drops ai))
+                    if (sel.specificity < 0) {
+                        sel.specificity = 0
+                    }
+                    push rule.selectors sel
+                }
             }
         }
         if ((array_length rule.selectors) == 0) {
@@ -515,6 +599,227 @@ class CssParser {
     }
 
     ; --- selectors ------------------------------------------------------------
+
+    ; --- :is() and :where() --------------------------------------------------
+    ;
+    ; Tailwind v4 and modern resets write them everywhere: `:where(.space-y-2
+    ; > :not(:last-child))`, `:is(.group > *)[data-slot=content]`,
+    ; `button:where([type=submit])`. A selector with one is written out as one
+    ; selector per argument, the argument's last compound merged into the
+    ; compound that held the pseudo-class and its combinators put in front:
+    ;
+    ;   `.a :is(.b > .c).d`    ->  `.a .b > .c.d`
+    ;
+    ; which is what it means when the argument's ancestors are the outer
+    ; selector's (the case these sheets have). `:where()` adds no
+    ; specificity, so its argument's is handed back in `drops`.
+    sfn expandIs:void (text:string drop:int outT:[string] outD:[int] depth:int) {
+        if (((array_length outT) >= 64) || (depth > 6)) {
+            return
+        }
+        def n:int (strlen text)
+        def i:int 0
+        def par:int 0
+        def br:int 0
+        def boundary:int 0
+        def found:int -1
+        def nameLen:int 0
+        def isWhere:boolean false
+        while (i < n) {
+            def c:int (charAt text i)
+            if (c == 92) {
+                i = (i + 2)
+                continue
+            }
+            if ((c == 34) || (c == 39)) {
+                def q:int c
+                i = (i + 1)
+                while ((i < n) && ((charAt text i) != q)) {
+                    if ((charAt text i) == 92) {
+                        i = (i + 1)
+                    }
+                    i = (i + 1)
+                }
+                i = (i + 1)
+                continue
+            }
+            if (c == 91) {
+                br = (br + 1)
+            }
+            if (c == 93) {
+                br = (br - 1)
+            }
+            if (c == 40) {
+                par = (par + 1)
+            }
+            if (c == 41) {
+                par = (par - 1)
+            }
+            if ((par == 0) && (br == 0)) {
+                if ((CssParser.isSpace(c)) || ((c == 62) || ((c == 43) || (c == 126)))) {
+                    boundary = (i + 1)
+                }
+                if ((c == 58) && ((i + 1) < n)) {
+                    def low:string (to_lowercase (substring text (i + 1) (CssParser.minInt((i + 14) n))))
+                    def names:[string] ([] _:string ( "is(" "where(" "matches(" "any(" "-webkit-any(" ))
+                    for names nm:string k {
+                        if ((found < 0) && (startsWith low nm)) {
+                            found = i
+                            nameLen = ((strlen nm) + 1)
+                            isWhere = (nm == "where(")
+                        }
+                    }
+                    if (found >= 0) {
+                        break
+                    }
+                }
+            }
+            i = (i + 1)
+        }
+        if (found < 0) {
+            push outT text
+            push outD drop
+            return
+        }
+        ; the matching `)`
+        def j:int (found + nameLen)
+        def d:int 1
+        while (j < n) {
+            def cj:int (charAt text j)
+            if (cj == 92) {
+                j = (j + 2)
+                continue
+            }
+            if (cj == 40) {
+                d = (d + 1)
+            }
+            if (cj == 41) {
+                d = (d - 1)
+                if (d == 0) {
+                    break
+                }
+            }
+            j = (j + 1)
+        }
+        if (j >= n) {
+            ; unbalanced: left as it is, and it will never match
+            push outT text
+            push outD drop
+            return
+        }
+        def arg:string (substring text (found + nameLen) j)
+        ; the end of the compound that holds it
+        def e:int (j + 1)
+        def p2:int 0
+        def b2:int 0
+        while (e < n) {
+            def ce:int (charAt text e)
+            if (ce == 92) {
+                e = (e + 2)
+                continue
+            }
+            if ((ce == 40) || (ce == 91)) {
+                p2 = (p2 + 1)
+            }
+            if ((ce == 41) || (ce == 93)) {
+                p2 = (p2 - 1)
+            }
+            if ((p2 <= 0) && ((CssParser.isSpace(ce)) || ((ce == 62) || ((ce == 43) || (ce == 126))))) {
+                break
+            }
+            e = (e + 1)
+        }
+        if (e > n) {
+            e = n
+        }
+        def prefix:string (substring text 0 boundary)
+        def rest:string ((substring text boundary found) + (substring text (j + 1) e))
+        def suffix:string (substring text e n)
+        def alts:[string] (CssParser.splitTop(arg 44))
+        for alts alt0:string ai {
+            def alt:string (trim alt0)
+            if ((strlen alt) == 0) {
+                continue
+            }
+            def lb:int (CssParser.lastBoundary(alt))
+            def head:string (substring alt 0 lb)
+            def last:string (substring alt lb (strlen alt))
+            def extra:int 0
+            if isWhere {
+                def wsel:CssSelector (CssParser.parseSelector(alt))
+                extra = wsel.specificity
+            }
+            CssParser.expandIs((prefix + head + (CssParser.mergeCompounds(last rest)) + suffix) (drop + extra) outT outD (depth + 1))
+        }
+    }
+
+    sfn minInt:int (a:int b:int) {
+        if (a < b) {
+            return a
+        }
+        return b
+    }
+
+    ; the index just after the last top-level space or combinator
+    sfn lastBoundary:int (s:string) {
+        def n:int (strlen s)
+        def i:int 0
+        def depth:int 0
+        def at:int 0
+        while (i < n) {
+            def c:int (charAt s i)
+            if (c == 92) {
+                i = (i + 2)
+                continue
+            }
+            if ((c == 40) || (c == 91)) {
+                depth = (depth + 1)
+            }
+            if ((c == 41) || (c == 93)) {
+                depth = (depth - 1)
+            }
+            if ((depth <= 0) && ((CssParser.isSpace(c)) || ((c == 62) || ((c == 43) || (c == 126))))) {
+                at = (i + 1)
+            }
+            i = (i + 1)
+        }
+        return at
+    }
+
+    ; the type selector (or `*`) at the start of a compound, "" for none
+    sfn leadingTag:string (s:string) {
+        def n:int (strlen s)
+        def i:int 0
+        while (i < n) {
+            def c:int (charAt s i)
+            if ((c == 46) || ((c == 35) || ((c == 91) || (c == 58)))) {
+                break
+            }
+            if (c == 92) {
+                i = (i + 1)
+            }
+            i = (i + 1)
+        }
+        if (i > n) {
+            i = n
+        }
+        return (substring s 0 i)
+    }
+
+    ; `*` + `[data-slot=x]` -> `*[data-slot=x]`, `.a` + `button` -> `button.a`
+    sfn mergeCompounds:string (a:string b:string) {
+        def ta:string (CssParser.leadingTag(a))
+        def tb:string (CssParser.leadingTag(b))
+        def ra:string (substring a (strlen ta) (strlen a))
+        def rb:string (substring b (strlen tb) (strlen b))
+        def tag:string ta
+        if (((strlen ta) == 0) || (ta == "*")) {
+            if ((strlen tb) > 0) {
+                tag = tb
+            }
+        }
+        return (tag + ra + rb)
+    }
 
     sfn parseSelector:CssSelector (text:string) {
         def sel (new CssSelector())

@@ -1257,6 +1257,9 @@ class HtmlToEvg {
 
     fn isReplaced:boolean (c:HNode) {
         def t:string c.tag
+        if ((t == "button") && (this.styledButton(c))) {
+            return false
+        }
         return ((t == "img") || ((t == "svg") || ((t == "input") || ((t == "button") || ((t == "select") || ((t == "textarea") || ((t == "video") || ((t == "audio") || ((t == "iframe") || ((t == "object") || ((t == "embed") || ((t == "canvas") || (t == "w-textfield")))))))))))))
     }
 
@@ -1506,6 +1509,27 @@ class HtmlToEvg {
     }
 
     ; --- form controls --------------------------------------------------------
+
+    ; A <button> the page styles itself (a background, padding or border from
+    ; its own sheet: Tailwind's reset gives every button one) is laid out as
+    ; the element it is, with its icons and its own colours, instead of as
+    ; the browser's blue button with the label only. A submit button in a form
+    ; on a page whose scripts did not run stays a control: that is what sends
+    ; the form.
+    fn styledButton:boolean (c:HNode) {
+        def st:[string:string] c.style
+        def styled:boolean ((has st "background-color") || ((has st "background-image") || ((has st "padding-left") || (has st "border-top-style"))))
+        if (styled == false) {
+            return false
+        }
+        if ((scriptTargets == false) && ((array_length formStack) > 0)) {
+            def ty:string (to_lowercase (c.attr("type")))
+            if ((ty == "submit") || (ty == "")) {
+                return false
+            }
+        }
+        return true
+    }
 
     fn control:EVGElement (c:HNode) {
         def t:string c.tag
