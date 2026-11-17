@@ -5,6 +5,9 @@ Import "../../src/BrowserApp.rgr"
 Import "../../src/js/PageRealm.rgr"
 ; WebP pictures: Ranger's decoder (the image package comes with evg)
 Import "pkg:image/WebPDecoder.rgr"
+; the painter: RangerDOM's shared one (Rust that Ranger compiles to C++), the
+; same code as RangerDOM's SDL3 playground painter
+Import "../../vendor/ranger/rangerdom/paint/src/lib.rs"
 
 class SdlEntry {
 }
