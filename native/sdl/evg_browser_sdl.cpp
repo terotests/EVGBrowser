@@ -1138,7 +1138,10 @@ static std::string selfPath(const char* argv0) {
 class RealmProcess {
  public:
   std::string exe;
+  // a step's limit; starting runs all of the page's scripts (a React
+  // bundle of 700 KB takes 10-15 s on CEr), so it gets a longer one
   double limitMs = 8000;
+  double startLimitMs = 45000;
 
   bool available() const {
 #ifdef _WIN32
@@ -1159,6 +1162,7 @@ class RealmProcess {
     }
     joinAll();
     job = jobId;
+    jobStart = start;
     started = SDL_GetTicks64();
     {
       std::lock_guard<std::mutex> lk(mu);
@@ -1197,7 +1201,7 @@ class RealmProcess {
     }
     int j = job;
     if (!fin) {
-      if ((double)(SDL_GetTicks64() - started) > limitMs) {
+      if ((double)(SDL_GetTicks64() - started) > (jobStart ? startLimitMs : limitMs)) {
         stop();
         app->realmFailed(j, "aikaraja");
         dirty = true;
@@ -1241,6 +1245,7 @@ class RealmProcess {
   int pid = -1;
 #endif
   int job = -1;
+  bool jobStart = false;
   int toFd = -1, fromFd = -1;
   Uint64 started = 0;
   std::thread writer, reader;
