@@ -52,6 +52,7 @@
 extern char** environ;
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -754,8 +755,9 @@ class Painter {
         case 3: text(*c); break;
         case 4: pushClip(*c); break;
         case 5: popClip(); break;
+        case 6: fill(*c); break;
         case 7: stroke(*c); break;
-        default: break;  // paths: a browser page without SVG has none
+        default: break;
       }
     }
     SDL_RenderSetClipRect(ren, nullptr);
@@ -867,6 +869,80 @@ class Painter {
       v.push_back(SDL_Vertex{inner[j], col, {0, 0}});
     }
     SDL_RenderGeometry(ren, nullptr, v.data(), (int)v.size(), nullptr, 0);
+  }
+
+  // A filled path (the toolbar's icons, a page's inline SVG): its rings
+  // rasterised here, nonzero or even-odd, with 4 x 4 samples a pixel, into
+  // an alpha texture tinted like text runs. Cached by geometry and scale.
+  void fill(const EVGDrawCmd& c) {
+    if (c.pts.size() < 6 || c.w <= 0 || c.h <= 0 || offscreen(c)) return;
+    double minX = 1e18, minY = 1e18, maxX = -1e18, maxY = -1e18;
+    for (size_t i = 0; i + 1 < c.pts.size(); i += 2) {
+      minX = std::min(minX, c.pts[i]); maxX = std::max(maxX, c.pts[i]);
+      minY = std::min(minY, c.pts[i + 1]); maxY = std::max(maxY, c.pts[i + 1]);
+    }
+    int ox = (int)std::floor(minX * s), oy = (int)std::floor(minY * s);
+    int w = (int)std::ceil(maxX * s) - ox + 1, h = (int)std::ceil(maxY * s) - oy + 1;
+    if (w <= 0 || h <= 0 || (double)w * h > 4e6) return;
+    std::string key = "P|" + std::to_string(s) + "|" + std::to_string(c.evenOdd) + "|" +
+                      std::to_string(minX * s - ox) + "," + std::to_string(minY * s - oy) + "|";
+    for (size_t i = 0; i < c.pts.size(); i++) key += std::to_string((int)std::lround((c.pts[i] - (i % 2 ? minY : minX)) * 64)) + ",";
+    for (auto e : c.ringEnds) key += std::to_string((int)e) + ";";
+    SDL_Texture* tex = nullptr;
+    auto it = textCache.find(key);
+    if (it != textCache.end()) {
+      tex = it->second.tex;
+    } else {
+      struct Edge { double x0, y0, x1, y1; int dir; };
+      std::vector<Edge> edges;
+      size_t start = 0;
+      std::vector<size_t> ends;
+      for (auto e : c.ringEnds) ends.push_back((size_t)e);
+      if (ends.empty()) ends.push_back(c.pts.size());
+      for (size_t r = 0; r < ends.size(); r++) {
+        size_t end = ends[r];  // where the ring ends in pts, counted in numbers
+        if (end > c.pts.size()) end = c.pts.size();
+        size_t n = end > start ? (end - start) / 2 : 0;
+        for (size_t k = 0; k < n; k++) {
+          size_t a = start + k * 2, b = start + ((k + 1) % n) * 2;
+          double x0 = c.pts[a] * s - ox, y0 = c.pts[a + 1] * s - oy, x1 = c.pts[b] * s - ox, y1 = c.pts[b + 1] * s - oy;
+          if (y0 == y1) continue;
+          if (y0 < y1) edges.push_back({x0, y0, x1, y1, 1});
+          else edges.push_back({x1, y1, x0, y0, -1});
+        }
+        start = end;
+      }
+      const int SS = 4;
+      std::vector<int> cover((size_t)w * h, 0);
+      std::vector<std::pair<double, int>> xs;
+      for (int sy = 0; sy < h * SS; sy++) {
+        double y = (sy + 0.5) / SS;
+        xs.clear();
+        for (auto& e : edges)
+          if (y >= e.y0 && y < e.y1) xs.push_back({e.x0 + (y - e.y0) * (e.x1 - e.x0) / (e.y1 - e.y0), e.dir});
+        std::sort(xs.begin(), xs.end());
+        int wind = 0;
+        for (size_t k = 0; k + 1 < xs.size(); k++) {
+          wind += xs[k].second;
+          bool in = c.evenOdd ? (wind & 1) != 0 : wind != 0;
+          if (!in) continue;
+          int a = (int)std::ceil(xs[k].first * SS - 0.5), b = (int)std::ceil(xs[k + 1].first * SS - 0.5);
+          for (int sx = std::max(a, 0); sx < std::min(b, w * SS); sx++) cover[(size_t)(sy / SS) * w + sx / SS]++;
+        }
+      }
+      tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h);
+      if (!tex) return;
+      std::vector<Uint32> px32((size_t)w * h);
+      for (size_t k = 0; k < px32.size(); k++) px32[k] = ((Uint32)std::min(255, cover[k] * 255 / (SS * SS)) << 24) | 0x00FFFFFFu;
+      SDL_UpdateTexture(tex, nullptr, px32.data(), w * 4);
+      SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+      textCache[key] = Tex{tex, w, h, 0};
+    }
+    SDL_Color col = color(c.r, c.g, c.b, c.a);
+    SDL_SetTextureColorMod(tex, col.r, col.g, col.b);
+    SDL_SetTextureAlphaMod(tex, col.a);
+    SDL_Rect dst{ox, oy, w, h};
+    SDL_RenderCopy(ren, tex, nullptr, &dst);
   }
 
   void stroke(const EVGDrawCmd& c) {

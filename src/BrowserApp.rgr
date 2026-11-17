@@ -77,8 +77,8 @@ class BrowserApp extends EvgApp {
     ; --- the window ---
     def pageW:double 1024.0
     def pageH:double 768.0
-    def barH:double 56.0
-    def statusH:double 26.0
+    def barH:double 88.0
+    def statusH:double 24.0
     def coarse:boolean false
 
     ; --- the frame (toolbar + status) ---
@@ -180,6 +180,7 @@ class BrowserApp extends EvgApp {
         def changed:boolean ((w != pageW) || (h != pageH))
         pageW = w
         pageH = h
+        barH = ((this.tabsH()) + (this.toolbarH()))
         frameDirty = true
         if (changed && hasPage) {
             if domMode {
@@ -203,9 +204,7 @@ class BrowserApp extends EvgApp {
 
     fn setPointerCoarse:void (c:boolean) {
         coarse = c
-        if c {
-            barH = 64.0
-        }
+        barH = ((this.tabsH()) + (this.toolbarH()))
         frameDirty = true
     }
 
@@ -1718,42 +1717,128 @@ class BrowserApp extends EvgApp {
 
     ; --- the frame ------------------------------------------------------------
 
+    ; The frame looks like a desktop browser's: a tab strip on top (the page's
+    ; one tab, with its icon and title), under it a light toolbar with flat
+    ; icon buttons and a rounded address field. The icons are paths, not
+    ; glyphs, so every host draws them alike whatever fonts it has: Material
+    ; Icons (Apache 2.0), in a 24 x 24 box.
+    sfn icon:string (name:string) {
+        if (name == "back") {
+            return "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
+        }
+        if (name == "fwd") {
+            return "M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"
+        }
+        if (name == "reload") {
+            return "M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"
+        }
+        if (name == "home") {
+            return "M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"
+        }
+        if (name == "tune") {
+            return "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"
+        }
+        if (name == "lock") {
+            return "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"
+        }
+        if (name == "search") {
+            return "M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"
+        }
+        ; "globe": a page without an icon of its own
+        return "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"
+    }
+
+    sfn iconEl:EVGElement (name:string cls:string color:string) {
+        def p (EVGElement.createPath())
+        p.className = cls
+        p.setAttribute("viewBox" "0 0 24 24")
+        p.setAttribute("d" (BrowserApp.icon(name)))
+        p.setAttribute("fill" color)
+        return p
+    }
+
     sfn frameCss:string () {
-        def s:string ".frame { display: flex; flex-direction: column; background-color: #eef2f8; }"
-        s = (s + ".bar { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 8px 10px; column-gap: 6px; background-color: #2b3a67; width: 100%; }")
-        s = (s + ".btn { width: 40px; height: 40px; border-radius: 20px; background-color: #3d5192; display: flex; flex-direction: row; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; }")
-        s = (s + ".btn:hover { background-color: #5a70c0; }")
-        s = (s + ".btn-off { opacity: 0.35; }")
-        s = (s + ".btn-t { color: #ffffff; font-size: 20px; font-weight: bold; }")
-        s = (s + ".addr { flex-grow: 1; height: 40px; border-radius: 20px; background-color: #ffffff; padding: 0px 16px; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; cursor: text; margin-left: 6px; }")
-        s = (s + ".addr-on { border: 3px solid #ffcc33; }")
-        s = (s + ".addr-t { font-size: 16px; color: #1a1a1a; white-space: pre; }")
-        s = (s + ".addr-hint { font-size: 16px; color: #8a94a3; white-space: pre; }")
-        s = (s + ".lock { font-size: 14px; color: #2d8a5f; white-space: pre; }")
-        s = (s + ".caret { width: 2px; height: 22px; background-color: #2b59c3; }")
+        def s:string ".frame { display: flex; flex-direction: column; background-color: #ffffff; }"
+        s = (s + ".tabs { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: flex-end; padding: 0px 8px; background-color: #dfe5ef; width: 100%; }")
+        s = (s + ".tab { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; column-gap: 8px; height: 34px; width: 240px; flex-shrink: 1; padding: 0px 14px; background-color: #ffffff; border-top-left-radius: 10px; border-top-right-radius: 10px; }")
+        s = (s + ".tab-t { flex-grow: 1; flex-shrink: 1; width: 10px; font-size: 13px; color: #1f1f1f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }")
+        s = (s + ".fav { width: 16px; height: 16px; flex-shrink: 0; }")
+        s = (s + ".bar { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 0px 8px; column-gap: 2px; background-color: #ffffff; width: 100%; border-bottom: 1px solid #d3d7de; }")
+        s = (s + ".btn { width: 36px; height: 36px; border-radius: 18px; padding: 8px; display: flex; flex-direction: row; flex-shrink: 0; cursor: pointer; }")
+        s = (s + ".btn:hover { background-color: #e9ecf1; }")
+        s = (s + ".btn-off { cursor: default; }")
+        s = (s + ".btn-off:hover { background-color: #ffffff; }")
+        s = (s + ".ico { width: 20px; height: 20px; }")
+        s = (s + ".addr { flex-grow: 1; height: 36px; border-radius: 18px; background-color: #eef1f6; padding: 0px 14px 0px 4px; display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; column-gap: 8px; cursor: text; margin-left: 8px; margin-right: 4px; }")
+        s = (s + ".addr:hover { background-color: #e6eaf0; }")
+        s = (s + ".addr-on { background-color: #ffffff; border: 2px solid #0b57d0; padding: 0px 12px 0px 2px; }")
+        s = (s + ".addr-on:hover { background-color: #ffffff; }")
+        s = (s + ".chip { width: 28px; height: 28px; border-radius: 14px; padding: 6px; background-color: #ffffff; display: flex; flex-direction: row; flex-shrink: 0; }")
+        s = (s + ".chip-ico { width: 16px; height: 16px; }")
+        s = (s + ".addr-line { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; }")
+        s = (s + ".addr-t { font-size: 15px; color: #1f1f1f; white-space: pre; }")
+        s = (s + ".addr-rest { font-size: 15px; color: #5f6368; white-space: pre; }")
+        s = (s + ".addr-hint { font-size: 15px; color: #6b7280; white-space: pre; }")
+        s = (s + ".caret { width: 2px; height: 20px; background-color: #0b57d0; }")
         s = (s + ".gap { flex-grow: 1; }")
-        s = (s + ".status { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 3px 12px; background-color: #eef1f6; width: 100%; }")
-        s = (s + ".status-t { font-size: 13px; color: #4a5568; white-space: pre; }")
-        s = (s + ".status-busy { color: #b7791f; }")
-        s = (s + "@media (pointer: coarse) { .btn { width: 48px; height: 48px; border-radius: 24px; } .addr { height: 48px; } }")
+        s = (s + ".status { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 0px 12px; background-color: #f6f7f9; width: 100%; border-top: 1px solid #e1e4e8; }")
+        s = (s + ".status-t { font-size: 12px; color: #5f6368; white-space: pre; }")
+        s = (s + ".status-busy { color: #0b57d0; }")
+        s = (s + "@media (pointer: coarse) { .btn { width: 44px; height: 44px; border-radius: 22px; padding: 10px; } .ico { width: 24px; height: 24px; } .addr { height: 44px; border-radius: 22px; } .chip { width: 34px; height: 34px; border-radius: 17px; padding: 9px; } .addr-t { font-size: 16px; } .addr-rest { font-size: 16px; } .addr-hint { font-size: 16px; } }")
         return s
     }
 
-    fn button:EVGElement (id:string glyph:string enabled:boolean) {
+    ; The tab strip is a desktop's: a phone-wide window has none.
+    fn tabsH:double () {
+        if (pageW < 520.0) {
+            return 0.0
+        }
+        if coarse {
+            return 44.0
+        }
+        return 40.0
+    }
+
+    fn toolbarH:double () {
+        if coarse {
+            return 60.0
+        }
+        return 48.0
+    }
+
+    fn button:EVGElement (id:string iconName:string enabled:boolean) {
         def b (EVGElement.createDiv())
         b.id = id
         b.className = "btn"
+        def col:string "#474747"
         if (enabled == false) {
             b.className = "btn btn-off"
+            col = "#b9bdc4"
         }
         if (hovered == id) {
             b.isHovered = true
         }
-        def t (EVGElement.createSpan())
-        t.className = "btn-t"
-        t.textContent = glyph
-        b.addChild(t)
+        b.addChild((BrowserApp.iconEl(iconName "ico" col)))
         return b
+    }
+
+    fn tabTitle:string () {
+        if loading {
+            if ((strlen page.title) == 0) {
+                return "Ladataan…"
+            }
+        }
+        if ((strlen page.title) > 0) {
+            return page.title
+        }
+        if hasPage {
+            def h:string page.url.host
+            if ((strlen h) > 0) {
+                return h
+            }
+            return (page.url.toString())
+        }
+        return "Uusi välilehti"
     }
 
     fn buildFrame:void () {
@@ -1761,41 +1846,88 @@ class BrowserApp extends EvgApp {
         root.className = "frame"
         root.setAttribute("width" ((CssParser.fmt(pageW)) + "px"))
         root.setAttribute("height" ((CssParser.fmt(pageH)) + "px"))
+        def th:double (this.tabsH())
+        if (th > 0.0) {
+            def tabs (EVGElement.createDiv())
+            tabs.className = "tabs"
+            tabs.setAttribute("height" ((CssParser.fmt(th)) + "px"))
+            def tab (EVGElement.createDiv())
+            tab.className = "tab"
+            tab.addChild((BrowserApp.iconEl("globe" "fav" "#5f6368")))
+            def tt (EVGElement.createSpan())
+            tt.className = "tab-t"
+            tt.textContent = (this.tabTitle())
+            tab.addChild(tt)
+            tabs.addChild(tab)
+            root.addChild(tabs)
+        }
         def bar (EVGElement.createDiv())
         bar.className = "bar"
-        bar.setAttribute("height" ((CssParser.fmt(barH)) + "px"))
-        bar.addChild((this.button("btn-back" "←" (this.canGoBack()))))
+        bar.setAttribute("height" ((CssParser.fmt(this.toolbarH())) + "px"))
+        bar.addChild((this.button("btn-back" "back" (this.canGoBack()))))
         ; a phone keeps the address field wide: forward and reload go
         if (pageW >= 520.0) {
-            bar.addChild((this.button("btn-fwd" "→" (this.canGoForward()))))
-            bar.addChild((this.button("btn-reload" "↻" true)))
+            bar.addChild((this.button("btn-fwd" "fwd" (this.canGoForward()))))
+            bar.addChild((this.button("btn-reload" "reload" true)))
         }
-        bar.addChild((this.button("btn-home" "⌂" true)))
+        bar.addChild((this.button("btn-home" "home" true)))
         def addr (EVGElement.createDiv())
         addr.id = "addr"
         addr.className = "addr"
         if addrFocused {
             addr.className = "addr addr-on"
         }
+        if (hovered == "addr") {
+            addr.isHovered = true
+        }
         def shown:string (this.addressShown())
-        if (((addrFocused == false) && (startsWith addrText "https://")) && hasPage) {
-            def lk (EVGElement.createSpan())
-            lk.className = "lock"
-            lk.textContent = "🔒 "
-            addr.addChild(lk)
-        }
-        def at (EVGElement.createSpan())
-        at.className = "addr-t"
-        if ((strlen shown) == 0) {
-            at.className = "addr-hint"
-            at.textContent = "Kirjoita osoite tai hakusana"
-            if addrFocused {
-                at.textContent = ""
-            }
+        ; (the icons are placed by padding: a path in a box that centres on
+        ; both axes was left at its top)
+        ; the site chip: a lock for https, the controls icon otherwise,
+        ; a magnifier while typing
+        def chip (EVGElement.createDiv())
+        chip.className = "chip"
+        def chipIcon:string "tune"
+        if addrFocused {
+            chipIcon = "search"
         } {
-            at.textContent = shown
+            if ((startsWith addrText "https://") && hasPage) {
+                chipIcon = "lock"
+            }
         }
-        addr.addChild(at)
+        chip.addChild((BrowserApp.iconEl(chipIcon "chip-ico" "#474747")))
+        addr.addChild(chip)
+        if ((strlen shown) == 0) {
+            def hint (EVGElement.createSpan())
+            hint.className = "addr-hint"
+            hint.textContent = "Kirjoita osoite tai hakusana"
+            if addrFocused {
+                hint.textContent = ""
+            }
+            addr.addChild(hint)
+        } {
+            ; the site in dark, the rest of the address lighter
+            def cut:int -1
+            if ((addrFocused == false) && ((indexOf shown "://") < 0)) {
+                cut = (indexOf shown "/")
+            }
+            def line (EVGElement.createDiv())
+            line.className = "addr-line"
+            def at (EVGElement.createSpan())
+            at.className = "addr-t"
+            if (cut > 0) {
+                at.textContent = (substring shown 0 cut)
+                line.addChild(at)
+                def rest (EVGElement.createSpan())
+                rest.className = "addr-rest"
+                rest.textContent = (substring shown cut (strlen shown))
+                line.addChild(rest)
+            } {
+                at.textContent = shown
+                line.addChild(at)
+            }
+            addr.addChild(line)
+        }
         if addrFocused {
             def caret (EVGElement.createDiv())
             caret.className = "caret"
@@ -1836,6 +1968,10 @@ class BrowserApp extends EvgApp {
         if (addrFocused == false) {
             if (startsWith t "https://") {
                 t = (substring t 8 (strlen t))
+            } {
+                if (startsWith t "http://") {
+                    t = (substring t 7 (strlen t))
+                }
             }
             if (endsWith t "/") {
                 if ((BrowserApp.countChar(t 47)) == 1) {
@@ -1843,7 +1979,12 @@ class BrowserApp extends EvgApp {
                 }
             }
         }
-        def maxChars:int (to_int ((pageW - 260.0) / 8.5))
+        ; what the buttons and the site chip leave, at ~7.8 px a character
+        def reserved:double 240.0
+        if (pageW < 520.0) {
+            reserved = 130.0
+        }
+        def maxChars:int (to_int ((pageW - reserved) / 7.8))
         if (maxChars < 12) {
             maxChars = 12
         }
