@@ -6,7 +6,7 @@ articles, simple sites — without JavaScript, video, pop-ups or tracking, and o
 from sites on an allowlist.
 
 Because it is Ranger, the same source compiles to JavaScript (it runs inside a web
-page, "browser in browser") and to C++ (the target EVG's SDL2 host is built on),
+page, "browser in browser") and to C++ (the target EVG's SDL3 host is built on),
 and EVG already has hosts for iOS and Android.
 
 ```
@@ -42,18 +42,21 @@ npm run serve          # build web/dist and open http://localhost:8040/
 `npm run serve` also starts a small fetch proxy on localhost, so every allowed site
 works locally. It only fetches from the allowlist, GET only, text only, no cookies.
 
-## Desktop (SDL2)
+## Desktop (SDL3)
 
 `native/sdl/evg_browser_sdl.cpp` puts the same program in a desktop window.
 The Ranger source is compiled to C++ and included; the file adds only what a
-desktop has: an SDL2 window and input, libcurl on worker threads for the
-request queue, and a painter for the display list (rounded boxes and borders
-as triangle geometry, text runs, `object-fit: cover`, a clip stack).
+desktop has: an SDL3 window and input, libcurl on worker threads for the
+request queue, and the SDL3 calls that run the painter's output. The painter
+itself (rounded boxes and borders as triangle geometry, text runs, paths,
+`object-fit: cover`, a clip stack) is RangerDOM's `paint/` crate, strict Rust
+that Ranger compiles to C++ here and cargo builds for RangerDOM's own SDL3
+playground: one source for both.
 
-**Two libraries: SDL2 and libcurl** (which comes with macOS and every Linux).
+**Two libraries: SDL3 and libcurl** (which comes with macOS and every Linux).
 Everything else is compiled in from single-file libraries in
-`native/sdl/third_party/`: stb_truetype for type (the same faces measure the
-text for the layout and draw it), stb_image for JPEG/PNG/GIF, Ranger's own WebP decoder
+`native/sdl/third_party/`: stb_truetype for measuring type (the painter draws
+the same faces with its own TrueType reader), stb_image for JPEG/PNG/GIF, Ranger's own WebP decoder
 (`lib/image`), nanosvg for SVG, stb_image_write for screenshots. Colour emoji are read straight out of the
 system's emoji font (the PNGs in Noto Color Emoji's CBDT table, or Apple
 Color Emoji's sbix table). AVIF is not decoded, and image requests do not
@@ -61,9 +64,11 @@ ask for it.
 
 ```sh
 # Debian/Ubuntu
-sudo apt-get install libsdl2-dev libcurl4-openssl-dev fonts-dejavu-core
+sudo apt-get install libsdl3-dev libcurl4-openssl-dev fonts-dejavu-core
+#   (Ubuntu 25.04+, Debian 13+; on older ones build SDL3 from source and set
+#   PKG_CONFIG_PATH, SDL3_STATIC=1 links it statically)
 # macOS
-brew install sdl2
+brew install sdl3
 
 npm run sdl                         # -> build/evg-browser
 build/evg-browser                   # about:home
@@ -234,7 +239,7 @@ OkHttp, libcurl).
 Done:
 - the engine and the browser in Ranger; checks pass on JavaScript and C++;
 - the web host and the Pages workflow;
-- the SDL2 desktop host with libcurl, built and driven on Linux (Xvfb).
+- the SDL3 desktop host with libcurl, built and driven on Linux (Xvfb).
 
 Not done yet:
 - iOS and Android projects: `BrowserHost` is the class they would wrap (as

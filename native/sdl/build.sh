@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# EVG Browser → C++ → a native SDL2 desktop binary (Linux, macOS; Windows with MSYS2).
+# EVG Browser → C++ → a native SDL3 desktop binary (Linux, macOS; Windows with MSYS2).
 #
 #   native/sdl/build.sh            # -> build/evg-browser
 #   build/evg-browser [url]
 #   build/evg-browser about:demo --screenshot out.png     # render once, headless
 #
-# Needs: a C++17 compiler, SDL2 and libcurl, and `npm install` run once (the
+# Needs: a C++17 compiler, SDL3 and libcurl, and `npm install` run once (the
 # Ranger compiler and packages). Fonts, images and PNG writing are compiled in.
-#   Debian/Ubuntu: sudo apt-get install libsdl2-dev libcurl4-openssl-dev fonts-dejavu-core
-#   macOS:         brew install sdl2            (libcurl comes with macOS)
+#   Debian/Ubuntu: sudo apt-get install libsdl3-dev libcurl4-openssl-dev fonts-dejavu-core
+#                  (Ubuntu 25.04+, Debian 13+; older ones: build SDL3 from source)
+#   macOS:         brew install sdl3            (libcurl comes with macOS)
+# SDL3 is found with pkg-config (PKG_CONFIG_PATH for one of your own);
+# SDL3_STATIC=1 links a static libSDL3.a.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -17,16 +20,18 @@ OPT="${OPT:--O2}"
 
 # the compiler and the Ranger packages (npm install); exits with advice if missing
 RGRC="$(cd "$ROOT" && node tools/ranger.mjs rgrc)"
-# SDL2 is the one library to install; libcurl comes with macOS and every
+# SDL3 is the one library to install; libcurl comes with macOS and every
 # Linux distribution. Everything else is compiled in (third_party/).
-if command -v sdl2-config >/dev/null 2>&1; then
-  SDL_FLAGS="$(sdl2-config --cflags --libs)"
-elif command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sdl2; then
-  SDL_FLAGS="$(pkg-config --cflags --libs sdl2)"
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sdl3; then
+  if [ "${SDL3_STATIC:-}" = "1" ]; then
+    SDL_FLAGS="$(pkg-config --cflags --libs --static sdl3)"
+  else
+    SDL_FLAGS="$(pkg-config --cflags --libs sdl3)"
+  fi
 else
-  echo "error: SDL2 not found." >&2
-  echo "  macOS:         brew install sdl2" >&2
-  echo "  Debian/Ubuntu: sudo apt-get install libsdl2-dev" >&2
+  echo "error: SDL3 not found (pkg-config sdl3)." >&2
+  echo "  macOS:         brew install sdl3" >&2
+  echo "  Debian/Ubuntu: sudo apt-get install libsdl3-dev" >&2
   exit 1
 fi
 if command -v curl-config >/dev/null 2>&1; then

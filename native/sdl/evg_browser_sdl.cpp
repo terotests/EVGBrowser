@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// EVG Browser in a desktop window: SDL2 for the window and the pixels,
+// EVG Browser in a desktop window: SDL3 for the window and the pixels,
 // libcurl for the network, stb_truetype for the type, stb_image and nanosvg
 // for pictures.
 //
@@ -14,19 +14,23 @@
 //     with libcurl, and the answers are delivered back on the main thread;
 //   * the fonts: the same faces measure the text (EVGHostTextMeasurer) and
 //     draw it, so a line breaks where its glyphs end;
-//   * a painter for EVGDisplayList: rounded boxes and borders as triangle
-//     geometry, text runs, images with object-fit: cover, a clip stack.
+//   * running the painter's output: the display list is painted by
+//     RangerDOM's shared painter (the crate rangerdom_paint, Rust that
+//     Ranger compiles to C++ here; the same code is RangerDOM's SDL3
+//     playground painter), which makes triangles, textures and clips, and
+//     SdlPainter below hands them to SDL_RenderGeometry.
 //
 // Build: native/sdl/build.sh (or `npm run sdl`).
 
 #include "evg_browser.cpp"
 
 #define SDL_MAIN_HANDLED
-#include <SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 #include <curl/curl.h>
 
 // Type, pictures and screenshots from single-file libraries compiled in
-// (third_party/README.md), so the only libraries needed are SDL2 and libcurl.
+// (third_party/README.md), so the only libraries needed are SDL3 and libcurl.
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "third_party/stb_truetype.h"
 #define STB_IMAGE_IMPLEMENTATION
@@ -583,7 +587,7 @@ class Net {
                                                            : "Accept: text/html,text/css,*/*;q=0.5");
     curl_easy_setopt(c, CURLOPT_URL, job.url.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "EVG-Browser/0.1 (SDL2; +https://github.com/terotests/EVGBrowser)");
+    curl_easy_setopt(c, CURLOPT_USERAGENT, "EVG-Browser/0.1 (SDL3; +https://github.com/terotests/EVGBrowser)");
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 6L);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -637,20 +641,21 @@ static std::string asUtf8(const std::string& body, const std::string& contentTyp
 }
 
 // ---------------------------------------------------------------------------
-// The painter: EVGDisplayList → SDL_Renderer
+// Pictures: decoded here, drawn by the painter
 // ---------------------------------------------------------------------------
 
 struct Image {
-  SDL_Texture* tex = nullptr;
+  bool ok = false;
   int w = 0, h = 0;
+  std::vector<uint8_t> rgba;  // not premultiplied
 };
 
 // A picture's bytes as a texture: JPEG, PNG, GIF (first frame), BMP through
 // stb_image; WebP through Ranger's WebPDecoder; SVG through nanosvg, rasterised at its
 // own size (at most 2048 on a side). AVIF is not decoded or asked for.
-static Image decodeImage(SDL_Renderer* ren, const std::string& bytes);
+static Image decodeImage(const std::string& bytes);
 
-static Image decodeIco(SDL_Renderer* ren, const std::string& bytes) {
+static Image decodeIco(const std::string& bytes) {
   auto u8 = [&](size_t i) -> unsigned { return i < bytes.size() ? (unsigned char)bytes[i] : 0u; };
   auto u16 = [&](size_t i) -> unsigned { return u8(i) | (u8(i + 1) << 8); };
   auto u32 = [&](size_t i) -> unsigned { return u16(i) | (u16(i + 2) << 16); };
@@ -669,7 +674,7 @@ static Image decodeIco(SDL_Renderer* ren, const std::string& bytes) {
   if (off >= bytes.size() || len == 0) return Image{};
   if (off + len > bytes.size()) len = bytes.size() - off;
   std::string data = bytes.substr(off, len);
-  if (data.size() > 8 && data.compare(1, 3, "PNG") == 0) return decodeImage(ren, data);
+  if (data.size() > 8 && data.compare(1, 3, "PNG") == 0) return decodeImage(data);
   if (data.size() < 40) return Image{};
   // BITMAPINFOHEADER: the height counts the AND mask too
   int32_t hh = (int32_t)(u8(off + 8) | (u8(off + 9) << 8) | (u8(off + 10) << 16) | (u8(off + 11) << 24));
@@ -685,10 +690,10 @@ static Image decodeIco(SDL_Renderer* ren, const std::string& bytes) {
   bmp.append(4, '\0');
   for (int i = 0; i < 4; i++) bmp.push_back((char)((pixOff >> (8 * i)) & 0xff));
   bmp += data;
-  return decodeImage(ren, bmp);
+  return decodeImage(bmp);
 }
 
-static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
+static Image decodeImage(const std::string& bytes) {
   Image im;
   int w = 0, h = 0;
   std::vector<unsigned char> rgba;
@@ -721,7 +726,7 @@ static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
   } else if (bytes.size() > 22 && bytes.compare(0, 4, std::string("\0\0\1\0", 4)) == 0) {
     // a favicon.ico: the entry nearest 32 px; a PNG inside is decoded as
     // one, a bitmap is given the BMP file header it lacks
-    return decodeIco(ren, bytes);
+    return decodeIco(bytes);
   } else {
     int n = 0;
     unsigned char* px = stbi_load_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &n, 4);
@@ -729,14 +734,11 @@ static Image decodeImage(SDL_Renderer* ren, const std::string& bytes) {
     rgba.assign(px, px + (size_t)w * h * 4);
     stbi_image_free(px);
   }
-  SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
-  if (!tex) return im;
-  SDL_UpdateTexture(tex, nullptr, rgba.data(), w * 4);
-  SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-  SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
-  im.tex = tex;
+  if (w <= 0 || h <= 0 || rgba.size() != (size_t)w * h * 4) return im;
+  im.ok = true;
   im.w = w;
   im.h = h;
+  im.rgba = std::move(rgba);
   return im;
 }
 
@@ -776,396 +778,128 @@ static bool decodeDataUrl(const std::string& url, std::string& out) {
   return true;
 }
 
-class Painter {
+// The painter's output run with SDL3. DlPainter (the shared painter,
+// compiled from RangerDOM's paint/ crate) makes a frame into textures to
+// create, draws (triangles, textured or not), clips, and textures to
+// destroy; this makes those calls and nothing else.
+class SdlPainter {
  public:
   SDL_Renderer* ren = nullptr;
-  Fonts* fonts = nullptr;
-  double s = 1.0;  // device pixels per CSS pixel
-  std::unordered_map<std::string, Image>* images = nullptr;
+  std::shared_ptr<DlPainter> dl = DlPainter::new_();
 
-  void paint(const std::shared_ptr<EVGDisplayList>& dl, int width, int height) {
+  // the faces the layout measures with draw the text too
+  void setFonts(const Fonts& fonts) {
+    emojiFonts = &fonts;
+    dl->add_face("sans", fonts.face[SANS].data);
+    if (fonts.face[SANS_BOLD].data != fonts.face[SANS].data) dl->add_face("bold", fonts.face[SANS_BOLD].data);
+    if (fonts.face[MONO].data != fonts.face[SANS].data) dl->add_face("mono", fonts.face[MONO].data);
+    for (auto& fb : fonts.fallbacks) dl->add_face("fallback", fb->data);
+  }
+
+  void paint(const std::shared_ptr<EVGDisplayList>& list, double s) {
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
-    SDL_RenderSetClipRect(ren, nullptr);
+    SDL_SetRenderClipRect(ren, nullptr);
     SDL_RenderClear(ren);
-    clips.clear();
-    viewW = width;
-    viewH = height;
-    for (auto& c : dl->cmds) {
-      switch (c->kind) {
-        case 0: rect(*c); break;
-        case 1: border(*c); break;
-        case 2: image(*c); break;
-        case 3: text(*c); break;
-        case 4: pushClip(*c); break;
-        case 5: popClip(); break;
-        case 6: fill(*c); break;
-        case 7: stroke(*c); break;
-        default: break;
-      }
+    dl->s = s;
+    dl->top = 0.0;
+    dl->begin();
+    dl->draw_list(list);
+    dl->end();
+    run();
+    // (pictures the list named that nobody gave: the app asks for every
+    // picture it shows, so nothing is to be done about them here; colour
+    // emoji the text asked for are given from the emoji face, and the
+    // frame is drawn again with them)
+    if (giveEmoji()) {
+      SDL_SetRenderClipRect(ren, nullptr);
+      SDL_RenderClear(ren);
+      dl->begin();
+      dl->draw_list(list);
+      dl->end();
+      run();
+      giveEmoji();
     }
-    SDL_RenderSetClipRect(ren, nullptr);
-    if (textCache.size() > 4000) clearTextCache();
   }
 
-  void clearTextCache() {
-    for (auto& kv : textCache) SDL_DestroyTexture(kv.second.tex);
-    textCache.clear();
-    for (auto& kv : emojiCache) if (kv.second) SDL_DestroyTexture(kv.second);
-    emojiCache.clear();
+  // the textures, before the renderer goes
+  void release() {
+    for (auto& kv : texs) SDL_DestroyTexture(kv.second);
+    texs.clear();
   }
-
-  ~Painter() { clearTextCache(); }
 
  private:
-  struct Tex {
-    SDL_Texture* tex;
-    int w, h, ascent;
-  };
-  std::unordered_map<std::string, Tex> textCache;
-  std::unordered_map<int, SDL_Texture*> emojiCache;
-  std::vector<SDL_Rect> clips;
-  int viewW = 0, viewH = 0;
+  const Fonts* emojiFonts = nullptr;
+  std::unordered_map<int, SDL_Texture*> texs;
+  std::vector<SDL_Vertex> verts;
 
-  static SDL_Color color(int r, int g, int b, double a) {
-    int al = (int)std::lround(std::max(0.0, std::min(1.0, a)) * 255.0);
-    return SDL_Color{(Uint8)r, (Uint8)g, (Uint8)b, (Uint8)al};
-  }
-
-  bool offscreen(const EVGDrawCmd& c) const {
-    return (c.y + c.h) * s < 0 || c.y * s > viewH || (c.x + c.w) * s < 0 || c.x * s > viewW;
-  }
-
-  static void radii(const EVGDrawCmd& c, double out[4]) {
-    double lim = std::min(c.w, c.h) / 2.0;
-    out[0] = c.radius;
-    out[1] = c.perCorner ? c.radiusTR : c.radius;
-    out[2] = c.perCorner ? c.radiusBR : c.radius;
-    out[3] = c.perCorner ? c.radiusBL : c.radius;
-    for (int i = 0; i < 4; i++) out[i] = std::max(0.0, std::min(out[i], lim));
-  }
-
-  // The outline of a rounded rectangle: corners TL, TR, BR, BL, the same
-  // number of points each whatever the radius, so two outlines can be
-  // stitched into a band.
-  void outline(double x, double y, double w, double h, const double r[4], std::vector<SDL_FPoint>& pts) const {
-    const int SEG = 8;
-    const double cx[4] = {x + r[0], x + w - r[1], x + w - r[2], x + r[3]};
-    const double cy[4] = {y + r[0], y + r[1], y + h - r[2], y + h - r[3]};
-    const double start[4] = {M_PI, 1.5 * M_PI, 0.0, 0.5 * M_PI};
-    pts.clear();
-    for (int k = 0; k < 4; k++) {
-      for (int i = 0; i <= SEG; i++) {
-        double a = start[k] + (M_PI / 2.0) * i / SEG;
-        pts.push_back(SDL_FPoint{(float)((cx[k] + std::cos(a) * r[k]) * s), (float)((cy[k] + std::sin(a) * r[k]) * s)});
-      }
+  // "emoji:<codepoint>" in missing: the glyph's PNG from the colour face,
+  // with its advance in ems; whether any was given
+  bool giveEmoji() {
+    bool gave = false;
+    for (auto& m : dl->missing) {
+      if (m.compare(0, 6, "emoji:") != 0 || !emojiFonts || !emojiFonts->emoji.ok) continue;
+      int cp = std::atoi(m.c_str() + 6);
+      const FontFile& f = emojiFonts->emoji.font;
+      int g = stbtt_FindGlyphIndex(&f.info, cp);
+      const unsigned char* png = nullptr;
+      size_t len = 0;
+      if (g == 0 || !emojiFonts->emoji.png(g, png, len)) continue;
+      Image im = decodeImage(std::string((const char*)png, len));
+      if (!im.ok) continue;
+      int adv = 0, lsb = 0;
+      stbtt_GetGlyphHMetrics(&f.info, g, &adv, &lsb);
+      dl->set_emoji(cp, adv * f.scale(1.0), im.w, im.h, std::move(im.rgba));
+      gave = true;
     }
+    dl->missing.clear();
+    return gave;
   }
+  std::vector<int> idx;
 
-  void rect(const EVGDrawCmd& c) {
-    if (c.w <= 0 || c.h <= 0 || offscreen(c)) return;
-    double r[4];
-    radii(c, r);
-    SDL_Color top = color(c.r, c.g, c.b, c.a);
-    SDL_Color bottom = c.hasGrad ? color(c.r2, c.g2, c.b2, c.a2) : top;
-    bool across = c.hasGrad && c.gradDir == 1;
-    std::vector<SDL_FPoint> pts;
-    outline(c.x, c.y, c.w, c.h, r, pts);
-    std::vector<SDL_Vertex> v;
-    auto shade = [&](const SDL_FPoint& p) {
-      if (!c.hasGrad) return top;
-      double t = across ? (p.x / s - c.x) / c.w : (p.y / s - c.y) / c.h;
-      t = std::max(0.0, std::min(1.0, t));
-      return SDL_Color{(Uint8)(top.r + (bottom.r - top.r) * t), (Uint8)(top.g + (bottom.g - top.g) * t),
-                       (Uint8)(top.b + (bottom.b - top.b) * t), (Uint8)(top.a + (bottom.a - top.a) * t)};
-    };
-    SDL_FPoint mid{(float)((c.x + c.w / 2) * s), (float)((c.y + c.h / 2) * s)};
-    SDL_Color midC = shade(mid);
-    for (size_t i = 0; i < pts.size(); i++) {
-      const SDL_FPoint& a = pts[i];
-      const SDL_FPoint& b = pts[(i + 1) % pts.size()];
-      v.push_back(SDL_Vertex{mid, midC, {0, 0}});
-      v.push_back(SDL_Vertex{a, shade(a), {0, 0}});
-      v.push_back(SDL_Vertex{b, shade(b), {0, 0}});
-    }
-    SDL_RenderGeometry(ren, nullptr, v.data(), (int)v.size(), nullptr, 0);
-  }
-
-  // CSS draws a border inside the box: a band from the edge inwards.
-  void border(const EVGDrawCmd& c) {
-    double t = c.thickness > 0 ? c.thickness : 1.0;
-    if (c.w <= t || c.h <= t || offscreen(c)) return;
-    double r[4], ri[4];
-    radii(c, r);
-    for (int i = 0; i < 4; i++) ri[i] = std::max(0.0, r[i] - t);
-    std::vector<SDL_FPoint> outer, inner;
-    outline(c.x, c.y, c.w, c.h, r, outer);
-    outline(c.x + t, c.y + t, c.w - 2 * t, c.h - 2 * t, ri, inner);
-    SDL_Color col = color(c.r, c.g, c.b, c.a);
-    std::vector<SDL_Vertex> v;
-    for (size_t i = 0; i < outer.size(); i++) {
-      size_t j = (i + 1) % outer.size();
-      v.push_back(SDL_Vertex{outer[i], col, {0, 0}});
-      v.push_back(SDL_Vertex{outer[j], col, {0, 0}});
-      v.push_back(SDL_Vertex{inner[i], col, {0, 0}});
-      v.push_back(SDL_Vertex{inner[i], col, {0, 0}});
-      v.push_back(SDL_Vertex{outer[j], col, {0, 0}});
-      v.push_back(SDL_Vertex{inner[j], col, {0, 0}});
-    }
-    SDL_RenderGeometry(ren, nullptr, v.data(), (int)v.size(), nullptr, 0);
-  }
-
-  // A filled path (the toolbar's icons, a page's inline SVG): its rings
-  // rasterised here, nonzero or even-odd, with 4 x 4 samples a pixel, into
-  // an alpha texture tinted like text runs. Cached by geometry and scale.
-  void fill(const EVGDrawCmd& c) {
-    if (c.pts.size() < 6 || c.w <= 0 || c.h <= 0 || offscreen(c)) return;
-    double minX = 1e18, minY = 1e18, maxX = -1e18, maxY = -1e18;
-    for (size_t i = 0; i + 1 < c.pts.size(); i += 2) {
-      minX = std::min(minX, c.pts[i]); maxX = std::max(maxX, c.pts[i]);
-      minY = std::min(minY, c.pts[i + 1]); maxY = std::max(maxY, c.pts[i + 1]);
-    }
-    int ox = (int)std::floor(minX * s), oy = (int)std::floor(minY * s);
-    int w = (int)std::ceil(maxX * s) - ox + 1, h = (int)std::ceil(maxY * s) - oy + 1;
-    if (w <= 0 || h <= 0 || (double)w * h > 4e6) return;
-    std::string key = "P|" + std::to_string(s) + "|" + std::to_string(c.evenOdd) + "|" +
-                      std::to_string(minX * s - ox) + "," + std::to_string(minY * s - oy) + "|";
-    for (size_t i = 0; i < c.pts.size(); i++) key += std::to_string((int)std::lround((c.pts[i] - (i % 2 ? minY : minX)) * 64)) + ",";
-    for (auto e : c.ringEnds) key += std::to_string((int)e) + ";";
-    SDL_Texture* tex = nullptr;
-    auto it = textCache.find(key);
-    if (it != textCache.end()) {
-      tex = it->second.tex;
-    } else {
-      struct Edge { double x0, y0, x1, y1; int dir; };
-      std::vector<Edge> edges;
-      size_t start = 0;
-      std::vector<size_t> ends;
-      for (auto e : c.ringEnds) ends.push_back((size_t)e);
-      if (ends.empty()) ends.push_back(c.pts.size());
-      for (size_t r = 0; r < ends.size(); r++) {
-        size_t end = ends[r];  // where the ring ends in pts, counted in numbers
-        if (end > c.pts.size()) end = c.pts.size();
-        size_t n = end > start ? (end - start) / 2 : 0;
-        for (size_t k = 0; k < n; k++) {
-          size_t a = start + k * 2, b = start + ((k + 1) % n) * 2;
-          double x0 = c.pts[a] * s - ox, y0 = c.pts[a + 1] * s - oy, x1 = c.pts[b] * s - ox, y1 = c.pts[b + 1] * s - oy;
-          if (y0 == y1) continue;
-          if (y0 < y1) edges.push_back({x0, y0, x1, y1, 1});
-          else edges.push_back({x1, y1, x0, y0, -1});
-        }
-        start = end;
-      }
-      const int SS = 4;
-      std::vector<int> cover((size_t)w * h, 0);
-      std::vector<std::pair<double, int>> xs;
-      for (int sy = 0; sy < h * SS; sy++) {
-        double y = (sy + 0.5) / SS;
-        xs.clear();
-        for (auto& e : edges)
-          if (y >= e.y0 && y < e.y1) xs.push_back({e.x0 + (y - e.y0) * (e.x1 - e.x0) / (e.y1 - e.y0), e.dir});
-        std::sort(xs.begin(), xs.end());
-        int wind = 0;
-        for (size_t k = 0; k + 1 < xs.size(); k++) {
-          wind += xs[k].second;
-          bool in = c.evenOdd ? (wind & 1) != 0 : wind != 0;
-          if (!in) continue;
-          int a = (int)std::ceil(xs[k].first * SS - 0.5), b = (int)std::ceil(xs[k + 1].first * SS - 0.5);
-          for (int sx = std::max(a, 0); sx < std::min(b, w * SS); sx++) cover[(size_t)(sy / SS) * w + sx / SS]++;
-        }
-      }
-      tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h);
-      if (!tex) return;
-      std::vector<Uint32> px32((size_t)w * h);
-      for (size_t k = 0; k < px32.size(); k++) px32[k] = ((Uint32)std::min(255, cover[k] * 255 / (SS * SS)) << 24) | 0x00FFFFFFu;
-      SDL_UpdateTexture(tex, nullptr, px32.data(), w * 4);
+  void run() {
+    for (auto& t : dl->uploads) {
+      SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, t->w, t->h);
+      if (!tex) continue;
       SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-      textCache[key] = Tex{tex, w, h, 0};
+      SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
+      SDL_UpdateTexture(tex, nullptr, t->px.data(), t->w * 4);
+      texs[t->id] = tex;
     }
-    SDL_Color col = color(c.r, c.g, c.b, c.a);
-    SDL_SetTextureColorMod(tex, col.r, col.g, col.b);
-    SDL_SetTextureAlphaMod(tex, col.a);
-    SDL_Rect dst{ox, oy, w, h};
-    SDL_RenderCopy(ren, tex, nullptr, &dst);
-  }
-
-  void stroke(const EVGDrawCmd& c) {
-    if (c.pts.size() < 4) return;
-    SDL_Color col = color(c.r, c.g, c.b, c.a);
-    SDL_SetRenderDrawColor(ren, col.r, col.g, col.b, col.a);
-    std::vector<SDL_FPoint> p;
-    for (size_t i = 0; i + 1 < c.pts.size(); i += 2) p.push_back(SDL_FPoint{(float)(c.pts[i] * s), (float)(c.pts[i + 1] * s)});
-    SDL_RenderDrawLinesF(ren, p.data(), (int)p.size());
-  }
-
-  // object-fit: cover — fill the box, crop what overflows, centred.
-  void image(const EVGDrawCmd& c) {
-    if (c.w <= 0 || c.h <= 0 || offscreen(c) || !images) return;
-    auto it = images->find(c.src);
-    if (it == images->end() || !it->second.tex) return;
-    const Image& im = it->second;
-    SDL_Rect src;
-    if (c.hasCrop) {
-      src = SDL_Rect{(int)(c.cropX * im.w), (int)(c.cropY * im.h), (int)(c.cropW * im.w), (int)(c.cropH * im.h)};
-    } else {
-      double k = std::max(c.w / im.w, c.h / im.h);
-      double sw = c.w / k, sh = c.h / k;
-      src = SDL_Rect{(int)((im.w - sw) / 2), (int)((im.h - sh) / 2), (int)std::lround(sw), (int)std::lround(sh)};
+    const std::vector<double>& v = dl->verts;
+    verts.resize(v.size() / 8);
+    for (size_t k = 0; k < verts.size(); k++) {
+      const double* q = &v[k * 8];
+      verts[k] = SDL_Vertex{{(float)q[0], (float)q[1]}, {(float)q[2], (float)q[3], (float)q[4], (float)q[5]}, {(float)q[6], (float)q[7]}};
     }
-    SDL_FRect dst{(float)(c.x * s), (float)(c.y * s), (float)(c.w * s), (float)(c.h * s)};
-    SDL_RenderCopyF(ren, im.tex, &src, &dst);
-  }
-
-  // A run rasterised at `px` device pixels: white, with the glyphs in the
-  // alpha, so one texture serves every colour through the colour mod.
-  Tex* runTexture(const Fonts::Run& run, double px) {
-    std::string key = std::to_string((uintptr_t)run.font) + "|" + std::to_string(px) + "|";
-    for (uint32_t cp : run.cps) key += std::to_string(cp) + ",";
-    auto it = textCache.find(key);
-    if (it != textCache.end()) return &it->second;
-    const stbtt_fontinfo* info = &run.font->info;
-    float sc = run.font->scale(px);
-    int ascentPx = (int)std::ceil(run.font->ascent * sc);
-    int h = (int)std::ceil((run.font->ascent - run.font->descent) * sc) + 2;
-    int w = (int)std::ceil(Fonts::runWidth(run, px)) + 4;
-    if (w <= 0 || h <= 0 || w > 16384) return nullptr;
-    std::vector<unsigned char> alpha((size_t)w * h, 0);
-    std::vector<unsigned char> glyph;
-    double x = 1.0;
-    for (size_t k = 0; k < run.cps.size(); k++) {
-      int g = stbtt_FindGlyphIndex(info, (int)run.cps[k]);
-      int adv = 0, lsb = 0;
-      stbtt_GetGlyphHMetrics(info, g, &adv, &lsb);
-      float shift = (float)(x - std::floor(x));
-      int x0, y0, x1, y1;
-      stbtt_GetGlyphBitmapBoxSubpixel(info, g, sc, sc, shift, 0, &x0, &y0, &x1, &y1);
-      int gw = x1 - x0, gh = y1 - y0;
-      if (gw > 0 && gh > 0) {
-        glyph.assign((size_t)gw * gh, 0);
-        stbtt_MakeGlyphBitmapSubpixel(info, glyph.data(), gw, gh, gw, sc, sc, shift, 0, g);
-        int ox = (int)std::floor(x) + x0, oy = ascentPx + y0;
-        for (int yy = 0; yy < gh; yy++) {
-          int ty = oy + yy;
-          if (ty < 0 || ty >= h) continue;
-          for (int xx = 0; xx < gw; xx++) {
-            int tx = ox + xx;
-            if (tx < 0 || tx >= w) continue;
-            unsigned char v = glyph[(size_t)yy * gw + xx];
-            unsigned char& d = alpha[(size_t)ty * w + tx];
-            if (v > d) d = v;
-          }
+    idx.assign(dl->idx.begin(), dl->idx.end());
+    const std::vector<int>& ops = dl->ops;
+    for (size_t o = 0; o + 6 <= ops.size(); o += 6) {
+      int kind = ops[o], a = ops[o + 1], b = ops[o + 2], c = ops[o + 3], d = ops[o + 4], e = ops[o + 5];
+      if (kind == 1) {  // draw: texture, first vertex, vertices, first index, indices
+        SDL_Texture* tex = nullptr;
+        if (a != 0) {
+          auto it = texs.find(a);
+          if (it == texs.end()) continue;
+          tex = it->second;
         }
-      }
-      x += adv * sc;
-      if (k + 1 < run.cps.size()) x += stbtt_GetGlyphKernAdvance(info, g, stbtt_FindGlyphIndex(info, (int)run.cps[k + 1])) * sc;
-    }
-    SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h);
-    if (!tex) return nullptr;
-    std::vector<Uint32> px32((size_t)w * h);
-    for (size_t k = 0; k < px32.size(); k++) px32[k] = ((Uint32)alpha[k] << 24) | 0x00FFFFFFu;
-    SDL_UpdateTexture(tex, nullptr, px32.data(), w * 4);
-    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-    return &(textCache[key] = Tex{tex, w, h, ascentPx});
-  }
-
-  // Colour emoji: each glyph's PNG, decoded once, drawn as wide as its
-  // advance and sitting on the baseline the way the text around it does.
-  double emojiRun(const Fonts::Run& run, double x, double baseline, double size, Uint8 alpha) {
-    const stbtt_fontinfo* info = &run.font->info;
-    float sc = run.font->scale(size);
-    for (uint32_t cp : run.cps) {
-      int g = stbtt_FindGlyphIndex(info, (int)cp);
-      int adv = 0, lsb = 0;
-      stbtt_GetGlyphHMetrics(info, g, &adv, &lsb);
-      double w = adv * sc;
-      SDL_Texture* tex = emojiTexture(g);
-      if (tex) {
-        int tw = 0, th = 0;
-        SDL_QueryTexture(tex, nullptr, nullptr, &tw, &th);
-        double h = tw > 0 ? w * th / tw : w;
-        SDL_FRect dst{(float)(x * s), (float)((baseline + size * 0.12 - h) * s), (float)(w * s), (float)(h * s)};
-        SDL_SetTextureAlphaMod(tex, alpha);
-        SDL_RenderCopyF(ren, tex, nullptr, &dst);
-      }
-      x += w;
-    }
-    return x;
-  }
-
-  SDL_Texture* emojiTexture(int glyph) {
-    auto it = emojiCache.find(glyph);
-    if (it != emojiCache.end()) return it->second;
-    SDL_Texture* tex = nullptr;
-    const unsigned char* png = nullptr;
-    size_t len = 0;
-    if (fonts->emoji.png(glyph, png, len)) {
-      int w = 0, h = 0, n = 0;
-      unsigned char* px = stbi_load_from_memory(png, (int)len, &w, &h, &n, 4);
-      if (px) {
-        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
-        if (tex) {
-          SDL_UpdateTexture(tex, nullptr, px, w * 4);
-          SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-          SDL_SetTextureScaleMode(tex, SDL_ScaleModeLinear);
-        }
-        stbi_image_free(px);
+        SDL_RenderGeometry(ren, tex, verts.data() + b, c, idx.data() + d, e);
+      } else if (kind == 2) {  // clip
+        SDL_Rect r{a, b, c > 0 ? c : 0, d > 0 ? d : 0};
+        if (r.w == 0 || r.h == 0) r = SDL_Rect{0, 0, 1, 1};  // an empty clip: nothing shows
+        SDL_SetRenderClipRect(ren, &r);
+      } else if (kind == 3) {
+        SDL_SetRenderClipRect(ren, nullptr);
       }
     }
-    emojiCache[glyph] = tex;
-    return tex;
-  }
-
-  void text(const EVGDrawCmd& c) {
-    if (c.text.empty() || c.fontSize <= 0 || offscreen(c)) return;
-    bool bold = c.fontWeight == "bold" || c.fontWeight == "700" || c.fontWeight == "800" || c.fontWeight == "900";
-    Face face = Fonts::faceFor(c.fontFamily, bold);
-    double size = c.fontSize;
-    // the baseline the layout gave the line: half the leading above the face
-    double asc = fonts->metric(1, "", c.fontFamily, size, bold);
-    double desc = fonts->metric(2, "", c.fontFamily, size, bold);
-    double baseline = c.y + (c.h > 0 ? (c.h - (asc + desc)) / 2.0 : 0.0) + asc;
-    double x = c.x;
-    SDL_Color col = color(c.r, c.g, c.b, c.a);
-    for (auto& run : fonts->runs(c.text, face)) {
-      if (fonts->isEmoji(run.font)) {
-        x = emojiRun(run, x, baseline, size, col.a);
-        continue;
+    for (int id : dl->frees) {
+      auto it = texs.find(id);
+      if (it != texs.end()) {
+        SDL_DestroyTexture(it->second);
+        texs.erase(it);
       }
-      Tex* t = runTexture(run, size * s);
-      if (t) {
-        SDL_FRect dst{(float)(std::floor(x * s) - 1.0), (float)(std::round(baseline * s) - t->ascent), (float)t->w, (float)t->h};
-        SDL_SetTextureColorMod(t->tex, col.r, col.g, col.b);
-        SDL_SetTextureAlphaMod(t->tex, col.a);
-        SDL_RenderCopyF(ren, t->tex, nullptr, &dst);
-      }
-      x += Fonts::runWidth(run, size);
     }
-  }
-
-  void applyClip() {
-    if (clips.empty()) {
-      SDL_RenderSetClipRect(ren, nullptr);
-      return;
-    }
-    SDL_Rect r = clips.back();
-    if (r.w <= 0 || r.h <= 0) r = SDL_Rect{0, 0, 1, 1};  // an empty clip: nothing shows
-    SDL_RenderSetClipRect(ren, &r);
-  }
-
-  void pushClip(const EVGDrawCmd& c) {
-    SDL_Rect r{(int)std::floor(c.x * s), (int)std::floor(c.y * s), (int)std::ceil(c.w * s), (int)std::ceil(c.h * s)};
-    if (!clips.empty()) {
-      SDL_Rect out;
-      if (!SDL_IntersectRect(&clips.back(), &r, &out)) out = SDL_Rect{0, 0, 0, 0};
-      r = out;
-    }
-    clips.push_back(r);
-    applyClip();
-  }
-
-  void popClip() {
-    if (!clips.empty()) clips.pop_back();
-    applyClip();
+    dl->done();
   }
 };
 
@@ -1283,7 +1017,7 @@ class RealmProcess {
     joinAll();
     job = jobId;
     jobStart = start;
-    started = SDL_GetTicks64();
+    started = SDL_GetTicks();
     {
       std::lock_guard<std::mutex> lk(mu);
       finished = false;
@@ -1321,7 +1055,7 @@ class RealmProcess {
     }
     int j = job;
     if (!fin) {
-      if ((double)(SDL_GetTicks64() - started) > (jobStart ? startLimitMs : limitMs)) {
+      if ((double)(SDL_GetTicks() - started) > (jobStart ? startLimitMs : limitMs)) {
         stop();
         app->realmFailed(j, "aikaraja");
         dirty = true;
@@ -1430,8 +1164,8 @@ static std::string keyName(SDL_Keycode k) {
     case SDLK_HOME: return "Home";
     case SDLK_END: return "End";
     case SDLK_SPACE: return " ";
-    case SDLK_l: return "l";
-    case SDLK_r: return "r";
+    case SDLK_L: return "l";
+    case SDLK_R: return "r";
     default: return "";
   }
 }
@@ -1493,7 +1227,7 @@ static int run(int argc, char** argv) {
   Options opt = parseArgs(argc, argv);
   bool headless = !opt.screenshot.empty();
 
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
     std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
     return 1;
   }
@@ -1515,39 +1249,47 @@ static int run(int argc, char** argv) {
       "sdl-ttf");
   EVGDefaultMeasurer::install(measurer);
 
-  Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (headless ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN);
-  SDL_Window* win = SDL_CreateWindow("EVG Browser", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, opt.width, opt.height, flags);
+  SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (headless ? SDL_WINDOW_HIDDEN : 0);
+  SDL_Window* win = SDL_CreateWindow("EVG Browser", opt.width, opt.height, flags);
   if (!win) {
     std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
     return 1;
   }
-  SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+  SDL_Renderer* ren = SDL_CreateRenderer(win, nullptr);
+  if (!ren) ren = SDL_CreateRenderer(win, SDL_SOFTWARE_RENDERER);
   if (!ren) {
     std::fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
     return 1;
   }
-  SDL_StopTextInput();
+  SDL_SetRenderVSync(ren, 1);
+  SDL_StopTextInput(win);
 
   auto measureWindow = [&](int& w, int& h, double& scale) {
     int ow = 0, oh = 0;
     SDL_GetWindowSize(win, &w, &h);
-    SDL_GetRendererOutputSize(ren, &ow, &oh);
+    SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
     scale = w > 0 ? (double)ow / w : 1.0;
   };
   int winW = 0, winH = 0;
   double scale = 1.0;
   measureWindow(winW, winH, scale);
 
+  // the pictures asked for: their size, or failed (the pixels are the painter's)
   std::unordered_map<std::string, Image> images;
-  Painter painter;
+  SdlPainter painter;
   painter.ren = ren;
-  painter.fonts = &fonts;
-  painter.images = &images;
-  painter.s = scale;
+  painter.setFonts(fonts);
+
 
   auto host = std::make_shared<BrowserHost>();
   std::shared_ptr<BrowserApp> app = host->browser;
+  // a decoded picture to the painter, its size (or the failure) to the app
+  auto keepImage = [&](const std::string& url, Image im) {
+    if (im.ok) painter.dl->set_image(url, im.w, im.h, im.rgba);
+    im.rgba.clear();
+    images[url] = im;
+    if (im.ok) app->imageLoaded(url, im.w, im.h); else app->imageFailed(url);
+  };
   // the sample pages that ship with the web demo, where Pages publishes them
   app->setSamplesBase(opt.samples);
   // page scripts run in a child process of this binary (--realm)
@@ -1561,18 +1303,18 @@ static int run(int argc, char** argv) {
   if (!opt.more.empty()) app->selectTab(0);
 
   Net net(6);
-  SDL_Cursor* arrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW);
-  SDL_Cursor* hand = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
-  SDL_Cursor* ibeam = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_IBEAM);
+  SDL_Cursor* arrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
+  SDL_Cursor* hand = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_POINTER);
+  SDL_Cursor* ibeam = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_TEXT);
   SDL_Cursor* shown = arrow;
 
   bool dirty = true, quit = false, mouseDown = false;
   double lastX = 0, lastY = 0;
-  Uint64 last = SDL_GetTicks64(), lastMove = last;
+  Uint64 last = SDL_GetTicks(), lastMove = last;
   std::string textFocus, title;
   int frame = 0;
   Uint64 idleSince = 0;
-  const Uint64 started = SDL_GetTicks64();
+  const Uint64 started = SDL_GetTicks();
 
   auto pump = [&]() {
     for (;;) {
@@ -1585,14 +1327,12 @@ static int run(int argc, char** argv) {
       j.url = line.substr(t2 + 1);
       if (j.kind == "image" && images.count(j.url)) {
         const Image& im = images[j.url];
-        if (im.tex) app->imageLoaded(j.url, im.w, im.h); else app->imageFailed(j.url);
+        if (im.ok) app->imageLoaded(j.url, im.w, im.h); else app->imageFailed(j.url);
         continue;
       }
       std::string inlineBytes;
       if (j.kind == "image" && decodeDataUrl(j.url, inlineBytes)) {
-        Image im = decodeImage(ren, inlineBytes);
-        images[j.url] = im;
-        if (im.tex) app->imageLoaded(j.url, im.w, im.h); else app->imageFailed(j.url);
+        keepImage(j.url, decodeImage(inlineBytes));
         dirty = true;
         continue;
       }
@@ -1607,9 +1347,8 @@ static int run(int argc, char** argv) {
       any = true;
       if (r.kind == "image") {
         Image im;
-        if (r.status >= 200 && r.status < 300 && !r.body.empty()) im = decodeImage(ren, r.body);
-        images[r.url] = im;
-        if (im.tex) app->imageLoaded(r.url, im.w, im.h); else app->imageFailed(r.url);
+        if (r.status >= 200 && r.status < 300 && !r.body.empty()) im = decodeImage(r.body);
+        keepImage(r.url, std::move(im));
         continue;
       }
       if (r.status == 0) {
@@ -1624,41 +1363,24 @@ static int run(int argc, char** argv) {
     }
   };
 
-  // Where the mouse is, in the points the layout uses. Event coordinates
-  // are points in SDL2 on a Retina Mac, but some builds (sdl2-compat on top
-  // of SDL3, as Homebrew's sdl2 is) deliver them in pixels, which puts
-  // every click twice as far from the corner as it was. SDL_GetMouseState
-  // is read instead of the event, and a position outside the window in
-  // points means this build counts pixels; EVG_MOUSE_SCALE overrides both.
-  double mouseDiv = 0;
-  if (const char* ms = std::getenv("EVG_MOUSE_SCALE")) mouseDiv = std::atof(ms);
-  bool fixedMouse = mouseDiv > 0;
-  if (!fixedMouse) mouseDiv = 1;
+  // Where the mouse is, in the points the layout uses: SDL3's events count
+  // window points on every platform. EVG_MOUSE_SCALE divides them, for a
+  // build that counts pixels.
+  double mouseDiv = 1;
+  if (const char* ms = std::getenv("EVG_MOUSE_SCALE")) mouseDiv = std::max(0.1, std::atof(ms));
   bool debugInput = std::getenv("EVG_DEBUG_INPUT") != nullptr;
-  auto mousePoint = [&](int ex, int ey, double& x, double& y) {
-    float sx = 0, sy = 0;
-    {
-      int ix = 0, iy = 0;
-      SDL_GetMouseState(&ix, &iy);
-      sx = (float)ix;
-      sy = (float)iy;
-    }
-    if (!fixedMouse && scale > 1.2) {
-      double lim = 1.02;
-      if (sx > winW * lim || sy > winH * lim) mouseDiv = scale;
-    }
-    x = sx / mouseDiv;
-    y = sy / mouseDiv;
+  auto mousePoint = [&](float ex, float ey, double& x, double& y) {
+    x = ex / mouseDiv;
+    y = ey / mouseDiv;
     if (debugInput)
-      std::fprintf(stderr, "mouse event %d,%d state %.0f,%.0f -> %.1f,%.1f (window %dx%d, scale %.2f)\n", ex, ey, sx, sy, x, y,
-                   winW, winH, scale);
+      std::fprintf(stderr, "mouse %.1f,%.1f -> %.1f,%.1f (window %dx%d, scale %.2f)\n", ex, ey, x, y, winW, winH, scale);
   };
 
   auto syncTextInput = [&]() {
     std::string f = host->focusedField();
     if (f == textFocus) return;
     textFocus = f;
-    if (f.empty()) SDL_StopTextInput(); else SDL_StartTextInput();
+    if (f.empty()) SDL_StopTextInput(win); else SDL_StartTextInput(win);
   };
 
   pump();
@@ -1666,29 +1388,33 @@ static int run(int argc, char** argv) {
   while (!quit) {
    try {
     SDL_Event e;
-    bool got = SDL_WaitEventTimeout(&e, dirty ? 1 : 16) != 0;
+    bool got = SDL_WaitEventTimeout(&e, dirty ? 1 : 16);
     while (got) {
       switch (e.type) {
-        case SDL_QUIT:
+        case SDL_EVENT_QUIT:
           quit = true;
           break;
-        case SDL_WINDOWEVENT:
-          if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-            measureWindow(winW, winH, scale);
-            painter.s = scale;
-                      painter.clearTextCache();
-            host->resize(winW, winH);
-          }
+        case SDL_EVENT_WINDOW_RESIZED:
+        case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
+          int ow = winW, oh = winH;
+          measureWindow(winW, winH, scale);
+          if (winW != ow || winH != oh) host->resize(winW, winH);
           dirty = true;
           break;
-        case SDL_MOUSEBUTTONDOWN:
+        }
+        case SDL_EVENT_WINDOW_EXPOSED:
+        case SDL_EVENT_WINDOW_SHOWN:
+          dirty = true;
+          break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
           if (e.button.button == SDL_BUTTON_LEFT) {
             double px = 0, py = 0;
             mousePoint(e.button.x, e.button.y, px, py);
             mouseDown = true;
             lastX = px;
             lastY = py;
-            lastMove = SDL_GetTicks64();
+            lastMove = SDL_GetTicks();
             host->pressAt(px, py);
             dirty = true;
           } else if (e.button.button == SDL_BUTTON_X1) {
@@ -1699,7 +1425,7 @@ static int run(int argc, char** argv) {
             dirty = true;
           }
           break;
-        case SDL_MOUSEBUTTONUP:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
           if (e.button.button == SDL_BUTTON_LEFT && mouseDown) {
             mouseDown = false;
             host->releasePress();
@@ -1707,11 +1433,11 @@ static int run(int argc, char** argv) {
             dirty = true;
           }
           break;
-        case SDL_MOUSEMOTION: {
+        case SDL_EVENT_MOUSE_MOTION: {
           double px = 0, py = 0;
           mousePoint(e.motion.x, e.motion.y, px, py);
           if (mouseDown) {
-            Uint64 now = SDL_GetTicks64();
+            Uint64 now = SDL_GetTicks();
             double dt = (double)std::max<Uint64>(1, now - lastMove);
             lastMove = now;
             if (host->panAt(px - lastX, py - lastY, dt)) dirty = true;
@@ -1722,32 +1448,33 @@ static int run(int argc, char** argv) {
           }
           break;
         }
-        case SDL_MOUSEWHEEL: {
-          double dy = -e.wheel.preciseY * 60.0;
+        case SDL_EVENT_MOUSE_WHEEL: {
+          double dy = -e.wheel.y * 60.0;
+          if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
           if (host->wheel(dy)) dirty = true;
           break;
         }
-        case SDL_TEXTINPUT:
+        case SDL_EVENT_TEXT_INPUT:
           if (!host->focusedField().empty()) {
             host->typeText(e.text.text);
             dirty = true;
           }
           break;
-        case SDL_KEYDOWN: {
+        case SDL_EVENT_KEY_DOWN: {
           SDL_Keymod mod = SDL_GetModState();
-          bool ctrl = (mod & (KMOD_CTRL | KMOD_GUI)) != 0;
-          bool shift = (mod & KMOD_SHIFT) != 0;
-          SDL_Keycode k = e.key.keysym.sym;
+          bool ctrl = (mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+          bool shift = (mod & SDL_KMOD_SHIFT) != 0;
+          SDL_Keycode k = e.key.key;
           bool inField = !host->focusedField().empty();
-          if ((mod & KMOD_ALT) && (k == SDLK_LEFT || k == SDLK_RIGHT)) {
+          if ((mod & SDL_KMOD_ALT) && (k == SDLK_LEFT || k == SDLK_RIGHT)) {
             if (k == SDLK_LEFT) app->back(); else app->forward();
-          } else if (ctrl && k == SDLK_v && inField) {
+          } else if (ctrl && k == SDLK_V && inField) {
             char* clip = SDL_GetClipboardText();
             if (clip) {
               host->typeText(clip);
               SDL_free(clip);
             }
-          } else if (ctrl && k == SDLK_q) {
+          } else if (ctrl && k == SDLK_Q) {
             quit = true;
           } else {
             std::string name = keyName(k);
@@ -1765,10 +1492,10 @@ static int run(int argc, char** argv) {
         default:
           break;
       }
-      got = SDL_PollEvent(&e) != 0;
+      got = SDL_PollEvent(&e);
     }
 
-    Uint64 now = SDL_GetTicks64();
+    Uint64 now = SDL_GetTicks();
     double dt = (double)std::min<Uint64>(64, now - last);
     last = now;
     if (host->tick(dt)) dirty = true;
@@ -1783,9 +1510,7 @@ static int run(int argc, char** argv) {
 
     if (dirty) {
       std::shared_ptr<EVGDisplayList> dl = app->display();
-      int ow = 0, oh = 0;
-      SDL_GetRendererOutputSize(ren, &ow, &oh);
-      painter.paint(dl, ow, oh);
+      painter.paint(dl, scale);
       SDL_RenderPresent(ren);
       dirty = false;
       frame++;
@@ -1817,12 +1542,17 @@ static int run(int argc, char** argv) {
       bool timedOut = now - started > 45000;
       if (settled || timedOut || (opt.frames > 0 && frame >= opt.frames)) {
         std::shared_ptr<EVGDisplayList> dl = app->display();
-        int ow = 0, oh = 0;
-        SDL_GetRendererOutputSize(ren, &ow, &oh);
-        painter.paint(dl, ow, oh);
-        std::vector<unsigned char> rgba((size_t)ow * oh * 4);
-        SDL_RenderReadPixels(ren, nullptr, SDL_PIXELFORMAT_RGBA32, rgba.data(), ow * 4);
-        int ok = stbi_write_png(opt.screenshot.c_str(), ow, oh, 4, rgba.data(), ow * 4) ? 0 : 1;
+        painter.paint(dl, scale);
+        int ok = 1, ow = 0, oh = 0;
+        SDL_Surface* shot = SDL_RenderReadPixels(ren, nullptr);
+        SDL_Surface* rgba = shot ? SDL_ConvertSurface(shot, SDL_PIXELFORMAT_RGBA32) : nullptr;
+        if (rgba) {
+          ow = rgba->w;
+          oh = rgba->h;
+          ok = stbi_write_png(opt.screenshot.c_str(), ow, oh, 4, rgba->pixels, rgba->pitch) ? 0 : 1;
+          SDL_DestroySurface(rgba);
+        }
+        if (shot) SDL_DestroySurface(shot);
         std::printf("%s %s (%dx%d) url=%s title=%s\n", ok == 0 ? "wrote" : "FAILED to write", opt.screenshot.c_str(), ow, oh,
                     app->currentUrl().c_str(), app->pageTitle().c_str());
         quit = true;
@@ -1847,11 +1577,10 @@ static int run(int argc, char** argv) {
   }
 
   std::fflush(stdout);
-  for (auto& kv : images) if (kv.second.tex) SDL_DestroyTexture(kv.second.tex);
-  painter.clearTextCache();
-  SDL_FreeCursor(arrow);
-  SDL_FreeCursor(hand);
-  SDL_FreeCursor(ibeam);
+  SDL_DestroyCursor(arrow);
+  SDL_DestroyCursor(hand);
+  SDL_DestroyCursor(ibeam);
+  painter.release();
   SDL_DestroyRenderer(ren);
   SDL_DestroyWindow(win);
   curl_global_cleanup();
