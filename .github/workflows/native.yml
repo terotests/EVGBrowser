@@ -1,12 +1,15 @@
-# Builds the SDL2 desktop browser on Linux and renders two pages headless
+# Builds the SDL3 desktop browser on Linux and renders two pages headless
 # (Xvfb), so a change that breaks the C++ build or the native painter fails
 # here. The screenshots are kept as an artifact.
-name: Native (SDL2)
+name: Native (SDL3)
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+
+env:
+  SDL3_VERSION: 3.2.24
 
 jobs:
   linux:
@@ -21,12 +24,32 @@ jobs:
       - name: Libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libsdl2-dev libcurl4-openssl-dev \
-            fonts-dejavu-core fonts-noto-color-emoji xvfb
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev \
+            fonts-dejavu-core fonts-noto-color-emoji xvfb cmake ninja-build \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols \
+            libegl1-mesa-dev libgl1-mesa-dev libdrm-dev libgbm-dev
+      # ubuntu-latest has no libsdl3-dev: SDL3 from its release, static, cached
+      - name: SDL3 (cache)
+        id: sdl3
+        uses: actions/cache@v4
+        with:
+          path: ~/sdl3
+          key: sdl3-${{ env.SDL3_VERSION }}-${{ runner.os }}-static
+      - name: SDL3 (build)
+        if: steps.sdl3.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL -o sdl.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-${SDL3_VERSION}/SDL3-${SDL3_VERSION}.tar.gz"
+          tar xzf sdl.tar.gz
+          cmake -S "SDL3-${SDL3_VERSION}" -B sdl-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX="$HOME/sdl3"
+          cmake --build sdl-build
+          cmake --install sdl-build
       - name: Headless checks (C++)
         run: node tools/check.mjs --cpp
       - name: Build
-        run: native/sdl/build.sh
+        run: PKG_CONFIG_PATH="$HOME/sdl3/lib/pkgconfig" SDL3_STATIC=1 native/sdl/build.sh
       - name: Render
         run: |
           mkdir -p shots

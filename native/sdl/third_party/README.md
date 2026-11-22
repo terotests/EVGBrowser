@@ -1,6 +1,6 @@
 # Third-party headers
 
-Single-file libraries the SDL2 host compiles in, so it needs nothing but SDL2
+Single-file libraries the SDL3 host compiles in, so it needs nothing but SDL3
 and the system's libcurl. Unmodified copies of upstream.
 
 | File | From | License |
