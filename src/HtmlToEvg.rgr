@@ -848,7 +848,7 @@ class HtmlToEvg {
         if ((this.onlyInlineText(c 0)) == false) {
             return false
         }
-        def t:string (HtmlParser.collapseSpace((c.textContent())))
+        def t:string (HtmlParser.collapseSpace((this.visibleText(c))))
         return (((strlen t) > 0) && ((strlen t) <= 80))
     }
 
@@ -949,7 +949,7 @@ class HtmlToEvg {
         def inner:HNode (this.innermost(c))
         def span (EVGElement.createSpan())
         elementCount = (elementCount + 1)
-        span.textContent = (HtmlToEvg.nbspToSpace((HtmlToEvg.transform((HtmlParser.collapseSpace((c.textContent()))) (HtmlToEvg.prop(inner.style "text-transform" "none"))))))
+        span.textContent = (HtmlToEvg.nbspToSpace((HtmlToEvg.transform((HtmlParser.collapseSpace((this.visibleText(c)))) (HtmlToEvg.prop(inner.style "text-transform" "none"))))))
         this.textStyle(span inner.style)
         ; the boxes on the way down (<div><a class=button><span>) all
         ; show: the button's colour and rounding are often on the middle one

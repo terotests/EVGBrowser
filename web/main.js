@@ -118,10 +118,11 @@ function syncTitle() {
 // both unread. A new page starts a new realm; a request that takes longer
 // than its limit ends the worker, and the page stays as it was. Starting
 // runs all of the page's scripts (a React bundle of 700 KB takes 10-15 s
-// on CEr), so it gets a longer limit than the steps after it.
+// on CEr; yle.fi's front page about 40 s), so it gets a longer limit than
+// the steps after it.
 
 const REALM_LIMIT_MS = 8000;
-const REALM_START_LIMIT_MS = 45000;
+const REALM_START_LIMIT_MS = 120000;
 let realmWorker = null;
 let realmTimer = 0;
 let realmBusy = -1;
