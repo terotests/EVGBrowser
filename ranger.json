@@ -6,12 +6,12 @@
   "dependencies": {
     "evg": {
       "git": "https://github.com/terotests/evg.git",
-      "rev": "7ef738a17c1dac9a2816c9242a649b828e35f984",
+      "rev": "890a877900dfcea1c67f1f15c17599f28398317d",
       "subdir": "storm"
     },
     "image": {
       "git": "https://github.com/terotests/evg.git",
-      "rev": "7ef738a17c1dac9a2816c9242a649b828e35f984",
+      "rev": "890a877900dfcea1c67f1f15c17599f28398317d",
       "subdir": "image"
     },
     "rangerdom": {
