@@ -73,13 +73,17 @@ function loadImage(url) {
     else app.imageFailed(url);
     return;
   }
+  // `…#evg-mask=rrggbbaa`: a CSS mask-image (HtmlToEvg, RangerDOM's view):
+  // the picture at the URL before it, painted as that colour where it is
+  // opaque (evg-html's maskColor)
+  const mask = /#evg-mask=([0-9a-f]{8})$/i.exec(url);
   const img = new Image();
   // no crossOrigin: the SVG painter only shows the picture, it never reads
   // its pixels, so a site that sends no CORS headers still works
   img.decoding = "async";
   img.referrerPolicy = "no-referrer";
   img.onload = () => {
-    images.set(url, img);
+    images.set(url, mask ? { src: img.src, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, maskColor: maskColor(mask[1]) } : img);
     app.imageLoaded(url, img.naturalWidth || 1, img.naturalHeight || 1);
     dirty = true;
   };
@@ -88,7 +92,12 @@ function loadImage(url) {
     app.imageFailed(url);
     dirty = true;
   };
-  img.src = url;
+  img.src = mask ? url.slice(0, mask.index) : url;
+}
+
+function maskColor(hex) {
+  const v = (i) => parseInt(hex.slice(i, i + 2), 16);
+  return `rgba(${v(0)},${v(2)},${v(4)},${(v(6) / 255).toFixed(3)})`;
 }
 
 function syncTitle() {

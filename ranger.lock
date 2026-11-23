@@ -3,24 +3,24 @@
   "packages": {
     "evg": {
       "git": "https://github.com/terotests/evg.git",
-      "rev": "7ef738a17c1dac9a2816c9242a649b828e35f984",
+      "rev": "fa1eb224c1869923d37336ed35316e004c1b84ce",
       "subdir": "storm",
-      "sha256": "feb9efc118be7b234cba5e58de08352f0f37bcd73840132f364068f6d5998e4d"
+      "sha256": "f046829b80057f30e708988383606b0ecf74c694d79ff3b61b965e6b3e5d85ca"
     },
     "image": {
       "git": "https://github.com/terotests/evg.git",
-      "rev": "7ef738a17c1dac9a2816c9242a649b828e35f984",
+      "rev": "fa1eb224c1869923d37336ed35316e004c1b84ce",
       "subdir": "image",
       "sha256": "d1e8f4eb74447acc47f3c675a13e937ce59b3e6bb232096eb9a91cadce6c80f3"
     },
     "rangerdom": {
       "git": "https://github.com/terotests/RangerDOM.git",
-      "rev": "75dda77080689e78d4c03208fab52fdfed7486c0",
-      "sha256": "88d10a860cbd3f418748faec6518818f2ba9c8d8413ff1e3b37b6f75b4725ffc"
+      "rev": "12a8fb262b4020ef5161b6b4bc46f498eb4c7c81",
+      "sha256": "831a6b9500547521fefe8d528e8ced680a1c568e9bfeb5625f161990bd38e854"
     },
     "zip": {
       "git": "https://github.com/terotests/evg.git",
-      "rev": "7ef738a17c1dac9a2816c9242a649b828e35f984",
+      "rev": "fa1eb224c1869923d37336ed35316e004c1b84ce",
       "subdir": "zip",
       "sha256": "c9a617acbc94bddbc56eac40ed9947815f1398eb0890fd2932f5d1b5e810a625"
     },

@@ -1257,6 +1257,9 @@ class HtmlToEvg {
 
     fn isReplaced:boolean (c:HNode) {
         def t:string c.tag
+        if ((strlen (HtmlToEvg.maskUrl(c))) > 0) {
+            return true
+        }
         if ((t == "button") && (this.styledButton(c))) {
             return false
         }
@@ -1265,6 +1268,9 @@ class HtmlToEvg {
 
     fn replaced:EVGElement (c:HNode linkId:string) {
         def t:string c.tag
+        if ((strlen (HtmlToEvg.maskUrl(c))) > 0) {
+            return (this.image(c linkId))
+        }
         if ((t == "img") || (t == "svg")) {
             return (this.image(c linkId))
         }
@@ -1284,7 +1290,59 @@ class HtmlToEvg {
         return (EVGElement.createDiv())
     }
 
+    ; An empty box whose `mask-image` is a picture's url() over a background
+    ; colour (Tailwind's `mask-[url(/logo.svg)] bg-slate-500`: client logos,
+    ; icons in the page's own colour): the URL, else "". Such a box is drawn
+    ; as that picture in the colour (`maskSuffix`), at the box's size.
+    sfn maskUrl:string (c:HNode) {
+        def st:[string:string] c.style
+        def m:string (trim (HtmlToEvg.prop(st "mask-image" (HtmlToEvg.prop(st "-webkit-mask-image" "")))))
+        if ((startsWith m "url(") == false) {
+            return ""
+        }
+        if ((array_length c.children) > 0) {
+            for c.children k:HNode i {
+                if ((k.isText == false) || ((strlen (trim k.text)) > 0)) {
+                    return ""
+                }
+            }
+        }
+        def col:EVGColor (EVGColor.parse((HtmlToEvg.prop(st "background-color" ""))))
+        if ((col.isSet == false) || (col.a <= 0.0)) {
+            return ""
+        }
+        def close:int (lastIndexOf m ")")
+        if (close < 4) {
+            return ""
+        }
+        def u:string (trim (substring m 4 close))
+        if ((startsWith u "\"") || (startsWith u "'")) {
+            u = (substring u 1 ((strlen u) - 1))
+        }
+        return (trim u)
+    }
+
+    ; `#evg-mask=rrggbbaa`: the colour a mask picture is drawn in, after its
+    ; URL; the host fetches the URL before it and paints the picture's
+    ; opaque parts in the colour (web/main.js, native/sdl).
+    sfn maskSuffix:string (c:HNode) {
+        def col:EVGColor (EVGColor.parse((HtmlToEvg.prop(c.style "background-color" ""))))
+        def hex:string (to_lowercase (substring (col.toHexString()) 1 7))
+        def a:int (to_int ((col.a * 255.0) + 0.5))
+        if (a > 255) {
+            a = 255
+        }
+        def digits:string "0123456789abcdef"
+        def a1D:double ((to_double a) / 16.0)
+        def a1:int (to_int a1D)
+        return ("#evg-mask=" + hex + (strfromcode (charAt digits a1)) + (strfromcode (charAt digits (a % 16))))
+    }
+
     fn imageSource:string (c:HNode) {
+        def mu:string (HtmlToEvg.maskUrl(c))
+        if ((strlen mu) > 0) {
+            return mu
+        }
         if (c.tag == "svg") {
             return (HtmlToEvg.svgDataUrl(c))
         }
@@ -1377,9 +1435,17 @@ class HtmlToEvg {
         def w:double (CssCascade.pxOf(cssW em contentWidth))
         def h:double (CssCascade.pxOf((HtmlToEvg.prop(st "height" "")) em 0.0))
         def url:BrUrl (base.resolve(src))
+        def masked:boolean ((strlen (HtmlToEvg.maskUrl(c))) > 0)
         def info@(optional):BrImage
         if (((strlen src) > 0) && (policy.imageAllowed(url))) {
             def key:string (url.toString())
+            if masked {
+                def hashAt:int (indexOf key "#")
+                if (hashAt >= 0) {
+                    key = (substring key 0 hashAt)
+                }
+                key = (key + (HtmlToEvg.maskSuffix(c)))
+            }
             if (has images key) {
                 info = (get images key)
             } {
@@ -1473,6 +1539,15 @@ class HtmlToEvg {
             }
         }
         im.setAttribute("object-fit" "cover")
+        if (masked && ((usable && (natW > 0.0)) && (natH > 0.0))) {
+            def fitted:EVGElement (this.maskFit(im c w h natW natH))
+            if ((strlen linkId) > 0) {
+                fitted.id = linkId
+                HtmlToEvg.pointerFor(fitted linkId)
+            }
+            this.applyMargins(fitted st)
+            return fitted
+        }
         def radius:string (HtmlToEvg.prop(st "border-top-left-radius" (HtmlToEvg.prop(st "border-radius" ""))))
         if ((CssParser.num(radius)) > 0.0) {
             im.setAttribute("border-radius" radius)
@@ -1487,6 +1562,50 @@ class HtmlToEvg {
             push fluidAspect (natW / natH)
         }
         return im
+    }
+
+    ; A mask picture in its box: `mask-size: contain` (Tailwind's
+    ; mask-contain) fits the whole picture in, `cover` fills the box and
+    ; cuts it, anything else stretches it over the box; `mask-position`
+    ; centred or at the start.
+    fn maskFit:EVGElement (im:EVGElement c:HNode w:double h:double natW:double natH:double) {
+        def st:[string:string] c.style
+        def size:string (trim (HtmlToEvg.prop(st "mask-size" (HtmlToEvg.prop(st "-webkit-mask-size" "")))))
+        def pos:string (trim (HtmlToEvg.prop(st "mask-position" (HtmlToEvg.prop(st "-webkit-mask-position" "")))))
+        def box (EVGElement.createDiv())
+        box.setAttribute("width" ((CssParser.fmt(w)) + "px"))
+        box.setAttribute("height" ((CssParser.fmt(h)) + "px"))
+        if (size == "cover") {
+            im.setAttribute("width" "100%")
+            im.setAttribute("height" "100%")
+            box.addChild(im)
+            return box
+        }
+        if (size != "contain") {
+            im.setAttribute("object-fit" "fill")
+            im.setAttribute("width" "100%")
+            im.setAttribute("height" "100%")
+            box.addChild(im)
+            return box
+        }
+        def k:double (w / natW)
+        if ((h / natH) < k) {
+            k = (h / natH)
+        }
+        im.setAttribute("object-fit" "fill")
+        im.setAttribute("width" ((CssParser.fmt((natW * k))) + "px"))
+        im.setAttribute("height" ((CssParser.fmt((natH * k))) + "px"))
+        im.setAttribute("max-width" "100%")
+        box.setAttribute("display" "flex")
+        box.setAttribute("flex-direction" "row")
+        if (((indexOf pos "50%") >= 0) || ((indexOf pos "center") >= 0)) {
+            box.setAttribute("justify-content" "center")
+            box.setAttribute("align-items" "center")
+        } {
+            box.setAttribute("align-items" "flex-start")
+        }
+        box.addChild(im)
+        return box
     }
 
     ; After a layout: each fluid image's width is known, so it is given that

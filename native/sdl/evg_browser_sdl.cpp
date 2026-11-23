@@ -476,6 +476,26 @@ class Fonts {
 // Network: libcurl on worker threads
 // ---------------------------------------------------------------------------
 
+// `…#evg-mask=rrggbbaa` after a picture's URL (a CSS mask-image, from
+// HtmlToEvg or RangerDOM's view): the URL to fetch, and the colour the
+// picture's opaque parts are painted in. False when the URL has none.
+static bool maskOf(const std::string& url, std::string& fetchUrl, uint8_t rgba[4]) {
+  size_t at = url.rfind("#evg-mask=");
+  if (at == std::string::npos || url.size() != at + 18) return false;
+  for (int i = 0; i < 4; i++) {
+    unsigned v = 0;
+    for (int k = 0; k < 2; k++) {
+      char c = url[at + 10 + i * 2 + k];
+      int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (d < 0) return false;
+      v = v * 16 + (unsigned)d;
+    }
+    rgba[i] = (uint8_t)v;
+  }
+  fetchUrl = url.substr(0, at);
+  return true;
+}
+
 struct Job {
   int id = 0;
   std::string kind, url;
@@ -585,7 +605,11 @@ class Net {
     headers = curl_slist_append(headers, "Accept-Language: fi,en;q=0.7");
     headers = curl_slist_append(headers, job.kind == "image" ? "Accept: image/webp,image/png,image/jpeg,image/gif,image/svg+xml"
                                                            : "Accept: text/html,text/css,*/*;q=0.5");
-    curl_easy_setopt(c, CURLOPT_URL, job.url.c_str());
+    // (a mask picture's #evg-mask= is not part of what is fetched)
+    std::string fetchUrl = job.url;
+    uint8_t maskRgba[4];
+    maskOf(job.url, fetchUrl, maskRgba);
+    curl_easy_setopt(c, CURLOPT_URL, fetchUrl.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(c, CURLOPT_USERAGENT, "EVG-Browser/0.1 (SDL3; +https://github.com/terotests/EVGBrowser)");
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -740,6 +764,17 @@ static Image decodeImage(const std::string& bytes) {
   im.h = h;
   im.rgba = std::move(rgba);
   return im;
+}
+
+// a mask picture: the colour wherever the picture is, its alpha times the
+// colour's
+static void tintImage(Image& im, const uint8_t rgba[4]) {
+  for (size_t i = 0; i + 3 < im.rgba.size(); i += 4) {
+    im.rgba[i] = rgba[0];
+    im.rgba[i + 1] = rgba[1];
+    im.rgba[i + 2] = rgba[2];
+    im.rgba[i + 3] = (uint8_t)((im.rgba[i + 3] * rgba[3] + 127) / 255);
+  }
 }
 
 // The bytes of a data: URL (percent-encoded or base64), as inline <svg>
@@ -1332,9 +1367,13 @@ static int run(int argc, char** argv) {
         if (im.ok) app->imageLoaded(j.url, im.w, im.h); else app->imageFailed(j.url);
         continue;
       }
-      std::string inlineBytes;
-      if (j.kind == "image" && decodeDataUrl(j.url, inlineBytes)) {
-        keepImage(j.url, decodeImage(inlineBytes));
+      std::string inlineBytes, maskUrl;
+      uint8_t maskRgba[4];
+      bool masked = j.kind == "image" && maskOf(j.url, maskUrl, maskRgba);
+      if (j.kind == "image" && decodeDataUrl(masked ? maskUrl : j.url, inlineBytes)) {
+        Image im = decodeImage(inlineBytes);
+        if (masked && im.ok) tintImage(im, maskRgba);
+        keepImage(j.url, std::move(im));
         dirty = true;
         continue;
       }
@@ -1350,6 +1389,9 @@ static int run(int argc, char** argv) {
       if (r.kind == "image") {
         Image im;
         if (r.status >= 200 && r.status < 300 && !r.body.empty()) im = decodeImage(r.body);
+        std::string maskUrl;
+        uint8_t maskRgba[4];
+        if (im.ok && maskOf(r.url, maskUrl, maskRgba)) tintImage(im, maskRgba);
         keepImage(r.url, std::move(im));
         continue;
       }
