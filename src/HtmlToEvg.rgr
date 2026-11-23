@@ -1965,6 +1965,7 @@ class HtmlToEvg {
             }
             el.setAttribute("max-height" ((CssParser.fmt((((clamp * lh) * size) + pad) + 1.0)) + "px"))
             el.setAttribute("overflow" "hidden")
+            el.setAttribute("scrollbar-width" "none")
             return
         }
         if ((ov == "hidden") || ((ov == "clip") || ((ov == "auto") || (ov == "scroll")))) {
@@ -1972,8 +1973,25 @@ class HtmlToEvg {
             def hh:double (CssCascade.pxOf((HtmlToEvg.prop(st "height" "")) 16.0 0.0))
             if ((mh > 0.0) || (hh > 0.0)) {
                 el.setAttribute("overflow" "hidden")
+                el.setAttribute("scrollbar-width" (HtmlToEvg.scrollbarOf(st ov)))
             }
         }
+    }
+
+    ; EVG gives every box that clips and overflows a scrollbar. In CSS only
+    ; `overflow: auto` and `scroll` are scrolled by the user and show one;
+    ; `hidden` and `clip` cut the content without a bar (a title clamped to
+    ; two lines got a grey bar beside it), and `scrollbar-width: none` hides
+    ; the bar of a scroller (yle.fi's menu row).
+    sfn scrollbarOf:string (st:[string:string] ov:string) {
+        def sw:string (trim (HtmlToEvg.prop(st "scrollbar-width" "auto")))
+        if ((ov == "auto") || (ov == "scroll")) {
+            if ((sw == "none") || (sw == "thin")) {
+                return sw
+            }
+            return "auto"
+        }
+        return "none"
     }
 
     fn borderWidth:double (st:[string:string] side:string) {
@@ -2079,6 +2097,7 @@ class HtmlToEvg {
                 ; height: 0 hides content that a script would open
                 el.setAttribute(name "0px")
                 el.setAttribute("overflow" "hidden")
+                el.setAttribute("scrollbar-width" "none")
             }
             return
         }
