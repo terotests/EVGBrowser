@@ -871,9 +871,6 @@ class CssParser {
             }
             def comp:CssCompound (CssParser.parseCompound((substring text start i)))
             if ((array_length lefts) > 0) {
-                if ((pendingComb == "+") || (pendingComb == "~")) {
-                    sel.never = true
-                }
                 comp.combinator = pendingComb
             }
             pendingComb = ""
@@ -995,7 +992,7 @@ class CssParser {
                     }
                     continue
                 }
-                if ((pseudo == "link") || ((pseudo == "any-link") || ((pseudo == "first-child") || ((pseudo == "last-child") || ((pseudo == "root") || (pseudo == "only-child")))))) {
+                if ((pseudo == "link") || ((pseudo == "any-link") || ((pseudo == "first-child") || ((pseudo == "last-child") || ((pseudo == "root") || ((pseudo == "only-child") || (pseudo == "checked"))))))) {
                     push cp.pseudos pseudo
                 } {
                     if ((pseudo == "visited") || ((pseudo == "hover") || ((pseudo == "focus") || ((pseudo == "active") || ((pseudo == "focus-visible") || (pseudo == "focus-within")))))) {
