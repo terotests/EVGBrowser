@@ -695,6 +695,9 @@ class HtmlToEvg {
         fb.setAttribute("flex-shrink" "0")
         def cssW:string (trim (HtmlToEvg.prop(c.style "width" "")))
         if (((strlen cssW) == 0) || (cssW == "auto")) {
+            ; (shrink-to-fit, as a float is: a box round a 180px picture is
+            ; 180px wide, not half the row with the picture at its edge)
+            fb.setAttribute("width" "fit-content")
             fb.setAttribute("max-width" "50%")
         }
         def col (EVGElement.createDiv())
