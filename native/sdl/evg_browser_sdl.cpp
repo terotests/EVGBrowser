@@ -1449,8 +1449,10 @@ static int run(int argc, char** argv) {
           break;
         }
         case SDL_EVENT_MOUSE_WHEEL: {
+          // e.wheel.y already follows the OS setting (macOS natural
+          // scrolling included); FLIPPED only reports that the OS inverted
+          // it. Undoing that made trackpad swipes scroll the wrong way.
           double dy = -e.wheel.y * 60.0;
-          if (e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
           if (host->wheel(dy)) dirty = true;
           break;
         }
