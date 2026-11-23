@@ -1028,9 +1028,10 @@ class RealmProcess {
  public:
   std::string exe;
   // a step's limit; starting runs all of the page's scripts (a React
-  // bundle of 700 KB takes 10-15 s on CEr), so it gets a longer one
+  // bundle of 700 KB takes 10-15 s on CEr, yle.fi's front page about
+  // 40 s), so it gets a longer one
   double limitMs = 8000;
-  double startLimitMs = 45000;
+  double startLimitMs = 120000;
 
   bool available() const {
 #ifdef _WIN32
@@ -1587,7 +1588,7 @@ static int run(int argc, char** argv) {
         idleSince = 0;
       }
       bool settled = idleSince != 0 && now - idleSince > (Uint64)std::max(400, opt.settleMs);
-      bool timedOut = now - started > 45000;
+      bool timedOut = now - started > 130000;
       if (settled || timedOut || (opt.frames > 0 && frame >= opt.frames)) {
         std::shared_ptr<EVGDisplayList> dl = app->display();
         painter.paint(dl, scale);
