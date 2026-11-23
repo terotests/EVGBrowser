@@ -15,8 +15,8 @@
     },
     "rangerdom": {
       "git": "https://github.com/terotests/RangerDOM.git",
-      "rev": "12a8fb262b4020ef5161b6b4bc46f498eb4c7c81",
-      "sha256": "831a6b9500547521fefe8d528e8ced680a1c568e9bfeb5625f161990bd38e854"
+      "rev": "fc9d68d166a0a473820e558286967e9e27d3c031",
+      "sha256": "8198cea7a17d3bc2a0254b9c1457e7fa8178facb6731d6286207685b2f350d60"
     },
     "zip": {
       "git": "https://github.com/terotests/evg.git",

@@ -314,31 +314,58 @@ class CssCascade {
             return true
         }
         def subj:CssCompound (itemAt parts 0)
-        return (this.matchFrom(sel 1 ((array_length chain) - 1) subj.combinator))
+        return (this.matchFrom(sel 1 (array_length chain) index subj.combinator))
     }
 
-    ; Does parts[pi..] match somewhere at or above chain[ci], given how
-    ; parts[pi-1] relates to its left (`comb`)?
-    fn matchFrom:boolean (sel:CssSelector pi:int ci:int comb:string) {
+    ; Does parts[pi..] match, given how parts[pi-1] relates to its left
+    ; (`comb`)? parts[pi-1] matched an element whose parent is chain[d-1]
+    ; and which is element child number `idx` of that parent.
+    fn matchFrom:boolean (sel:CssSelector pi:int d:int idx:int comb:string) {
         if (pi >= (array_length sel.parts)) {
             return true
         }
-        if (ci < 0) {
+        if (d < 1) {
             return false
         }
         def cp:CssCompound (itemAt sel.parts pi)
-        if (comb == ">") {
-            def anc:HNode (itemAt chain ci)
-            if (this.compoundMatches(cp anc (itemAt chainIndex ci) (itemAt chainCount ci))) {
-                return (this.matchFrom(sel (pi + 1) (ci - 1) cp.combinator))
+        if ((comb == "+") || (comb == "~")) {
+            ; the element siblings before it, nearest first
+            def par:HNode (itemAt chain (d - 1))
+            def sibs:[HNode]
+            for par.children c:HNode i {
+                if (c.isText == false) {
+                    push sibs c
+                }
+            }
+            def n:int (array_length sibs)
+            def j:int (idx - 1)
+            while (j >= 0) {
+                if (j < n) {
+                    if (this.compoundMatches(cp (itemAt sibs j) j n)) {
+                        if (this.matchFrom(sel (pi + 1) d j cp.combinator)) {
+                            return true
+                        }
+                    }
+                }
+                if (comb == "+") {
+                    return false
+                }
+                j = (j - 1)
             }
             return false
         }
-        def k:int ci
+        if (comb == ">") {
+            def anc:HNode (itemAt chain (d - 1))
+            if (this.compoundMatches(cp anc (itemAt chainIndex (d - 1)) (itemAt chainCount (d - 1)))) {
+                return (this.matchFrom(sel (pi + 1) (d - 1) (itemAt chainIndex (d - 1)) cp.combinator))
+            }
+            return false
+        }
+        def k:int (d - 1)
         while (k >= 0) {
             def anc2:HNode (itemAt chain k)
             if (this.compoundMatches(cp anc2 (itemAt chainIndex k) (itemAt chainCount k))) {
-                if (this.matchFrom(sel (pi + 1) (k - 1) cp.combinator)) {
+                if (this.matchFrom(sel (pi + 1) k (itemAt chainIndex k) cp.combinator)) {
                     return true
                 }
             }
@@ -442,6 +469,11 @@ class CssCascade {
             }
             if (ps == "only-child") {
                 if (count != 1) {
+                    return false
+                }
+            }
+            if (ps == "checked") {
+                if ((node.hasAttr("checked")) == false) {
                     return false
                 }
             }

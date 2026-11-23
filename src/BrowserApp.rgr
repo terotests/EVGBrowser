@@ -1623,6 +1623,10 @@ class BrowserApp extends EvgApp {
             viewport.scrollTop = keep
             pageLayout.layout(viewport)
         }
+        if (page.converter.settleClamps()) {
+            viewport.scrollTop = keep
+            pageLayout.layout(viewport)
+        }
     }
 
     fn newPageLayout:EVGLayout () {

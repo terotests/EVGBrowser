@@ -128,6 +128,10 @@ class HtmlToEvg {
     ; settled after a first layout has said how wide the box is
     def fluidImages:[EVGElement]
     def fluidAspect:[double]
+    ; boxes cut to N lines (`line-clamp`), and their N: after a layout the
+    ; last line they show gets "…" if the text goes on (settleClamps)
+    def clampBoxes:[EVGElement]
+    def clampLines:[int]
 
     Constructor () {
         def l:[BrLink]
@@ -154,6 +158,10 @@ class HtmlToEvg {
         fluidImages = fi
         def fa:[double]
         fluidAspect = fa
+        def cb:[EVGElement]
+        clampBoxes = cb
+        def cl:[int]
+        clampLines = cl
     }
 
     ; The page, from the body down, as one EVG block.
@@ -1630,6 +1638,81 @@ class HtmlToEvg {
         return changed
     }
 
+    ; A box cut to N lines shows "…" at the end of its last line when the
+    ; text goes on, as `-webkit-line-clamp` does. The words are spans in rows,
+    ; so the lines are known only after a layout: the words below line N are
+    ; hidden and the last word shown gets the "…", the word before it too if
+    ; it would not fit. Returns whether anything changed (the caller lays
+    ; out again, so a word that grew is measured).
+    fn settleClamps:boolean () {
+        def changed:boolean false
+        for clampBoxes box:EVGElement i {
+            def n:int (itemAt clampLines i)
+            def words:[EVGElement]
+            HtmlToEvg.textLeaves(box words)
+            def line:int 0
+            def lastY:double -1000000.0
+            def cut:int -1
+            for words w:EVGElement k {
+                if (k > 0) {
+                    if (w.calculatedY > (lastY + 1.0)) {
+                        line = (line + 1)
+                    }
+                }
+                lastY = w.calculatedY
+                if ((line >= n) && (cut < 0)) {
+                    cut = k
+                }
+            }
+            if (cut > 0) {
+                def k2:int cut
+                while (k2 < (array_length words)) {
+                    def hw:EVGElement (itemAt words k2)
+                    hw.setAttribute("display" "none")
+                    k2 = (k2 + 1)
+                }
+                def right:double ((box.calculatedX + box.calculatedWidth) - box.box.paddingRightPx)
+                def li:int (cut - 1)
+                def done:boolean false
+                while ((li >= 0) && (done == false)) {
+                    def lw:EVGElement (itemAt words li)
+                    def fs:double lw.inheritedFontSize
+                    if lw.fontSize.isSet {
+                        fs = lw.fontSize.pixels
+                    }
+                    if (fs <= 0.0) {
+                        fs = 14.0
+                    }
+                    ; (the "…" is about an em wide, the trailing space a third)
+                    def room:double ((right - (lw.calculatedX + lw.calculatedWidth)) + (fs * 0.3))
+                    if ((room >= fs) || ((li == 0) || ((itemAt words (li - 1)).calculatedY < (lw.calculatedY - 1.0)))) {
+                        lw.textContent = ((trim lw.textContent) + "…")
+                        done = true
+                    } {
+                        lw.setAttribute("display" "none")
+                        li = (li - 1)
+                    }
+                }
+                changed = true
+            }
+        }
+        clear clampBoxes
+        clear clampLines
+        return changed
+    }
+
+    sfn textLeaves:void (el:EVGElement out:[EVGElement]) {
+        if ((array_length el.children) == 0) {
+            if ((strlen (trim el.textContent)) > 0) {
+                push out el
+            }
+            return
+        }
+        for el.children c:EVGElement i {
+            HtmlToEvg.textLeaves(c out)
+        }
+    }
+
     ; --- form controls --------------------------------------------------------
 
     ; A <button> the page styles itself (a background, padding or border from
@@ -2088,6 +2171,8 @@ class HtmlToEvg {
             el.setAttribute("max-height" ((CssParser.fmt((((clamp * lh) * size) + pad) + 1.0)) + "px"))
             el.setAttribute("overflow" "hidden")
             el.setAttribute("scrollbar-width" "none")
+            push clampBoxes el
+            push clampLines (to_int clamp)
             return
         }
         if ((ov == "hidden") || ((ov == "clip") || ((ov == "auto") || (ov == "scroll")))) {
@@ -2681,8 +2766,8 @@ class HtmlToEvg {
         if ((mult < 1.0) && (mult > 0.0)) {
             mult = 1.0
         }
-        if (mult > 3.0) {
-            mult = 3.0
+        if (mult > 8.0) {
+            mult = 8.0
         }
         return mult
     }
