@@ -219,12 +219,38 @@ function local(e) {
   return [e.clientX - r.left, e.clientY - r.top];
 }
 
+// A click in the field being edited keeps the focus in the <input>: the
+// click only moves the caret (the app places it where the click landed).
+stage.addEventListener("mousedown", (e) => {
+  const f = host.focusedField();
+  if (f && document.activeElement === ime) {
+    const [x, y] = local(e);
+    if (host.hitAt(x, y) === f) e.preventDefault();
+  }
+});
+
+// The drawn selection and the <input>'s one agree.
+function selToApp() {
+  const f = host.focusedField();
+  if (f !== "addr" || document.activeElement !== ime) return;
+  let a = ime.selectionStart ?? ime.value.length, b = ime.selectionEnd ?? a;
+  if (ime.selectionDirection === "backward") [a, b] = [b, a];
+  app.setFieldSelection(f, a, b);
+  dirty = true;
+}
+function selToIme() {
+  const f = host.focusedField();
+  if (f !== "addr" || document.activeElement !== ime) return;
+  ime.setSelectionRange(app.fieldSelectionStart(f), app.fieldSelectionEnd(f));
+}
+
 stage.addEventListener("pointerdown", (e) => {
   const [x, y] = local(e);
   pointers.set(e.pointerId, { x, y, type: e.pointerType });
   lastMoveT = e.timeStamp;
   stage.setPointerCapture(e.pointerId);
   host.pressAt(x, y);
+  selToIme();
   dirty = true;
 });
 
@@ -303,8 +329,12 @@ ime.addEventListener("input", () => {
   const f = host.focusedField();
   if (!f) return;
   app.setFieldValue(f, ime.value);
+  selToApp();
   dirty = true;
 });
+ime.addEventListener("keyup", selToApp);
+ime.addEventListener("select", selToApp);
+document.addEventListener("selectionchange", selToApp);
 ime.addEventListener("blur", () => {
   // a tap elsewhere on the page ends the edit; the next paint agrees
   setTimeout(() => {

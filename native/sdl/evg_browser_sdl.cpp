@@ -1155,6 +1155,7 @@ static std::string keyName(SDL_Keycode k) {
     case SDLK_RETURN: case SDLK_KP_ENTER: return "Enter";
     case SDLK_ESCAPE: return "Escape";
     case SDLK_BACKSPACE: return "Backspace";
+    case SDLK_DELETE: return "Delete";
     case SDLK_UP: return "ArrowUp";
     case SDLK_DOWN: return "ArrowDown";
     case SDLK_LEFT: return "ArrowLeft";
@@ -1166,6 +1167,7 @@ static std::string keyName(SDL_Keycode k) {
     case SDLK_SPACE: return " ";
     case SDLK_L: return "l";
     case SDLK_R: return "r";
+    case SDLK_A: return "a";
     default: return "";
   }
 }
@@ -1483,6 +1485,8 @@ static int run(int argc, char** argv) {
             if (name == "l" || name == "r") {
               if (!ctrl) name = "";
             }
+            // select all in a field; the page keeps its own ctrl+A
+            if (name == "a" && !(ctrl && inField)) name = "";
             // a space is text in a field, and scrolls the page outside one
             if (name == " " && inField) name = "";
             if (!name.empty()) host->key(name, shift, ctrl);

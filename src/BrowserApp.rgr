@@ -73,7 +73,9 @@ class BrHistoryEntry {
 class BrTab {
     def addrText:string ""
     def addrFocused:boolean false
-    def addrFresh:boolean false
+    ; the selection in the address: anchor and caret, in characters
+    def addrSelA:int 0
+    def addrCaret:int 0
     def statusText:string ""
     def page:BrPage (new BrPage())
     def hasPage:boolean false
@@ -158,10 +160,21 @@ class BrowserApp extends EvgApp {
     def frameRoot:EVGElement (EVGElement.createDiv())
     def frameSheet:EVGStyleSheet (new EVGStyleSheet())
     def frameList:EVGDisplayList (new EVGDisplayList())
+    def frameLay:EVGLayout (new EVGLayout())
+    ; the drawn address while it is edited: its line, a text span, and the
+    ; characters shown, so a click can be turned into a caret position
+    def addrLineEl:EVGElement (EVGElement.createDiv())
+    def addrSpanEl:EVGElement (EVGElement.createSpan())
+    def addrLineOn:boolean false
+    def addrShownFrom:int 0
+    def addrShownTo:int 0
+    def lastHitX:double 0.0
     def frameDirty:boolean true
     def addrText:string ""
     def addrFocused:boolean false
-    def addrFresh:boolean false
+    ; the selection in the address: anchor and caret, in characters
+    def addrSelA:int 0
+    def addrCaret:int 0
     def statusText:string ""
     def hovered:string ""
     def pressedId:string ""
@@ -275,7 +288,8 @@ class BrowserApp extends EvgApp {
     fn saveTab:void (t:BrTab) {
         t.addrText = addrText
         t.addrFocused = addrFocused
-        t.addrFresh = addrFresh
+        t.addrSelA = addrSelA
+        t.addrCaret = addrCaret
         t.statusText = statusText
         t.page = page
         t.hasPage = hasPage
@@ -331,7 +345,8 @@ class BrowserApp extends EvgApp {
     fn loadTab:void (t:BrTab) {
         addrText = t.addrText
         addrFocused = t.addrFocused
-        addrFresh = t.addrFresh
+        addrSelA = t.addrSelA
+        addrCaret = t.addrCaret
         statusText = t.statusText
         page = t.page
         hasPage = t.hasPage
@@ -1752,6 +1767,7 @@ class BrowserApp extends EvgApp {
 
     fn hitId:string (px:double py:double) {
         if ((py < barH) || (py >= (pageH - statusH))) {
+            lastHitX = px
             this.ensureFrame()
             def ht (new EVGHitTest())
             return (ht.idAt(frameRoot px py))
@@ -1796,6 +1812,10 @@ class BrowserApp extends EvgApp {
     fn setPressed:void (id:string) {
         pressedId = id
         frameDirty = true
+        ; a click in the address being edited puts the caret there
+        if ((id == "addr") && addrFocused) {
+            this.addrCaretAt(lastHitX)
+        }
     }
 
     ; The link a pointer is over, for the status line.
@@ -1917,7 +1937,8 @@ class BrowserApp extends EvgApp {
     fn setFocus:void (id:string) {
         if (id == "addr") {
             addrFocused = true
-            addrFresh = true
+            ; like other browsers: the first click selects the whole address
+            this.addrSelectAll()
             focusedFieldId = ""
             frameDirty = true
             return
@@ -2006,7 +2027,8 @@ class BrowserApp extends EvgApp {
     fn setFieldValue:void (tid:string text:string) {
         if (tid == "addr") {
             addrText = text
-            addrFresh = false
+            addrCaret = (this.addrLen())
+            addrSelA = addrCaret
             frameDirty = true
             return
         }
@@ -2030,12 +2052,7 @@ class BrowserApp extends EvgApp {
 
     fn typeText:boolean (text:string) {
         if addrFocused {
-            if addrFresh {
-                addrText = ""
-                addrFresh = false
-            }
-            addrText = (addrText + text)
-            frameDirty = true
+            this.addrReplaceSel(text)
             return true
         }
         if domMode {
@@ -2095,18 +2112,45 @@ class BrowserApp extends EvgApp {
                 this.setFocus("")
                 return true
             }
-            if (k == "Backspace") {
-                if addrFresh {
-                    addrText = ""
-                    addrFresh = false
-                } {
-                    addrText = (BrowserApp.dropLast(addrText))
+            def lo:int (this.addrSelLo())
+            def hi:int (this.addrSelHi())
+            if ((k == "Backspace") || (k == "Delete")) {
+                if (lo == hi) {
+                    if (k == "Backspace") {
+                        addrSelA = (lo - 1)
+                    } {
+                        addrSelA = (lo + 1)
+                    }
                 }
-                frameDirty = true
+                this.addrReplaceSel("")
                 return true
             }
-            if ((k == "ArrowLeft") || ((k == "ArrowRight") || ((k == "End") || (k == "Home")))) {
-                addrFresh = false
+            if (k == "ArrowLeft") {
+                if ((lo < hi) && (shift == false)) {
+                    this.addrMove(lo false)
+                } {
+                    this.addrMove((addrCaret - 1) shift)
+                }
+                return true
+            }
+            if (k == "ArrowRight") {
+                if ((lo < hi) && (shift == false)) {
+                    this.addrMove(hi false)
+                } {
+                    this.addrMove((addrCaret + 1) shift)
+                }
+                return true
+            }
+            if (k == "Home") {
+                this.addrMove(0 shift)
+                return true
+            }
+            if (k == "End") {
+                this.addrMove((this.addrLen()) shift)
+                return true
+            }
+            if (((k == "a") || (k == "A")) && ctrl) {
+                this.addrSelectAll()
                 frameDirty = true
                 return true
             }
@@ -2204,6 +2248,128 @@ class BrowserApp extends EvgApp {
             return true
         }
         return false
+    }
+
+    ; --- the address being edited -------------------------------------------
+
+    fn addrLen:int () {
+        return (array_length (to_chars addrText))
+    }
+
+    fn addrSelLo:int () {
+        if (addrSelA < addrCaret) {
+            return addrSelA
+        }
+        return addrCaret
+    }
+
+    fn addrSelHi:int () {
+        if (addrSelA > addrCaret) {
+            return addrSelA
+        }
+        return addrCaret
+    }
+
+    fn addrSelectAll:void () {
+        addrSelA = 0
+        addrCaret = (this.addrLen())
+    }
+
+    sfn clampInt:int (v:int lo:int hi:int) {
+        if (v < lo) {
+            return lo
+        }
+        if (v > hi) {
+            return hi
+        }
+        return v
+    }
+
+    sfn charsSlice:string (cs:[int] from:int to:int) {
+        def out:string ""
+        def i:int from
+        while (i < to) {
+            out = (out + (strfromcode (itemAt cs i)))
+            i = (i + 1)
+        }
+        return out
+    }
+
+    fn addrMove:void (to:int extend:boolean) {
+        addrCaret = (BrowserApp.clampInt(to 0 (this.addrLen())))
+        if (extend == false) {
+            addrSelA = addrCaret
+        }
+        frameDirty = true
+    }
+
+    ; The selection (or the caret) gives way to `text`.
+    fn addrReplaceSel:void (text:string) {
+        def cs:[int] (to_chars addrText)
+        def n:int (array_length cs)
+        def lo:int (BrowserApp.clampInt((this.addrSelLo()) 0 n))
+        def hi:int (BrowserApp.clampInt((this.addrSelHi()) 0 n))
+        addrText = ((BrowserApp.charsSlice(cs 0 lo)) + text + (BrowserApp.charsSlice(cs hi n)))
+        addrCaret = (lo + (array_length (to_chars text)))
+        addrSelA = addrCaret
+        frameDirty = true
+    }
+
+    ; The character boundary nearest to `px` in the drawn address.
+    fn addrCaretAt:void (px:double) {
+        if (addrLineOn == false) {
+            this.addrMove((this.addrLen()) false)
+            return
+        }
+        def cs:[int] (to_chars addrText)
+        def x:double (px - addrLineEl.calculatedX)
+        def fam:string (addrSpanEl.effectiveFontFamily())
+        def size:double 15.0
+        if coarse {
+            size = 16.0
+        }
+        def eng:EVGTextEngine (frameLay.getTextEngine())
+        def best:int addrShownFrom
+        def bestD:double 1000000.0
+        def i:int addrShownFrom
+        while (i <= addrShownTo) {
+            def m:EVGTextMetrics (eng.measureRun((BrowserApp.charsSlice(cs addrShownFrom i)) fam size))
+            def d:double (m.width - x)
+            if (d < 0.0) {
+                d = (0.0 - d)
+            }
+            if (d < bestD) {
+                best = i
+                bestD = d
+            }
+            i = (i + 1)
+        }
+        this.addrMove(best false)
+    }
+
+    ; A host whose platform edits the text (the web's <input>) tells where
+    ; its selection is, so the drawn one agrees.
+    fn setFieldSelection:void (tid:string anchor:int caret:int) {
+        if (tid == "addr") {
+            def n:int (this.addrLen())
+            addrSelA = (BrowserApp.clampInt(anchor 0 n))
+            addrCaret = (BrowserApp.clampInt(caret 0 n))
+            frameDirty = true
+        }
+    }
+
+    fn fieldSelectionStart:int (tid:string) {
+        if (tid == "addr") {
+            return (this.addrSelLo())
+        }
+        return -1
+    }
+
+    fn fieldSelectionEnd:int (tid:string) {
+        if (tid == "addr") {
+            return (this.addrSelHi())
+        }
+        return -1
     }
 
     sfn dropLast:string (s:string) {
@@ -2340,6 +2506,7 @@ class BrowserApp extends EvgApp {
         s = (s + ".addr-t { font-size: 15px; color: #1f1f1f; white-space: pre; }")
         s = (s + ".addr-rest { font-size: 15px; color: #5f6368; white-space: pre; }")
         s = (s + ".addr-hint { font-size: 15px; color: #6b7280; white-space: pre; }")
+        s = (s + ".addr-sel { background-color: #c2dbff; }")
         s = (s + ".caret { width: 2px; height: 20px; background-color: #0b57d0; }")
         s = (s + ".gap { flex-grow: 1; }")
         s = (s + ".status { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 0px 12px; background-color: #f6f7f9; width: 100%; border-top: 1px solid #e1e4e8; }")
@@ -2532,6 +2699,10 @@ class BrowserApp extends EvgApp {
         }
         chip.addChild((BrowserApp.iconEl(chipIcon "chip-ico" "#474747")))
         addr.addChild(chip)
+        addrLineOn = false
+        if (addrFocused && ((strlen addrText) > 0)) {
+            addr.addChild((this.addrEditLine()))
+        } {
         if ((strlen shown) == 0) {
             def hint (EVGElement.createSpan())
             hint.className = "addr-hint"
@@ -2568,6 +2739,7 @@ class BrowserApp extends EvgApp {
             caret.className = "caret"
             addr.addChild(caret)
         }
+        }
         bar.addChild(addr)
         root.addChild(bar)
         def gap (EVGElement.createDiv())
@@ -2588,12 +2760,92 @@ class BrowserApp extends EvgApp {
         def lay (new EVGLayout())
         lay.setPageSize(pageW pageH)
         lay.layout(root)
+        frameLay = lay
         def dl (new EVGDisplayList())
         dl.setTextEngine((lay.getTextEngine()))
         dl.build(root)
         frameRoot = root
         frameList = dl
         frameDirty = false
+    }
+
+    ; The address being edited: the characters that fit around the caret,
+    ; the selection on a light blue, and the caret where it is.
+    fn addrEditLine:EVGElement () {
+        def cs:[int] (to_chars addrText)
+        def n:int (array_length cs)
+        def maxChars:int (this.addrMaxChars())
+        def from:int addrShownFrom
+        if (addrCaret < from) {
+            from = addrCaret
+        }
+        if (addrCaret > (from + maxChars)) {
+            from = (addrCaret - maxChars)
+        }
+        if ((from + maxChars) > n) {
+            from = (n - maxChars)
+        }
+        if (from < 0) {
+            from = 0
+        }
+        def to:int (from + maxChars)
+        if (to > n) {
+            to = n
+        }
+        addrShownFrom = from
+        addrShownTo = to
+        def lo:int (BrowserApp.clampInt((this.addrSelLo()) from to))
+        def hi:int (BrowserApp.clampInt((this.addrSelHi()) from to))
+        def line (EVGElement.createDiv())
+        line.className = "addr-line"
+        addrLineEl = line
+        addrLineOn = true
+        def first:boolean true
+        if (lo > from) {
+            def pre (EVGElement.createSpan())
+            pre.className = "addr-t"
+            pre.textContent = (BrowserApp.charsSlice(cs from lo))
+            line.addChild(pre)
+            addrSpanEl = pre
+            first = false
+        }
+        if (lo == hi) {
+            def caret (EVGElement.createDiv())
+            caret.className = "caret"
+            line.addChild(caret)
+        } {
+            def sel (EVGElement.createSpan())
+            sel.className = "addr-t addr-sel"
+            sel.textContent = (BrowserApp.charsSlice(cs lo hi))
+            line.addChild(sel)
+            if first {
+                addrSpanEl = sel
+                first = false
+            }
+        }
+        if (hi < to) {
+            def post (EVGElement.createSpan())
+            post.className = "addr-t"
+            post.textContent = (BrowserApp.charsSlice(cs hi to))
+            line.addChild(post)
+            if first {
+                addrSpanEl = post
+            }
+        }
+        return line
+    }
+
+    fn addrMaxChars:int () {
+        ; what the buttons and the site chip leave, at ~7.8 px a character
+        def reserved:double 240.0
+        if (pageW < 520.0) {
+            reserved = 130.0
+        }
+        def maxChars:int (to_int ((pageW - reserved) / 7.8))
+        if (maxChars < 12) {
+            maxChars = 12
+        }
+        return maxChars
     }
 
     ; The address as shown: without `https://` when it is not being edited,
