@@ -1482,6 +1482,27 @@ class HtmlToEvg {
                 noPicture = true
             }
         }
+        if ((usable == false) && (c.tag == "svg")) {
+            ; an inline <svg> knows its own shape (width/height or viewBox)
+            ; before its picture is decoded: the line it sits on is measured
+            ; with it, not with an empty box that grows later
+            natW = (CssParser.num((c.attr("width"))))
+            natH = (CssParser.num((c.attr("height"))))
+            if ((natW <= 0.0) || (natH <= 0.0)) {
+                def vb:[string] (strsplit (trim (replace (c.attr("viewBox")) "," " ")) " ")
+                def nums:[double]
+                for vb part:string vi {
+                    if ((strlen part) > 0) {
+                        push nums (CssParser.num(part))
+                    }
+                }
+                if ((array_length nums) == 4) {
+                    natW = (itemAt nums 2)
+                    natH = (itemAt nums 3)
+                }
+            }
+            usable = ((natW > 0.0) && (natH > 0.0))
+        }
         if ((w <= 0.0) && (h <= 0.0)) {
             if usable {
                 w = natW
