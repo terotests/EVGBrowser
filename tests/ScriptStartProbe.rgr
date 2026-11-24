@@ -1,0 +1,98 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; A saved page's scripts started as the browser starts them, every request
+; answered from disk: the probe for timing script start-up.
+;   npx rgrc -es6 tests/ScriptStartProbe.rgr -d=build -o=start_probe.cjs -nodecli
+;   node build/start_probe.cjs <dir with index.html, urls.tsv, res/> <url>
+; urls.tsv: url, local path, status, content type (tab separated).
+Import "../src/js/PageRealm.rgr"
+Import "../src/BrowserApp.rgr"
+
+class ScriptStartProbe {
+    def realm:PageRealm (new PageRealm())
+    def urls:[string]
+    def paths:[string]
+    def types:[string]
+    def dir:string ""
+
+    fn drive:void (app:BrowserApp) {
+        def guard:int 0
+        while ((app.realmJobPending()) && (guard < 50)) {
+            def job:int (app.takeRealmJob())
+            if (app.realmRequestIsStart()) {
+                realm = (new PageRealm())
+            }
+            app.realmResult(job (realm.handle((app.realmRequest()))))
+            guard = (guard + 1)
+        }
+    }
+
+    fn answer:boolean (app:BrowserApp) {
+        def r:string (app.nextRequest())
+        if ((strlen r) == 0) {
+            return false
+        }
+        def p:[string] (strsplit r "\t")
+        def id:int (unwrap (str2int (itemAt p 0)))
+        def kind:string (itemAt p 1)
+        def u:string (itemAt p 2)
+        if (kind == "image") {
+            app.deliver(id 404 u "text/plain" "")
+            return true
+        }
+        def i:int 0
+        while (i < (array_length urls)) {
+            if ((itemAt urls i) == u) {
+                def body@(optional):string (read_file dir (itemAt paths i))
+                if (!null? body) {
+                    print ("  " + kind + " " + u)
+                    app.deliver(id 200 u (itemAt types i) (unwrap body))
+                    return true
+                }
+            }
+            i = (i + 1)
+        }
+        print ("  missing " + kind + " " + u)
+        app.deliver(id 404 u "text/plain" "")
+        return true
+    }
+
+    sfn main:void () {
+        def p (new ScriptStartProbe())
+        p.run((shell_arg 0) (shell_arg 1))
+    }
+
+    fn run:void (d:string url:string) {
+        dir = d
+        def tsv@(optional):string (read_file dir "urls.tsv")
+        if (!null? tsv) {
+            def lines:[string] (strsplit (unwrap tsv) "\n")
+            for lines line:string k {
+                def f:[string] (strsplit line "\t")
+                if ((array_length f) >= 4) {
+                    push urls (itemAt f 0)
+                    push paths (itemAt f 1)
+                    push types (itemAt f 3)
+                }
+            }
+        }
+        def html@(optional):string (read_file dir "index.html")
+        def app (new BrowserApp())
+        app.setPageSize(1100.0 800.0)
+        app.navigate(url)
+        def r:[string] (strsplit (app.nextRequest()) "\t")
+        print "page"
+        app.deliver((unwrap (str2int (itemAt r 0))) 200 url "text/html" (unwrap html))
+        this.drive(app)
+        def rounds:int 0
+        while (rounds < 2) {
+            while (this.answer(app)) {
+            }
+            this.drive(app)
+            print ("round " + (to_string rounds) + ": " + (app.realmStatus()))
+            app.tick(16.0)
+            this.drive(app)
+            rounds = (rounds + 1)
+        }
+        print ("status: " + (app.realmStatus()))
+    }
+}

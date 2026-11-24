@@ -15,8 +15,8 @@
     },
     "rangerdom": {
       "git": "https://github.com/terotests/RangerDOM.git",
-      "rev": "c9f6ca1e6db7745ac9c256d706ed19c335e10522",
-      "sha256": "e7c9181164bdca064201efde45e1f26f35f2f59fb9624ddb6c33a59f21d8eb72"
+      "rev": "c10290416270700eec0df11ea39a61b2f7a3465c",
+      "sha256": "cf08ce63cf4e9743afb6bc33e58a6ee5edf7da6b525a71bbf37508f845365de8"
     },
     "zip": {
       "git": "https://github.com/terotests/evg.git",
@@ -26,9 +26,9 @@
     },
     "cer": {
       "git": "https://github.com/terotests/componentengine.git",
-      "rev": "9bb2f0061b4d9bc51d136c1f1aec9ffb4bd06d82",
+      "rev": "aab0c76a8e8e2b55ce1bfb374d85757d9ce567af",
       "subdir": "cer",
-      "sha256": "ed85db33dc655da8a6848938b6e4634eb6176c82272c436454f0ba01092d7e7b"
+      "sha256": "50587b2fe28b4cbccc3d37d20bc7f66d4b270f3091c627f9c9009a991dea9a13"
     }
   }
 }
