@@ -1,0 +1,141 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; How long the realm takes on CEr's three machines (PageRealm.jit: 0 the
+; stack machine, 1 the register machine, 2 the register machine with the
+; native JIT): a React page that renders a list and updates it, and a page
+; whose script only computes. C++ only (the JIT is in CEr's C++ build):
+;   npx rgrc -l=cpp tests/JitProbe.rgr -d=build/cpp -o=jit_probe.cpp
+;   g++ -std=c++17 -O2 -w build/cpp/jit_probe.cpp -o build/cpp/jit_probe
+;   build/cpp/jit_probe [runs]
+Import "../src/js/PageRealm.rgr"
+Import "../src/BrowserApp.rgr"
+
+class JitProbe {
+    def realm:PageRealm (new PageRealm())
+    def jit:int 0
+
+    fn drive:void (app:BrowserApp) {
+        def guard:int 0
+        while ((app.realmJobPending()) && (guard < 50)) {
+            def job:int (app.takeRealmJob())
+            if (app.realmRequestIsStart()) {
+                realm = (new PageRealm())
+                realm.jit = jit
+            }
+            app.realmResult(job (realm.handle((app.realmRequest()))))
+            guard = (guard + 1)
+        }
+    }
+
+    fn file:string (name:string) {
+        def c@(optional):string (read_file "vendor/ranger/rangerdom/tests/react" name)
+        if (null? c) {
+            print ("cannot read " + name)
+            return ""
+        }
+        return (unwrap c)
+    }
+
+    ; a page with the given scripts (src = its name), answered in order
+    fn open:BrowserApp (names:[string] texts:[string]) {
+        def html:string "<html><head><title>probe</title>"
+        for names n:string i {
+            html = (html + "<script src=\"" + n + "\"></script>")
+        }
+        html = (html + "</head><body><div id=\"root\"></div></body></html>")
+        def app (new BrowserApp())
+        app.setPageSize(900.0 700.0)
+        app.navigate("https://example.com/a/")
+        def r:[string] (strsplit (app.nextRequest()) "\t")
+        app.deliver((unwrap (str2int (itemAt r 0))) 200 "https://example.com/a/" "text/html" html)
+        def k:int 0
+        while (k < (array_length names)) {
+            def sr:[string] (strsplit (app.nextRequest()) "\t")
+            def u:string (itemAt sr 2)
+            def text:string ""
+            for names n2:string j {
+                if (endsWith u ("/" + n2)) {
+                    text = (itemAt texts j)
+                }
+            }
+            app.deliver((unwrap (str2int (itemAt sr 0))) 200 u "text/javascript" text)
+            k = (k + 1)
+        }
+        this.drive(app)
+        return app
+    }
+
+    sfn reactApp:string () {
+        def c:string ""
+        c = (c + "var h = React.createElement, t0 = performance.now();\n")
+        c = (c + "function Row(p) { return h('li', { className: p.i % 2 ? 'odd' : 'even' }, h('b', null, 'Rivi ' + p.i), ' ', h('span', null, String(p.v))); }\n")
+        c = (c + "function List(p) { var rows = []; for (var i = 0; i < p.n; i++) rows.push(h(Row, { key: i, i: i, v: (i * p.k) % 97 })); return h('ul', null, rows); }\n")
+        c = (c + "var root = document.getElementById('root');\n")
+        c = (c + "for (var k = 1; k <= 20; k++) ReactDOM.flushSync(function () { ReactDOM.render(h(List, { n: 1000, k: k }), root); });\n")
+        c = (c + "window.__ms = performance.now() - t0;\n")
+        return c
+    }
+
+    sfn computeApp:string () {
+        def c:string ""
+        c = (c + "var t0 = performance.now();\n")
+        c = (c + "var n = 0; for (var i = 0; i < 3000000; i++) { n = (n + i * 3) % 1000003; }\n")
+        c = (c + "var s = 0.0; for (var j = 1; j < 2000000; j++) { s += 1 / (j * j); }\n")
+        c = (c + "var a = []; for (var q = 0; q < 20000; q++) a.push((q * 7919) % 10007); a.sort(function (x, y) { return x - y; });\n")
+        c = (c + "var o = {}; for (var w = 0; w < 50000; w++) { o['k' + (w % 500)] = w; }\n")
+        c = (c + "document.getElementById('root').textContent = n + ' ' + s.toFixed(6) + ' ' + a[100] + ' ' + o.k7;\n")
+        c = (c + "window.__ms = performance.now() - t0;\n")
+        return c
+    }
+
+    fn timed:string (names:[string] texts:[string]) {
+        def t0:double (wall_clock_ms)
+        def app:BrowserApp (this.open(names texts))
+        def total:double ((wall_clock_ms) - t0)
+        def inPage:string (realm.realm.eval("String(Math.round(window.__ms))"))
+        def status:string (app.realmStatus())
+        def ok:string ""
+        if ((startsWith status "live") == false) {
+            ok = (" [" + status + "]")
+        }
+        def out:string (realm.realm.eval("document.getElementById('root').textContent.slice(0, 40)"))
+        return ("script " + inPage + " ms, page " + (to_string (floor total)) + " ms" + ok + "  " + out)
+    }
+
+    sfn main:void () {
+        def p (new JitProbe())
+        def runs:int 1
+        if ((shell_arg_cnt) > 0) {
+            runs = (unwrap (str2int (shell_arg 0)))
+        }
+        def rn:[string]
+        push rn "react.js"
+        push rn "react-dom.js"
+        push rn "app.js"
+        def rt:[string]
+        push rt (p.file("react.production.min.js"))
+        push rt (p.file("react-dom.production.min.js"))
+        push rt (JitProbe.reactApp())
+        def cn:[string]
+        push cn "app.js"
+        def ct:[string]
+        push ct (JitProbe.computeApp())
+        ; a second argument: that machine only
+        def m0:int 0
+        def m1:int 3
+        if ((shell_arg_cnt) > 1) {
+            m0 = (unwrap (str2int (shell_arg 1)))
+            m1 = (m0 + 1)
+        }
+        def r:int 0
+        while (r < runs) {
+            def m:int m0
+            while (m < m1) {
+                p.jit = m
+                print ("jit " + (to_string m) + " react:   " + (p.timed(rn rt)))
+                print ("jit " + (to_string m) + " compute: " + (p.timed(cn ct)))
+                m = (m + 1)
+            }
+            r = (r + 1)
+        }
+    }
+}

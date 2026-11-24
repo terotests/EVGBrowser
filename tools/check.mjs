@@ -54,7 +54,9 @@ if (cpp) {
   if (!process.argv.includes("--fast")) {
     compile(["-l=cpp", "tests/RealmCheck.rgr", "-d=build/cpp", "-o=realm_check.cpp"]);
     execFileSync(cxx, ["-std=c++17", "-O1", "-w", "build/cpp/realm_check.cpp", "-o", "build/cpp/realm_check"], { cwd: ROOT, stdio: "inherit" });
-    run(path.join(ROOT, "build/cpp/realm_check"), []);
+    // the stack machine, the register machine, and the register machine
+    // with CEr's native JIT (PageRealm.jit, evg-browser --jit)
+    for (const jit of ["0", "1", "2"]) run(path.join(ROOT, "build/cpp/realm_check"), [jit]);
   }
 } else {
   compile(["-es6", "tests/ParseCheck.rgr", "-d=build", "-o=parse_check.js", "-nodecli"]);
