@@ -12,6 +12,8 @@ class RealmCheck {
     def passes:int 0
     def realm:PageRealm (new PageRealm())
     def realmJob:int -1
+    ; CEr's machine for the pages (PageRealm.jit): the first argument
+    def jit:int 0
 
     fn check:void (name:string ok:boolean) {
         if ok {
@@ -29,6 +31,7 @@ class RealmCheck {
             def job:int (app.takeRealmJob())
             if (app.realmRequestIsStart()) {
                 realm = (new PageRealm())
+                realm.jit = jit
             }
             realmJob = job
             app.realmResult(job (realm.handle((app.realmRequest()))))
@@ -262,6 +265,9 @@ class RealmCheck {
 
     sfn main:void () {
         def c (new RealmCheck())
+        if ((shell_arg_cnt) > 0) {
+            c.jit = (unwrap (str2int (shell_arg 0)))
+        }
         c.run()
     }
 
@@ -270,6 +276,6 @@ class RealmCheck {
         this.fetching()
         this.react()
         this.view()
-        print ("realm: passed " + (to_string passes) + ", failed " + (to_string fails))
+        print ("realm (jit " + (to_string jit) + "): passed " + (to_string passes) + ", failed " + (to_string fails))
     }
 }

@@ -36,6 +36,10 @@ Import "../RealmWire.rgr"
 class PageRealm {
     def realm:DomRealm (new DomRealm())
     def started:boolean false
+    ; CEr's machine for the page's scripts: 0 the stack machine, 1 the
+    ; register machine, 2 the register machine with the native JIT (C++
+    ; build only; the SDL host sets it from EVG_JIT / --jit)
+    def jit:int 0
     ; the page's generation the last render was of
     def lastGen:string ""
 
@@ -44,6 +48,12 @@ class PageRealm {
         def kind:string (w.next())
         if (kind == "start") {
             realm = (new DomRealm())
+            if (jit > 0) {
+                realm.engine.vm.regs = true
+            }
+            if (jit > 1) {
+                realm.engine.vm.jit_on = true
+            }
             def url:string (w.next())
             def html:string (w.next())
             def width:double (w.nextDouble())

@@ -998,6 +998,8 @@ static bool writeAll(int fd, const std::string& s) {
 static int realmMain() {
 #ifndef _WIN32
   auto realm = std::make_shared<PageRealm>();
+  // EVG_JIT: 1 CEr's register machine, 2 with its native JIT (--jit)
+  if (const char* j = getenv("EVG_JIT")) realm->jit = atoi(j);
   std::string request;
   while (readField(0, request)) {
     std::string out;
@@ -1236,6 +1238,11 @@ static Options parseArgs(int argc, char** argv) {
     else if (a == "--screenshot") o.screenshot = next();
     else if (a == "--allow") o.allow = next();
     else if (a == "--no-js") o.scripts = false;
+#ifdef _WIN32
+    else if (a == "--jit") _putenv("EVG_JIT=2");
+#else
+    else if (a == "--jit") setenv("EVG_JIT", "2", 1);  // the realm child inherits it
+#endif
     else if (a == "--open" || a == "--unsafe") o.open = true;
     else if (a == "--samples") o.samples = next();
     else if (a == "--frames") o.frames = std::atoi(next().c_str());
@@ -1247,6 +1254,8 @@ static Options parseArgs(int argc, char** argv) {
           "  --allow a.fi,b.org       also allow these sites (and their subdomains)\n"
           "  --open, --unsafe         any site: switch the allowlist off (EVG_OPEN=1 too)\n"
           "  --no-js                  do not run page scripts\n"
+          "  --jit                    page scripts on CEr's register machine with its\n"
+          "                           native JIT (EVG_JIT=1: register machine only)\n"
           "  --samples URL            where the sample pages are (default: the Pages demo)\n"
           "  --screenshot out.png     render headless once the page has loaded, then exit\n"
           "  --settle MS              how long to wait for quiet before the screenshot\n");

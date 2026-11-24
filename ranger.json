@@ -4,6 +4,11 @@
   "entry": "src/BrowserApp.rgr",
   "license": "AGPL-3.0-or-later",
   "dependencies": {
+    "cer": {
+      "git": "https://github.com/terotests/componentengine.git",
+      "rev": "2a622575cae38c156f539236eb4cf0bbe4c613b6",
+      "subdir": "cer"
+    },
     "evg": {
       "git": "https://github.com/terotests/evg.git",
       "rev": "281e2ff03f4be19e5776dfdca5779d8acb04e8c3",
