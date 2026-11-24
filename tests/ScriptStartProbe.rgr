@@ -4,6 +4,8 @@
 ;   npx rgrc -es6 tests/ScriptStartProbe.rgr -d=build -o=start_probe.cjs -nodecli
 ;   node build/start_probe.cjs <dir with index.html, urls.tsv, res/> <url>
 ; urls.tsv: url, local path, status, content type (tab separated).
+; Any host may be opened (no allowlist); trackers are still refused. After
+; the start it runs 60 s of page time, with a wheel turn at 20 s.
 Import "../src/js/PageRealm.rgr"
 Import "../src/BrowserApp.rgr"
 
@@ -21,7 +23,12 @@ class ScriptStartProbe {
             if (app.realmRequestIsStart()) {
                 realm = (new PageRealm())
             }
-            app.realmResult(job (realm.handle((app.realmRequest()))))
+            def req:string (app.realmRequest())
+            print ("  realm request " + (to_string (strlen req)) + " bytes")
+            def ans:string (realm.handle(req))
+            print ("  realm answered " + (to_string (strlen ans)) + " bytes")
+            app.realmResult(job ans)
+            print ("  host took it: " + (app.realmStatus()) + " page at " + (to_string (app.domScrollTop())))
             guard = (guard + 1)
         }
     }
@@ -68,7 +75,8 @@ class ScriptStartProbe {
             def lines:[string] (strsplit (unwrap tsv) "\n")
             for lines line:string k {
                 def f:[string] (strsplit line "\t")
-                if ((array_length f) >= 4) {
+                ; (a redirect saved without a body has no path)
+                if (((array_length f) >= 4) && ((strlen (itemAt f 1)) > 0)) {
                     push urls (itemAt f 0)
                     push paths (itemAt f 1)
                     push types (itemAt f 3)
@@ -77,6 +85,7 @@ class ScriptStartProbe {
         }
         def html@(optional):string (read_file dir "index.html")
         def app (new BrowserApp())
+        app.policy.enforce = false
         app.setPageSize(1100.0 800.0)
         app.navigate(url)
         def r:[string] (strsplit (app.nextRequest()) "\t")
@@ -84,7 +93,7 @@ class ScriptStartProbe {
         app.deliver((unwrap (str2int (itemAt r 0))) 200 url "text/html" (unwrap html))
         this.drive(app)
         def rounds:int 0
-        while (rounds < 2) {
+        while (rounds < 6) {
             while (this.answer(app)) {
             }
             this.drive(app)
@@ -94,5 +103,36 @@ class ScriptStartProbe {
             rounds = (rounds + 1)
         }
         print ("status: " + (app.realmStatus()))
+        def simMs:double 0.0
+        def wheeled:boolean false
+        while (simMs < 60000.0) {
+            while (this.answer(app)) {
+            }
+            app.tick(100.0)
+            simMs = (simMs + 100.0)
+            if ((simMs >= 20000.0) && (wheeled == false)) {
+                wheeled = true
+                print "wheel"
+                app.wheel(300.0)
+                print ("  page at " + (to_string (app.domScrollTop())))
+            }
+            if (app.realmJobPending()) {
+                print ("sim " + (to_string simMs))
+                this.drive(app)
+            }
+        }
+        def ei:int 0
+        while (ei < (app.realmErrorCount())) {
+            print ("error: " + (app.realmErrorAt(ei)))
+            ei = (ei + 1)
+        }
+        for realm.realm.errors re:string rei {
+            print ("realm error: " + re)
+        }
+        def li:int 0
+        while (li < (app.realmLogCount())) {
+            print ("log: " + (app.realmLogAt(li)))
+            li = (li + 1)
+        }
     }
 }

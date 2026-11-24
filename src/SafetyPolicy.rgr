@@ -37,13 +37,89 @@ class SafetyPolicy {
     ; pages are drawn by the realm (RangerDOM) once their styles are here,
     ; with or without scripts; the host turns it off when it has no realm
     def domRender:boolean true
+    ; Advertising, tracking and consent-banner services: their scripts are
+    ; not run and the page's requests to them are refused, as for a page off
+    ; the list. On a page like tori.fi's they are most of the script there is
+    ; (14 of 17 seconds in the realm), and none of it is the page.
+    def blockTrackers:boolean true
+    def trackers:[string]
     def maxScripts:int 30
     def maxScriptBytes:int 2000000
 
     Constructor () {
         def a:[string]
         allowed = a
+        def tr:[string]
+        trackers = tr
         this.defaults()
+        this.defaultTrackers()
+    }
+
+    fn defaultTrackers:void () {
+        clear trackers
+        ; ads
+        push trackers "doubleclick.net"
+        push trackers "googlesyndication.com"
+        push trackers "googleadservices.com"
+        push trackers "googletagservices.com"
+        push trackers "adservice.google.com"
+        push trackers "amazon-adsystem.com"
+        push trackers "adnxs.com"
+        push trackers "adform.net"
+        push trackers "criteo.com"
+        push trackers "criteo.net"
+        push trackers "rubiconproject.com"
+        push trackers "pubmatic.com"
+        push trackers "openx.net"
+        push trackers "casalemedia.com"
+        push trackers "smartadserver.com"
+        push trackers "teads.tv"
+        push trackers "taboola.com"
+        push trackers "outbrain.com"
+        push trackers "adnami.io"
+        push trackers "relevant-digital.com"
+        push trackers "id5-sync.com"
+        push trackers "liadm.com"
+        ; analytics and tracking
+        push trackers "googletagmanager.com"
+        push trackers "google-analytics.com"
+        push trackers "scorecardresearch.com"
+        push trackers "facebook.net"
+        push trackers "hotjar.com"
+        push trackers "chartbeat.com"
+        push trackers "cxense.com"
+        push trackers "permutive.com"
+        push trackers "quantserve.com"
+        push trackers "m10s.io"
+        ; consent banners for the above
+        push trackers "privacy-mgmt.com"
+        push trackers "cookielaw.org"
+        push trackers "cookiebot.com"
+        push trackers "consensu.org"
+        push trackers "cmpv2.tori.fi"
+    }
+
+    ; Is this one of the advertising or tracking services (`trackers`)?
+    fn isTracker:boolean (u:BrUrl) {
+        if (blockTrackers == false) {
+            return false
+        }
+        def h:string (to_lowercase u.host)
+        for trackers t:string i {
+            if ((h == t) || (endsWith h ("." + t))) {
+                return true
+            }
+        }
+        return false
+    }
+
+    ; May a page's script come from here, or a page's script fetch from
+    ; here? Where a page may be loaded from, and not a tracker.
+    fn scriptAllowed:boolean (u:BrUrl) {
+        if ((this.isTracker(u)) == true) {
+            return false
+        }
+        return (this.pageAllowed(u))
     }
 
     fn defaults:void () {

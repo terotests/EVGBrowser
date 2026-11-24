@@ -95,10 +95,14 @@ class BrPage {
             if hasScripts {
                 def ext:[string] (PageScripts.external(doc baseUrl))
                 for ext e:string i {
-                    if ((array_length scriptUrls) < policy.maxScripts) {
-                        push scriptUrls e
-                        push scriptTexts ""
-                        push scriptArrived false
+                    ; (a tracker's script is not fetched; the realm runs
+                    ; nothing for it, as for a script that did not come)
+                    if ((policy.isTracker((BrUrl.parse(e)))) == false) {
+                        if ((array_length scriptUrls) < policy.maxScripts) {
+                            push scriptUrls e
+                            push scriptTexts ""
+                            push scriptArrived false
+                        }
                     }
                 }
             }
