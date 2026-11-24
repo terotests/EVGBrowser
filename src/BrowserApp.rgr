@@ -103,6 +103,8 @@ class BrTab {
     def realmSummary:string ""
     def realmBusy:boolean false
     def realmStarting:boolean false
+    def realmScripting:boolean false
+    def realmScriptsSent:boolean false
     def realmEvents:[string]
     def realmResources:string ""
     def realmResourceCount:int 0
@@ -214,6 +216,10 @@ class BrowserApp extends EvgApp {
     ; a request is out (start or step) and not answered yet
     def realmBusy:boolean false
     def realmStarting:boolean false
+    ; the request out carries the page's scripts (sent once, after the
+    ; first render, see realmRequest)
+    def realmScripting:boolean false
+    def realmScriptsSent:boolean false
     ; what the next step carries: the user's events (JSON lines), the
     ; answers to the page's fetches (RealmWire records), the time
     def realmEvents:[string]
@@ -317,6 +323,8 @@ class BrowserApp extends EvgApp {
         t.realmSummary = realmSummary
         t.realmBusy = realmBusy
         t.realmStarting = realmStarting
+        t.realmScripting = realmScripting
+        t.realmScriptsSent = realmScriptsSent
         t.realmEvents = realmEvents
         t.realmResources = realmResources
         t.realmResourceCount = realmResourceCount
@@ -374,6 +382,8 @@ class BrowserApp extends EvgApp {
         realmSummary = t.realmSummary
         realmBusy = t.realmBusy
         realmStarting = t.realmStarting
+        realmScripting = t.realmScripting
+        realmScriptsSent = t.realmScriptsSent
         realmEvents = t.realmEvents
         realmResources = t.realmResources
         realmResourceCount = t.realmResourceCount
@@ -1038,8 +1048,12 @@ class BrowserApp extends EvgApp {
         }
         sheetWaitMs = 0.0
         this.resetRealm()
-        if page.hasScripts {
+        ; the realm draws the page (RangerDOM) as soon as its styles are
+        ; here; its scripts follow when they have arrived
+        if (page.hasScripts || policy.domRender) {
             realmState = "waiting"
+        }
+        if page.hasScripts {
             for page.scriptUrls scu:string k {
                 this.request("script" scu)
             }
@@ -1074,6 +1088,8 @@ class BrowserApp extends EvgApp {
         realmSummary = ""
         realmBusy = false
         realmStarting = false
+        realmScripting = false
+        realmScriptsSent = false
         clear realmEvents
         realmResources = ""
         realmResourceCount = 0
@@ -1093,7 +1109,7 @@ class BrowserApp extends EvgApp {
         if (realmState != "waiting") {
             return
         }
-        if (loading || ((page.scriptsReady()) == false)) {
+        if loading {
             return
         }
         realmState = "ready"
@@ -1111,16 +1127,33 @@ class BrowserApp extends EvgApp {
         if ((realmState != "live") || realmBusy) {
             return false
         }
+        if (this.realmScriptsDue()) {
+            return true
+        }
         if (((array_length realmEvents) > 0) || ((realmResourceCount > 0) || (((strlen domBoxes) > 0) || (domResized || domWhole)))) {
             return true
         }
         return ((realmDue >= 0.0) && (realmElapsed >= realmDue))
     }
 
+    ; The page's scripts, all arrived, not yet sent to the live realm.
+    fn realmScriptsDue:boolean () {
+        if ((page.hasScripts == false) || realmScriptsSent) {
+            return false
+        }
+        return (page.scriptsReady())
+    }
+
     fn takeRealmJob:int () {
         realmStarting = (realmState == "ready")
+        realmScripting = false
         if realmStarting {
             realmState = "running"
+        } {
+            if (this.realmScriptsDue()) {
+                realmScripting = true
+                realmScriptsSent = true
+            }
         }
         realmBusy = true
         return realmJob
@@ -1131,6 +1164,12 @@ class BrowserApp extends EvgApp {
         return realmStarting
     }
 
+    ; Whether the request taken last may take long (a start, or the page's
+    ; scripts running): the host gives it the longer limit.
+    fn realmRequestIsLong:boolean () {
+        return (realmStarting || realmScripting)
+    }
+
     fn realmRequest:string () {
         if realmStarting {
             def out:string (RealmWire.put("" "start"))
@@ -1138,11 +1177,9 @@ class BrowserApp extends EvgApp {
             out = (RealmWire.put(out page.html))
             out = (RealmWire.put(out (to_string pageW)))
             out = (RealmWire.put(out (to_string (this.pageHeight()))))
-            out = (RealmWire.put(out (to_string (array_length page.scriptUrls))))
-            for page.scriptUrls su:string i {
-                out = (RealmWire.put(out su))
-                out = (RealmWire.put(out (itemAt page.scriptTexts i)))
-            }
+            ; (no scripts: the first answer is the page drawn; they come
+            ; in a request of their own, realmScripting)
+            out = (RealmWire.put(out "0"))
             ; the page's fetched style sheets (its <style> elements are in
             ; the HTML)
             def sheetCount:int 0
@@ -1161,6 +1198,15 @@ class BrowserApp extends EvgApp {
             dom.setSize(pageW (this.pageHeight()))
             realmElapsed = 0.0
             return out
+        }
+        if realmScripting {
+            def sc:string (RealmWire.put("" "scripts"))
+            sc = (RealmWire.put(sc (to_string (array_length page.scriptUrls))))
+            for page.scriptUrls su:string i {
+                sc = (RealmWire.put(sc su))
+                sc = (RealmWire.put(sc (itemAt page.scriptTexts i)))
+            }
+            return sc
         }
         def step:string (RealmWire.put("" "step"))
         step = (RealmWire.put(step (join realmEvents "\n")))
@@ -1466,6 +1512,12 @@ class BrowserApp extends EvgApp {
 
     fn setScriptsEnabled:void (on:boolean) {
         policy.runScripts = on
+    }
+
+    ; Whether the host has a realm to draw pages with (RangerDOM), scripts
+    ; or not.
+    fn setDomRender:void (on:boolean) {
+        policy.domRender = on
     }
 
     fn maybeRender:void () {

@@ -1044,7 +1044,7 @@ class RealmProcess {
   // a request is out
   bool busy() const { return job >= 0; }
 
-  void send(int jobId, bool start, const std::string& request) {
+  void send(int jobId, bool start, bool longJob, const std::string& request) {
 #ifndef _WIN32
     if (start || pid <= 0) {
       stop();
@@ -1052,7 +1052,7 @@ class RealmProcess {
     }
     joinAll();
     job = jobId;
-    jobStart = start;
+    jobStart = longJob;
     started = SDL_GetTicks();
     {
       std::lock_guard<std::mutex> lk(mu);
@@ -1334,6 +1334,7 @@ static int run(int argc, char** argv) {
   RealmProcess realm;
   realm.exe = selfPath(argv[0]);
   app->setScriptsEnabled(opt.scripts && realm.available());
+  app->setDomRender(realm.available());
   if (opt.open || std::getenv("EVG_OPEN")) app->setAllowlistEnabled(false);
   if (!opt.allow.empty()) app->setAllowedSites(app->allowedSitesText() + "," + opt.allow);
   host->startAt(winW, winH, false, opt.url);
@@ -1554,7 +1555,8 @@ static int run(int argc, char** argv) {
     if (!realm.busy() && app->realmJobPending()) {
       int job = app->takeRealmJob();
       bool start = app->realmRequestIsStart();
-      realm.send(job, start, app->realmRequest());
+      bool longJob = app->realmRequestIsLong();
+      realm.send(job, start, longJob, app->realmRequest());
     }
 
     if (dirty) {
