@@ -138,6 +138,7 @@ function runRealm() {
   if (!app.realmJobPending()) return;
   const job = app.takeRealmJob();
   const start = app.realmRequestIsStart();
+  const long = app.realmRequestIsLong();
   const request = app.realmRequest();
   // a new page while the old one's request is out: that worker goes
   if (start && realmBusy >= 0) stopRealm();
@@ -167,7 +168,7 @@ function runRealm() {
     app.realmFailed(job, "aikaraja");
     window.__realm = { job, ok: false, error: "timeout" };
     dirty = true;
-  }, start ? REALM_START_LIMIT_MS : REALM_LIMIT_MS);
+  }, long ? REALM_START_LIMIT_MS : REALM_LIMIT_MS);
   realmWorker.postMessage({ job, start, request });
 }
 

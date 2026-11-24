@@ -34,6 +34,9 @@ class SafetyPolicy {
     ; to open anything themselves: a link they follow and a fetch they make
     ; come to the browser, which applies this policy to them.
     def runScripts:boolean true
+    ; pages are drawn by the realm (RangerDOM) once their styles are here,
+    ; with or without scripts; the host turns it off when it has no realm
+    def domRender:boolean true
     def maxScripts:int 30
     def maxScriptBytes:int 2000000
 

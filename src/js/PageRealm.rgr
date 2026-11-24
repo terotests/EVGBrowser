@@ -18,6 +18,9 @@
 ;
 ;   start  url html width height n (scriptUrl scriptText)×n
 ;          m (sheetUrl sheetText)×m
+;          (the browser sends n = 0: the answer is the page drawn before
+;          any script runs, and the scripts come next)
+;   scripts n (scriptUrl scriptText)×n: the page's scripts run now
 ;   step   events (JSON objects, one per line) elapsedMs
 ;          n (id status contentType text)×n  layoutJson  whole ("1": the
 ;          browser lost the page it keeps; else "")
@@ -64,9 +67,22 @@ class PageRealm {
             }
             ; the browser keeps the render tree: only what changed comes
             realm.exec("__deltaRender(true)")
-            realm.runScripts()
+            if (n > 0) {
+                realm.runScripts()
+            }
             lastGen = ""
             started = true
+        }
+        if ((kind == "scripts") && started) {
+            def sn2:int (w.nextInt())
+            def s2:int 0
+            while (s2 < sn2) {
+                def su2:string (w.next())
+                def st2:string (w.next())
+                realm.addScript(su2 st2)
+                s2 = (s2 + 1)
+            }
+            realm.runScripts()
         }
         if ((kind == "step") && started) {
             def events:string (w.next())
