@@ -177,7 +177,17 @@ struct FontFile {
     int g = stbtt_FindGlyphIndex(&info, (int)cp);
     return g != 0 && !stbtt_IsGlyphEmpty(&info, g);
   }
+
+  // a space's glyph has no outline, so has() cannot tell it from none
+  bool mapped(uint32_t cp) const { return stbtt_FindGlyphIndex(&info, (int)cp) != 0; }
 };
+
+// The spaces past ASCII (what Rust's char::is_whitespace counts, as the
+// painter does): U+00A0, U+202F between the digits of "8 000", U+2009 ...
+static bool isUnicodeSpace(uint32_t cp) {
+  return cp == 0x85 || cp == 0xA0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 ||
+         cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
 
 // Colour emoji: the pictures are PNGs inside the font — the CBDT/CBLC tables
 // (Noto Color Emoji, Linux and Android) or the sbix table (Apple Color Emoji).
@@ -432,6 +442,21 @@ class Fonts {
     uint32_t cp = 0;
     while (nextCodepoint(text, i, cp)) {
       if (cp == 0xFE0F || cp == 0x200D) continue;  // emoji presentation marks draw nothing
+      // a space no face has is measured as U+0020, the way the painter
+      // draws it (not as the missing-glyph box)
+      if (isUnicodeSpace(cp)) {
+        const FontFile* sp = nullptr;
+        if (face[f].mapped(cp)) sp = &face[f];
+        for (size_t k = 0; !sp && k < fallbacks.size(); k++)
+          if (fallbacks[k]->mapped(cp)) sp = fallbacks[k].get();
+        if (!sp) {
+          sp = &face[f];
+          cp = 0x20;
+        }
+        if (out.empty() || out.back().font != sp) out.push_back(Run{sp, {}});
+        out.back().cps.push_back(cp);
+        continue;
+      }
       const FontFile* ff = fontFor(f, cp);
       // U+FE0F after a symbol asks for its emoji (colour) form
       size_t peek = i;
