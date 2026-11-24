@@ -122,6 +122,11 @@ class BrTab {
     def domResized:boolean false
     def domWhole:boolean false
     def domHover:string ""
+    def domScrollAhead:double 0.0
+    def domScrollSent:double 0.0
+    def domWheelAt:int -1
+    def domWheelNode:string ""
+    def domWheelDy:double 0.0
     def favUrl:string ""
     def favNext:string ""
     def favState:string ""
@@ -247,6 +252,15 @@ class BrowserApp extends EvgApp {
     def domWhole:boolean false
     ; the page's node the pointer is over (move events go when it changes)
     def domHover:string ""
+    ; the page's own scroll moved here by the wheel before the realm drew
+    ; it: not yet sent (ahead), sent with the step that is out (sent)
+    def domScrollAhead:double 0.0
+    def domScrollSent:double 0.0
+    ; the wheel turns waiting in realmEvents are one event: its index, its
+    ; target and how far it goes
+    def domWheelAt:int -1
+    def domWheelNode:string ""
+    def domWheelDy:double 0.0
     ; --- the tab's icon ---
     ; favState "" none (about: pages), "loading", "ok" (the host has the
     ; picture at favUrl), "failed"; favNext is the next to try
@@ -342,6 +356,11 @@ class BrowserApp extends EvgApp {
         t.domResized = domResized
         t.domWhole = domWhole
         t.domHover = domHover
+        t.domScrollAhead = domScrollAhead
+        t.domScrollSent = domScrollSent
+        t.domWheelAt = domWheelAt
+        t.domWheelNode = domWheelNode
+        t.domWheelDy = domWheelDy
         t.favUrl = favUrl
         t.favNext = favNext
         t.favState = favState
@@ -401,6 +420,11 @@ class BrowserApp extends EvgApp {
         domResized = t.domResized
         domWhole = t.domWhole
         domHover = t.domHover
+        domScrollAhead = t.domScrollAhead
+        domScrollSent = t.domScrollSent
+        domWheelAt = t.domWheelAt
+        domWheelNode = t.domWheelNode
+        domWheelDy = t.domWheelDy
         favUrl = t.favUrl
         favNext = t.favNext
         favState = t.favState
@@ -1103,6 +1127,9 @@ class BrowserApp extends EvgApp {
         domResized = false
         domWhole = false
         domHover = ""
+        domScrollAhead = 0.0
+        domScrollSent = 0.0
+        domWheelAt = -1
     }
 
     fn maybeRealm:void () {
@@ -1222,6 +1249,9 @@ class BrowserApp extends EvgApp {
         domBoxes = ""
         domResized = false
         domWhole = false
+        domScrollSent = (domScrollSent + domScrollAhead)
+        domScrollAhead = 0.0
+        domWheelAt = -1
         clear realmEvents
         realmResources = ""
         realmResourceCount = 0
@@ -1234,6 +1264,8 @@ class BrowserApp extends EvgApp {
             return
         }
         realmBusy = false
+        ; (the render answers the step: the wheel it carried is in it)
+        domScrollSent = 0.0
         def w (new RealmWire(answer))
         if ((w.next()) != "ok") {
             this.realmFailed(job "the realm did not answer")
@@ -1285,6 +1317,7 @@ class BrowserApp extends EvgApp {
         if (domMode == false) {
             ; the converted document's fields and focus are gone
             focusedFieldId = ""
+            fling.halt()
         }
         domMode = true
         this.domViewport()
@@ -1311,7 +1344,8 @@ class BrowserApp extends EvgApp {
             domBoxes = boxes
         }
         listDirty = true
-        fling.halt()
+        this.domReach()
+        this.domScrollAgain()
         if policy.showImages {
             def wanted:[string] (dom.wanted())
             for wanted wu:string wi {
@@ -1344,18 +1378,141 @@ class BrowserApp extends EvgApp {
 
     ; The page scrolls itself: the wheel (and a drag, a fling, a key) goes
     ; to the element under the pointer.
+    ; A wheel turn (or a drag, a fling) over the realm's page. The page moves
+    ; here at once, as far as the realm will move it when the event reaches
+    ; it: a realm busy with the page's scripts answers only after them, and
+    ; the page must not wait for that. Turns queued for the same element are
+    ; one event.
     fn domWheel:boolean (dy:double) {
         if (this.realmLive() == false) {
             return false
         }
-        def at:string (",\"x\":" + (CssParser.fmt(pointX)) + ",\"y\":" + (CssParser.fmt(pointY)))
         def node:string domHover
-        if ((strlen node) > 0) {
-            this.realmEvent(("{\"type\":\"wheel\",\"target\":" + node + ",\"dy\":" + (CssParser.fmt(dy)) + at + "}"))
-        } {
-            this.realmEvent(("{\"type\":\"wheel\",\"dy\":" + (CssParser.fmt(dy)) + at + "}"))
+        def total:double dy
+        if ((domWheelAt >= 0) && ((domWheelAt == ((array_length realmEvents) - 1)) && (domWheelNode == node))) {
+            total = (domWheelDy + dy)
+            removeLast realmEvents
         }
+        def at:string (",\"x\":" + (CssParser.fmt(pointX)) + ",\"y\":" + (CssParser.fmt(pointY)))
+        if ((strlen node) > 0) {
+            this.realmEvent(("{\"type\":\"wheel\",\"target\":" + node + ",\"dy\":" + (CssParser.fmt(total)) + at + "}"))
+        } {
+            this.realmEvent(("{\"type\":\"wheel\",\"dy\":" + (CssParser.fmt(total)) + at + "}"))
+        }
+        domWheelAt = ((array_length realmEvents) - 1)
+        domWheelNode = node
+        domWheelDy = total
+        this.domScrollHere(dy)
         return true
+    }
+
+    ; What the realm's wheel does (webapi.js scrollBy), done to the view: the
+    ; nearest box under the pointer that scrolls (overflow auto or scroll)
+    ; and can still go that way, else the page itself.
+    fn domScrollHere:void (dy:double) {
+        if ((dom.hasView()) == false) {
+            return
+        }
+        def root:EVGElement (dom.view())
+        def target:EVGElement root
+        def ht (new EVGHitTest())
+        def list:[EVGElement] (ht.paintOrderAt(viewport pointX pointY))
+        def i:int ((array_length list) - 1)
+        def found:boolean false
+        while ((i >= 0) && (found == false)) {
+            def el:EVGElement (itemAt list i)
+            if (EVGHitTest.containsPoint(el pointX pointY)) {
+                found = true
+                def cur@(optional):EVGElement el
+                def picked:boolean false
+                while ((!null? cur) && (picked == false)) {
+                    def c:EVGElement (unwrap cur)
+                    if (c.id == root.id) {
+                        picked = true
+                    } {
+                        if (((c.overflow == "auto") || (c.overflow == "scroll")) && ((c.maxScrollTop()) > 0.0)) {
+                            if (((dy > 0.0) && (c.scrollTop < (c.maxScrollTop()))) || ((dy < 0.0) && (c.scrollTop > 0.0))) {
+                                target = c
+                                picked = true
+                            }
+                        }
+                        cur = c.parent
+                    }
+                }
+            }
+            i = (i - 1)
+        }
+        def before:double target.scrollTop
+        target.scrollTop = (before + dy)
+        pageLayout.scrollOnlyFrom(target)
+        def moved:double (target.scrollTop - before)
+        if (moved != 0.0) {
+            listDirty = true
+            if (target.id == root.id) {
+                domScrollAhead = (domScrollAhead + moved)
+            }
+        }
+    }
+
+    ; Where the realm's page is scrolled to in the view (0 for none).
+    fn domScrollTop:double () {
+        if ((dom.hasView()) == false) {
+            return 0.0
+        }
+        def root:EVGElement (dom.view())
+        return root.scrollTop
+    }
+
+    ; The page's scroll range as deep as its content goes (the layout
+    ; measures a box's content one level down), for the wheel's clamp here
+    ; and the bar: taken after a full layout, which moved every box by the
+    ; scroll.
+    fn domReach:void () {
+        if ((dom.hasView()) == false) {
+            return
+        }
+        def root:EVGElement (dom.view())
+        def reach:double (BrowserApp.reachOf(root root.calculatedY))
+        if (reach > root.scrollHeight) {
+            root.scrollHeight = reach
+        }
+    }
+
+    ; How far below `top` the boxes in `el` reach, unscrolled: a box that
+    ; clips counts as itself, a fixed one not at all.
+    sfn reachOf:double (el:EVGElement top:double) {
+        def most:double 0.0
+        def i:int 0
+        while (i < (el.getChildCount())) {
+            def kid:EVGElement (el.getChild(i))
+            if ((kid.isFixedPosition()) == false) {
+                def b:double (((kid.calculatedY + kid.calculatedHeight) + el.appliedScrollTop) - top)
+                if (b > most) {
+                    most = b
+                }
+                if ((kid.clipsContent()) == false) {
+                    def d:double (BrowserApp.reachOf(kid top))
+                    if (d > most) {
+                        most = d
+                    }
+                }
+            }
+            i = (i + 1)
+        }
+        return most
+    }
+
+    ; The page built again from the realm's last render, which has not drawn
+    ; the wheel turns since: they are put back on it.
+    fn domScrollAgain:void () {
+        def owed:double (domScrollSent + domScrollAhead)
+        if ((owed == 0.0) || ((dom.hasView()) == false)) {
+            return
+        }
+        def root:EVGElement (dom.view())
+        root.scrollTop = (root.scrollTop + owed)
+        pageLayout.scrollOnlyFrom(root)
+        listDirty = true
     }
 
     fn domKey:void (k:string shift:boolean ctrl:boolean) {
@@ -1447,10 +1604,11 @@ class BrowserApp extends EvgApp {
     }
 
     ; A page script's fetch: http(s) only, under the same allowlist as a
-    ; page; a refused one is answered at once as a network error.
+    ; page and never to a tracker; a refused one is answered at once as a
+    ; network error.
     fn realmFetch:void (fetchId:int url:string) {
         def u:BrUrl (page.baseUrl.resolve(url))
-        if ((u.isWeb()) && (policy.pageAllowed(u))) {
+        if ((u.isWeb()) && (policy.scriptAllowed(u))) {
             def r (new BrRequest())
             r.id = nextRequestId
             nextRequestId = (nextRequestId + 1)

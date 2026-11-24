@@ -263,6 +263,37 @@ class RealmCheck {
         this.check("view: the picture is drawn by its URL" picOk)
     }
 
+    ; The wheel moves the page at once, also while the realm is busy with a
+    ; step; the realm's render of that step (which has only the turns sent
+    ; with it) does not take the later ones back, and no turn counts twice.
+    fn scrolling:void () {
+        def app:BrowserApp (this.open("<div style='height:3000px'>pitkä</div><script>document.title = 'pitkä';</script>"))
+        this.drive(app)
+        app.wheel(200.0)
+        this.check("scroll: the wheel moves the page before the realm answers" ((app.domScrollTop()) == 200.0))
+        def job:int (app.takeRealmJob())
+        def req:string (app.realmRequest())
+        app.wheel(100.0)
+        this.check("scroll: also while a step is out" ((app.domScrollTop()) == 300.0))
+        app.realmResult(job (realm.handle(req)))
+        this.check("scroll: the step's render keeps the turn made after it" ((app.domScrollTop()) == 300.0))
+        this.drive(app)
+        this.check("scroll: the realm counts each turn once" (((app.domScrollTop()) == 300.0) && ((this.pageEval("String(document.documentElement.scrollTop)")) == "300")))
+        ; a tracker's script is not fetched
+        def a2 (new BrowserApp())
+        a2.setPageSize(900.0 700.0)
+        a2.navigate("https://example.com/a/")
+        def r:[string] (this.nextReq(a2))
+        a2.deliver((this.reqId(r)) 200 "https://example.com/a/" "text/html" "<p>x</p><script src='https://www.googletagmanager.com/gtm.js'></script><script src='oma.js'></script>")
+        def asked:string ""
+        def n:string (a2.nextRequest())
+        while ((strlen n) > 0) {
+            asked = (asked + n + "\n")
+            n = (a2.nextRequest())
+        }
+        this.check("trackers: their scripts are not fetched, the page's own are" (((indexOf asked "googletagmanager") < 0) && ((indexOf asked "oma.js") >= 0)))
+    }
+
     sfn main:void () {
         def c (new RealmCheck())
         if ((shell_arg_cnt) > 0) {
@@ -276,6 +307,7 @@ class RealmCheck {
         this.fetching()
         this.react()
         this.view()
+        this.scrolling()
         print ("realm (jit " + (to_string jit) + "): passed " + (to_string passes) + ", failed " + (to_string fails))
     }
 }
