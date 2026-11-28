@@ -3,9 +3,9 @@
   "packages": {
     "cer": {
       "git": "https://github.com/terotests/componentengine.git",
-      "rev": "2a622575cae38c156f539236eb4cf0bbe4c613b6",
+      "rev": "803d66bc2b06dde3d6ec0431784136e06b0c4c43",
       "subdir": "cer",
-      "sha256": "d8b3bc0acdb515738581de6becc1452a0c1695fc2d34503dfa4c6219efca9a02"
+      "sha256": "3742e8961cad0582b5845d491cb8885b1b0bd2c38d6b054e96ac29b46d1930e0"
     },
     "evg": {
       "git": "https://github.com/terotests/evg.git",
@@ -21,8 +21,8 @@
     },
     "rangerdom": {
       "git": "https://github.com/terotests/RangerDOM.git",
-      "rev": "8c5604b754e2d486bd544ad7d6cb8ec6b625c6e4",
-      "sha256": "7b114d7776d246c8c70dd1b9b221f37a3c14cfd029379e25dccb58e25a917e7a"
+      "rev": "67b636b8ffb643ebcc53bd0269e11f4cba0537cc",
+      "sha256": "886eb48c315c27d050f70c8aee0d9dac29270c2270cb43778a06de91f108b25d"
     },
     "zip": {
       "git": "https://github.com/terotests/evg.git",
