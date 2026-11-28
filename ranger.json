@@ -6,7 +6,7 @@
   "dependencies": {
     "cer": {
       "git": "https://github.com/terotests/componentengine.git",
-      "rev": "803d66bc2b06dde3d6ec0431784136e06b0c4c43",
+      "rev": "f2061e1dba260d2792272b0d7c5f6984b1121e63",
       "subdir": "cer"
     },
     "evg": {
@@ -21,7 +21,7 @@
     },
     "rangerdom": {
       "git": "https://github.com/terotests/RangerDOM.git",
-      "rev": "298dc91d3efea09389d12a738f7bc8014b501ad6"
+      "rev": "52d993d087c5493aa2553e3c41f0df6f4249ef77"
     }
   }
 }

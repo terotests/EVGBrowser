@@ -1,0 +1,49 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; How long the realm takes for a saved page and one big style sheet: the
+; page's start, the sheet's parse (__addStyle) and the first render, with
+; CEr's profiler on for the parse (the functions that took 50 ms or more).
+;   node .deps/ranger/dist/rgrc.js -l=cpp tests/SheetProbe.rgr -d=build/cpp -o=sheet_probe.cpp
+;   g++ -std=c++17 -O2 -Ibuild/cpp build/cpp/sheet_probe.cpp -pthread -o build/sheet_probe
+;   build/sheet_probe <dir with index.html> <sheet path in dir> [url]
+Import "../src/js/PageRealm.rgr"
+
+class SheetProbe {
+    sfn main:void () {
+        def dir:string (shell_arg 0)
+        def html:string (unwrap (read_file dir "index.html"))
+        def css:string (unwrap (read_file dir (shell_arg 1)))
+        def url:string (shell_arg 2)
+        if ((strlen url) == 0) {
+            url = "https://example.com/"
+        }
+        def r (new DomRealm())
+        def t0:double (wall_clock_ms)
+        r.start(html url 1100.0 800.0)
+        def t1:double (wall_clock_ms)
+        print ("start " + (to_string (t1 - t0)) + " ms")
+        r.engine.set_string("__css" css)
+        r.engine.vm.prof_on = true
+        print ("rules " + (r.eval("__addStyle(__css, null, 'sheet.css')")))
+        r.engine.vm.prof_on = false
+        def t2:double (wall_clock_ms)
+        print ("addStyle " + (to_string (t2 - t1)) + " ms")
+        r.exec("__deltaRender(true)")
+        def rd:string (r.eval("__renderDelta()"))
+        def t3:double (wall_clock_ms)
+        print ("render " + (to_string (t3 - t2)) + " ms, " + (to_string (strlen rd)) + " bytes")
+        if ((strlen r.engine.error) > 0) {
+            print r.engine.error
+        }
+        def vm (r.engine.vm)
+        def i:int 0
+        while (i < (array_length vm.prof_self)) {
+            def ps:double (itemAt vm.prof_self i)
+            def pi:double (itemAt vm.prof_incl i)
+            if ((ps > 50.0) || (pi > 300.0)) {
+                def pr (itemAt vm.protos i)
+                print ("  self " + (to_string (to_int ps)) + " incl " + (to_string (to_int pi)) + " " + pr.name + " @" + (to_string pr.src_start))
+            }
+            i = (i + 1)
+        }
+    }
+}

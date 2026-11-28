@@ -25,7 +25,7 @@ const PORT = Number(process.env.PORT || 8040);
 const ALLOW = (process.env.EVG_ALLOW ||
   "yle.fi,sieppo.fi,luontolive.fi,oppijailo.fi,wikipedia.org,wikimedia.org,vikidia.org,kirjastot.fi,luontoportti.com,tiedekeskus.fi,heureka.fi,korkeasaari.fi,nasa.gov,esa.int,bbc.co.uk,natgeokids.com,example.com,info.cern.ch,terotests.github.io")
   .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-const MAX_BYTES = 5_000_000;
+const MAX_BYTES = 20_000_000;
 
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml" };
