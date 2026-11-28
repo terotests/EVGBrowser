@@ -919,12 +919,12 @@ class SdlPainter {
 
   void run() {
     for (auto& t : dl->uploads) {
-      SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, t->w, t->h);
+      SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, t.w, t.h);
       if (!tex) continue;
       SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
       SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
-      SDL_UpdateTexture(tex, nullptr, t->px.data(), t->w * 4);
-      texs[t->id] = tex;
+      SDL_UpdateTexture(tex, nullptr, t.px.data(), t.w * 4);
+      texs[t.id] = tex;
     }
     const std::vector<double>& v = dl->verts;
     verts.resize(v.size() / 8);
