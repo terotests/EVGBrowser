@@ -1222,6 +1222,14 @@ class BrowserApp extends EvgApp {
                     out = (RealmWire.put(out sh2.text))
                 }
             }
+            ; whether the page's inline scripts may run with the first render
+            ; (those before its first fetched script, as a browser runs them
+            ; while it parses; the realm's runInline)
+            if page.hasScripts {
+                out = (RealmWire.put(out "1"))
+            } {
+                out = (RealmWire.put(out ""))
+            }
             dom.setSize(pageW (this.pageHeight()))
             realmElapsed = 0.0
             return out

@@ -575,7 +575,7 @@ class Net {
   std::atomic<bool> stopping{false};
   int active = 0;
 
-  static constexpr size_t MAX_BYTES = 8 * 1024 * 1024;
+  static constexpr size_t MAX_BYTES = 20 * 1024 * 1024;
 
   struct Sink {
     std::string* body;

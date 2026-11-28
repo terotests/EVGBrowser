@@ -17,7 +17,8 @@
 ; Requests (RealmWire fields):
 ;
 ;   start  url html width height n (scriptUrl scriptText)×n
-;          m (sheetUrl sheetText)×m
+;          m (sheetUrl sheetText)×m inline ("1": run the inline scripts
+;          before the first fetched one, DomRealm.runInline)
 ;          (the browser sends n = 0: the answer is the page drawn before
 ;          any script runs, and the scripts come next)
 ;   scripts n (scriptUrl scriptText)×n: the page's scripts run now
@@ -72,13 +73,22 @@ class PageRealm {
             while (si < sn) {
                 def shu:string (w.next())
                 def sht:string (w.next())
-                realm.addStyle(sht shu)
+                ; (the sheet set as a global string, not quoted into a
+                ; script: a 4 MB sheet as a string literal took the lexer
+                ; about 2 s)
+                realm.engine.set_string("__rdSheet" sht)
+                realm.exec(("__addStyle(__rdSheet, null, " + (DomRealm.quote(shu)) + "); __rdSheet = undefined"))
                 si = (si + 1)
             }
+            def inline:string (w.next())
             ; the browser keeps the render tree: only what changed comes
             realm.exec("__deltaRender(true)")
             if (n > 0) {
                 realm.runScripts()
+            } {
+                if (inline == "1") {
+                    realm.runInline()
+                }
             }
             lastGen = ""
             started = true

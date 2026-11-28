@@ -27,7 +27,7 @@ class SafetyPolicy {
     ; engine's own restrictions stay on
     def enforce:boolean true
     def maxPageBytes:int 4000000
-    def maxCssBytes:int 1500000
+    def maxCssBytes:int 20000000
     def maxStylesheets:int 32
     def showImages:boolean true
     ; Page scripts run in a realm of their own, with no network and no way
