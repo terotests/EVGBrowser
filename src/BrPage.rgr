@@ -218,7 +218,10 @@ class BrPage {
         for sheets s:BrSheet i {
             if (s.inline == false) {
                 if (count < limit) {
-                    if (s.arrived == false) {
+                    ; (a sheet linked twice, from the page and a shadow
+                    ; tree as on tori.fi, is fetched once: deliverSheet
+                    ; gives it to both)
+                    if ((s.arrived == false) && ((indexOf out s.url) < 0)) {
                         push out s.url
                     }
                 } {
