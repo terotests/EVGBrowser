@@ -61,9 +61,11 @@ extern char** environ;
 #include <chrono>
 #include <condition_variable>
 #include <cctype>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -521,6 +523,25 @@ static bool maskOf(const std::string& url, std::string& fetchUrl, uint8_t rgba[4
   return true;
 }
 
+// EVG_TRACE=1: where a page's load spends its time, on stderr (requests,
+// realm steps, and any main-loop step over 30 ms). EVG_RECORD=<dir>: every
+// answer saved as <dir>/urls.tsv + <dir>/res/<n>, the layout
+// tests/ScriptStartProbe.rgr reads, to replay a live page offline.
+static bool traceOn = std::getenv("EVG_TRACE") != nullptr;
+static const auto traceT0 = std::chrono::steady_clock::now();
+static double traceMs() {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - traceT0).count();
+}
+static void trace(const char* fmt, ...) {
+  if (!traceOn) return;
+  char buf[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(buf, sizeof buf, fmt, ap);
+  va_end(ap);
+  std::fprintf(stderr, "[%8.0f] %s\n", traceMs(), buf);
+}
+
 struct Job {
   int id = 0;
   std::string kind, url;
@@ -608,7 +629,9 @@ class Net {
         jobs.pop_front();
         active++;
       }
+      double t = traceMs();
       Result r = fetch(job);
+      trace("net %ld %zu B %.0f ms %s %s", r.status, r.body.size(), traceMs() - t, r.kind.c_str(), r.url.substr(0, 160).c_str());
       std::lock_guard<std::mutex> lk(mu);
       active--;
       done.push_back(std::move(r));
@@ -1026,7 +1049,12 @@ static int realmMain() {
   // EVG_JIT: 1 CEr's register machine, 2 with its native JIT (--jit)
   if (const char* j = getenv("EVG_JIT")) realm->jit = atoi(j);
   std::string request;
+  // EVG_REALM_SAVE=<dir>: each request as <dir>/realm-<n>.txt, for
+  // tests/RealmStartBench.rgr
+  const char* save = getenv("EVG_REALM_SAVE");
+  int saved = 0;
   while (readField(0, request)) {
+    if (save) std::ofstream(std::string(save) + "/realm-" + std::to_string(++saved) + ".txt", std::ios::binary) << request;
     std::string out;
     putField(out, realm->handle(request));
     if (!writeAll(1, out)) break;
@@ -1078,6 +1106,7 @@ class RealmProcess {
       if (!spawn()) return;
     }
     joinAll();
+    trace("realm send job %d%s %zu B", jobId, start ? " (start)" : "", request.size());
     job = jobId;
     jobStart = longJob;
     started = SDL_GetTicks();
@@ -1127,6 +1156,7 @@ class RealmProcess {
     }
     joinAll();
     job = -1;
+    trace("realm answer job %d %zu B after %llu ms", j, got.size(), (unsigned long long)(SDL_GetTicks() - started));
     if (bad) {
       stop();
       app->realmFailed(j, "the realm ended without an answer");
@@ -1417,11 +1447,29 @@ static int run(int argc, char** argv) {
     }
   };
 
+  const char* recordDir = std::getenv("EVG_RECORD");
+  int recorded = 0;
+  if (recordDir) {
+    std::string d = recordDir;
+    std::system(("mkdir -p '" + d + "/res'").c_str());
+    std::ofstream(d + "/urls.tsv") << "url\tlocal_path\tstatus\tcontent_type\n";
+  }
+  auto record = [&](const Result& r) {
+    if (!recordDir || r.status == 0) return;
+    std::string d = recordDir, rel = "res/" + std::to_string(++recorded);
+    std::ofstream(d + "/" + rel, std::ios::binary) << r.body;
+    std::ofstream(d + "/urls.tsv", std::ios::app) << r.url << "\t" << rel << "\t" << r.status << "\t" << r.contentType << "\n";
+    if (!r.finalUrl.empty() && r.finalUrl != r.url)
+      std::ofstream(d + "/urls.tsv", std::ios::app) << r.finalUrl << "\t" << rel << "\t" << r.status << "\t" << r.contentType << "\n";
+  };
+
   auto deliver = [&]() {
     Result r;
     bool any = false;
     while (net.poll(r)) {
       any = true;
+      record(r);
+      double dt0 = traceMs();
       if (r.kind == "image") {
         Image im;
         if (r.status >= 200 && r.status < 300 && !r.body.empty()) im = decodeImage(r.body);
@@ -1429,6 +1477,7 @@ static int run(int argc, char** argv) {
         uint8_t maskRgba[4];
         if (im.ok && maskOf(r.url, maskUrl, maskRgba)) tintImage(im, maskRgba);
         keepImage(r.url, std::move(im));
+        if (traceMs() - dt0 > 30) trace("image decoded in %.0f ms %s", traceMs() - dt0, r.url.substr(0, 160).c_str());
         continue;
       }
       if (r.status == 0) {
@@ -1436,6 +1485,7 @@ static int run(int argc, char** argv) {
       } else {
         app->deliver(r.id, (int)r.status, r.finalUrl, r.contentType, asUtf8(r.body, r.contentType));
       }
+      if (traceMs() - dt0 > 30) trace("deliver took %.0f ms %s", traceMs() - dt0, r.url.substr(0, 160).c_str());
     }
     if (any) {
       dirty = true;
@@ -1556,6 +1606,9 @@ static int run(int argc, char** argv) {
               host->typeText(clip);
               SDL_free(clip);
             }
+          } else if (ctrl && (k == SDLK_C || k == SDLK_X) && inField) {
+            std::string sel = k == SDLK_X ? app->cutFieldText() : app->selectedFieldText();
+            if (!sel.empty()) SDL_SetClipboardText(sel.c_str());
           } else if (ctrl && k == SDLK_Q) {
             quit = true;
           } else {
@@ -1582,20 +1635,49 @@ static int run(int argc, char** argv) {
     Uint64 now = SDL_GetTicks();
     double dt = (double)std::min<Uint64>(64, now - last);
     last = now;
+    double ph = traceMs();
+    auto phase = [&](const char* what) {
+      double n = traceMs();
+      if (n - ph > 30) trace("%s took %.0f ms", what, n - ph);
+      ph = n;
+    };
     if (host->tick(dt)) dirty = true;
+    phase("tick");
     deliver();
     pump();
+    phase("deliver+pump");
     realm.poll(app, dirty);
+    phase("realm answer to app");
     if (!realm.busy() && app->realmJobPending()) {
       int job = app->takeRealmJob();
       bool start = app->realmRequestIsStart();
       bool longJob = app->realmRequestIsLong();
       realm.send(job, start, longJob, app->realmRequest());
     }
+    phase("realm request");
 
     if (dirty) {
       std::shared_ptr<EVGDisplayList> dl = app->display();
+      phase("display()");
       painter.paint(dl, scale);
+      phase("paint");
+      // EVG_SNAPS=<dir>: what the window shows, at most twice a second, as
+      // <dir>/<ms>.png (to see a slow load as the user sees it)
+      static const char* snaps = std::getenv("EVG_SNAPS");
+      static double lastSnap = -1000;
+      if (snaps && traceMs() - lastSnap >= 500) {
+        lastSnap = traceMs();
+        SDL_Surface* shot = SDL_RenderReadPixels(ren, nullptr);
+        SDL_Surface* rgba = shot ? SDL_ConvertSurface(shot, SDL_PIXELFORMAT_RGBA32) : nullptr;
+        if (rgba) {
+          char name[64];
+          std::snprintf(name, sizeof name, "/%06.0f.png", lastSnap);
+          stbi_write_png((std::string(snaps) + name).c_str(), rgba->w, rgba->h, 4, rgba->pixels, rgba->pitch);
+          trace("snap %s", name + 1);
+          SDL_DestroySurface(rgba);
+        }
+        if (shot) SDL_DestroySurface(shot);
+      }
       SDL_RenderPresent(ren);
       dirty = false;
       frame++;

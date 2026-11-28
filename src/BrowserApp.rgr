@@ -1209,17 +1209,26 @@ class BrowserApp extends EvgApp {
             out = (RealmWire.put(out "0"))
             ; the page's fetched style sheets (its <style> elements are in
             ; the HTML)
-            def sheetCount:int 0
+            ; each URL once: the realm gives a sheet to every <link> with
+            ; its href (shadow trees' too), so a second copy would be
+            ; parsed and cascaded again for nothing
+            def sentUrls:[string]
             for page.sheets sh:BrSheet si {
                 if ((sh.inline == false) && sh.arrived) {
-                    sheetCount = (sheetCount + 1)
+                    if ((indexOf sentUrls sh.url) < 0) {
+                        push sentUrls sh.url
+                    }
                 }
             }
-            out = (RealmWire.put(out (to_string sheetCount)))
+            out = (RealmWire.put(out (to_string (array_length sentUrls))))
+            def sent:[string]
             for page.sheets sh2:BrSheet sj {
                 if ((sh2.inline == false) && sh2.arrived) {
-                    out = (RealmWire.put(out sh2.url))
-                    out = (RealmWire.put(out sh2.text))
+                    if ((indexOf sent sh2.url) < 0) {
+                        push sent sh2.url
+                        out = (RealmWire.put(out sh2.url))
+                        out = (RealmWire.put(out sh2.text))
+                    }
                 }
             }
             ; whether the page's inline scripts may run with the first render
@@ -2578,6 +2587,28 @@ class BrowserApp extends EvgApp {
             addrCaret = (BrowserApp.clampInt(caret 0 n))
             frameDirty = true
         }
+    }
+
+    ; The selected text of the focused field, for the host's clipboard
+    ; (only the address bar keeps its own selection).
+    fn selectedFieldText:string () {
+        if addrFocused {
+            def cs:[int] (to_chars addrText)
+            def n:int (array_length cs)
+            def lo:int (BrowserApp.clampInt((this.addrSelLo()) 0 n))
+            def hi:int (BrowserApp.clampInt((this.addrSelHi()) 0 n))
+            return (BrowserApp.charsSlice(cs lo hi))
+        }
+        return ""
+    }
+
+    ; Cut: the selected text goes to the host's clipboard and leaves the field.
+    fn cutFieldText:string () {
+        def t:string (this.selectedFieldText())
+        if ((strlen t) > 0) {
+            this.addrReplaceSel("")
+        }
+        return t
     }
 
     fn fieldSelectionStart:int (tid:string) {
