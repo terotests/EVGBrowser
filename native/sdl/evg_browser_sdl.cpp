@@ -1653,6 +1653,23 @@ static int run(int argc, char** argv) {
       phase("display()");
       painter.paint(dl, scale);
       phase("paint");
+      // EVG_SNAPS=<dir>: what the window shows, at most twice a second, as
+      // <dir>/<ms>.png (to see a slow load as the user sees it)
+      static const char* snaps = std::getenv("EVG_SNAPS");
+      static double lastSnap = -1000;
+      if (snaps && traceMs() - lastSnap >= 500) {
+        lastSnap = traceMs();
+        SDL_Surface* shot = SDL_RenderReadPixels(ren, nullptr);
+        SDL_Surface* rgba = shot ? SDL_ConvertSurface(shot, SDL_PIXELFORMAT_RGBA32) : nullptr;
+        if (rgba) {
+          char name[64];
+          std::snprintf(name, sizeof name, "/%06.0f.png", lastSnap);
+          stbi_write_png((std::string(snaps) + name).c_str(), rgba->w, rgba->h, 4, rgba->pixels, rgba->pitch);
+          trace("snap %s", name + 1);
+          SDL_DestroySurface(rgba);
+        }
+        if (shot) SDL_DestroySurface(shot);
+      }
       SDL_RenderPresent(ren);
       dirty = false;
       frame++;
