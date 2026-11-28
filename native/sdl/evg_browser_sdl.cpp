@@ -1556,6 +1556,9 @@ static int run(int argc, char** argv) {
               host->typeText(clip);
               SDL_free(clip);
             }
+          } else if (ctrl && (k == SDLK_C || k == SDLK_X) && inField) {
+            std::string sel = k == SDLK_X ? app->cutFieldText() : app->selectedFieldText();
+            if (!sel.empty()) SDL_SetClipboardText(sel.c_str());
           } else if (ctrl && k == SDLK_Q) {
             quit = true;
           } else {

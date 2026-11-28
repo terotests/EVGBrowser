@@ -2572,6 +2572,28 @@ class BrowserApp extends EvgApp {
         }
     }
 
+    ; The selected text of the focused field, for the host's clipboard
+    ; (only the address bar keeps its own selection).
+    fn selectedFieldText:string () {
+        if addrFocused {
+            def cs:[int] (to_chars addrText)
+            def n:int (array_length cs)
+            def lo:int (BrowserApp.clampInt((this.addrSelLo()) 0 n))
+            def hi:int (BrowserApp.clampInt((this.addrSelHi()) 0 n))
+            return (BrowserApp.charsSlice(cs lo hi))
+        }
+        return ""
+    }
+
+    ; Cut: the selected text goes to the host's clipboard and leaves the field.
+    fn cutFieldText:string () {
+        def t:string (this.selectedFieldText())
+        if ((strlen t) > 0) {
+            this.addrReplaceSel("")
+        }
+        return t
+    }
+
     fn fieldSelectionStart:int (tid:string) {
         if (tid == "addr") {
             return (this.addrSelLo())
