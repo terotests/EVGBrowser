@@ -1,0 +1,31 @@
+; SPDX-License-Identifier: AGPL-3.0-or-later
+; Times one realm request read from a file (a start request saved with
+; EVG_REALM_SAVE): PageRealm.handle, as the SDL host's realm child runs it.
+;   rgrc -l=cpp tests/RealmStartBench.rgr -d=build/cpp -o=realm_bench.cpp
+;   <bin> <dir> <file> [times] [answer file to write, in dir]
+Import "../src/js/PageRealm.rgr"
+
+class RealmStartBench {
+    sfn main:void () {
+        def req@(optional):string (read_file (shell_arg 0) (shell_arg 1))
+        if (null? req) {
+            print "no request file"
+            return
+        }
+        def n:int 1
+        if ((shell_arg_cnt) > 2) {
+            n = (unwrap (str2int (shell_arg 2)))
+        }
+        def i:int 0
+        while (i < n) {
+            def realm (new PageRealm())
+            def t0:double (wall_clock_ms)
+            def ans:string (realm.handle((unwrap req)))
+            print ("answer " + (to_string (strlen ans)) + " B in " + (to_string ((wall_clock_ms) - t0)) + " ms")
+            if ((shell_arg_cnt) > 3) {
+                write_file (shell_arg 0) (shell_arg 3) ans
+            }
+            i = (i + 1)
+        }
+    }
+}

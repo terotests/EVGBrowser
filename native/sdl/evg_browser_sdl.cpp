@@ -1049,7 +1049,12 @@ static int realmMain() {
   // EVG_JIT: 1 CEr's register machine, 2 with its native JIT (--jit)
   if (const char* j = getenv("EVG_JIT")) realm->jit = atoi(j);
   std::string request;
+  // EVG_REALM_SAVE=<dir>: each request as <dir>/realm-<n>.txt, for
+  // tests/RealmStartBench.rgr
+  const char* save = getenv("EVG_REALM_SAVE");
+  int saved = 0;
   while (readField(0, request)) {
+    if (save) std::ofstream(std::string(save) + "/realm-" + std::to_string(++saved) + ".txt", std::ios::binary) << request;
     std::string out;
     putField(out, realm->handle(request));
     if (!writeAll(1, out)) break;
